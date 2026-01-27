@@ -9,6 +9,8 @@
 #
 # https://github.com/github/gitignore/tree/master/Global
 
+.DS_Store
+
 /target
 /target-ra
 /target-xcompile
@@ -66,3 +68,7 @@ uv.lock
 /test/workload-replay/captured-workloads/
 /misc/kind/cache/
 /plots/
+
+.specstory/
+.cursorindexingignore
+
