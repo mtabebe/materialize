@@ -62,3 +62,7 @@ flake.lock
 my-local-mz/
 /test/orchestratord/cluster.yaml
 uv.lock
+
+.specstory/
+.cursorindexingignore
+
