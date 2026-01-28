@@ -3017,6 +3017,7 @@ mod tests {
     use std::hash::{Hash, Hasher};
 
     use chrono::{DateTime, NaiveDate};
+    use itertools::Itertools;
     use mz_ore::{assert_err, assert_none};
     use ordered_float::OrderedFloat;
 
@@ -3569,13 +3570,13 @@ mod tests {
         // Same keys and semantically equal values, but Eq (bytewise) says not equal
         assert_eq!(
             map_pos, map_neg,
-            "DatumMap Eq is bytewise; -0.0 and +0.0 have different encodings"
+            "DatumMap Eq is semantic; -0.0 and +0.0 have different encodings but are equal"
         );
         // Verify they have the same logical content
         let entries_pos: Vec<_> = map_pos.iter().collect();
         let entries_neg: Vec<_> = map_neg.iter().collect();
         assert_eq!(entries_pos.len(), entries_neg.len());
-        for ((k1, v1), (k2, v2)) in entries_pos.iter().zip(entries_neg.iter()) {
+        for ((k1, v1), (k2, v2)) in entries_pos.iter().zip_eq(entries_neg.iter()) {
             assert_eq!(k1, k2);
             assert_eq!(
                 v1, v2,
