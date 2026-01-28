@@ -10,9 +10,9 @@
 use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 use std::convert::{TryFrom, TryInto};
 use std::fmt::{self, Debug};
+use std::hash::{Hash, Hasher};
 use std::mem::{size_of, transmute};
 use std::ops::Deref;
 use std::str;
@@ -771,6 +771,7 @@ impl<'a> Debug for DatumList<'a> {
 }
 
 impl<'a> PartialEq for DatumList<'a> {
+    #[inline(always)]
     fn eq(&self, other: &DatumList<'a>) -> bool {
         self.iter().eq(other.iter())
     }
@@ -779,6 +780,7 @@ impl<'a> PartialEq for DatumList<'a> {
 impl<'a> Eq for DatumList<'a> {}
 
 impl<'a> Hash for DatumList<'a> {
+    #[inline(always)]
     fn hash<H: Hasher>(&self, state: &mut H) {
         for d in self.iter() {
             d.hash(state);
@@ -787,12 +789,14 @@ impl<'a> Hash for DatumList<'a> {
 }
 
 impl Ord for DatumList<'_> {
+    #[inline(always)]
     fn cmp(&self, other: &DatumList) -> Ordering {
         self.iter().cmp(other.iter())
     }
 }
 
 impl PartialOrd for DatumList<'_> {
+    #[inline(always)]
     fn partial_cmp(&self, other: &DatumList) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -806,6 +810,7 @@ pub struct DatumMap<'a> {
 }
 
 impl<'a> PartialEq for DatumMap<'a> {
+    #[inline(always)]
     fn eq(&self, other: &DatumMap<'a>) -> bool {
         self.iter().eq(other.iter())
     }
@@ -814,6 +819,7 @@ impl<'a> PartialEq for DatumMap<'a> {
 impl<'a> Eq for DatumMap<'a> {}
 
 impl<'a> Hash for DatumMap<'a> {
+    #[inline(always)]
     fn hash<H: Hasher>(&self, state: &mut H) {
         for (k, v) in self.iter() {
             k.hash(state);
@@ -823,12 +829,14 @@ impl<'a> Hash for DatumMap<'a> {
 }
 
 impl<'a> Ord for DatumMap<'a> {
+    #[inline(always)]
     fn cmp(&self, other: &DatumMap<'a>) -> Ordering {
         self.iter().cmp(other.iter())
     }
 }
 
 impl<'a> PartialOrd for DatumMap<'a> {
+    #[inline(always)]
     fn partial_cmp(&self, other: &DatumMap<'a>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -3004,8 +3012,8 @@ impl Drop for SharedRow {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::DefaultHasher;
     use std::cmp::Ordering;
+    use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     use chrono::{DateTime, NaiveDate};
@@ -3505,7 +3513,7 @@ mod tests {
     /// Demonstrates that DatumList's Eq (bytewise) and Ord (datum-by-datum) are now consistent.
     /// A list containing -0.0 and one containing +0.0 have different byte representations
     /// (IEEE 754 distinguishes them), originally Eq says they are not equal. But after
-    /// using the new Datum::cmp, Eq says they are equal, which matches what Ord 
+    /// using the new Datum::cmp, Eq says they are equal, which matches what Ord
     /// compares via iter().cmp(other.iter()), and them as equal.
     #[mz_ore::test]
     fn test_datum_list_eq_ord_consistency() {
@@ -3525,7 +3533,10 @@ mod tests {
 
         // Eq is bytewise: different encodings => not equal
         // This was a bug in the past, so we test it.
-        assert_eq!(list_pos, list_neg, "Eq should see different encodings as equal");
+        assert_eq!(
+            list_pos, list_neg,
+            "Eq should see different encodings as equal"
+        );
 
         // Ord is datum-by-datum: -0.0 and +0.0 compare equal as Datums
         assert_eq!(
@@ -3534,7 +3545,6 @@ mod tests {
             "Ord (datum-by-datum) should see -0.0 and +0.0 as equal"
         );
     }
-
 
     /// Demonstrates that DatumMap's derived Eq (bytewise) can make maps with equal keys and
     /// values compare equal when values have different encodings (e.g. -0.0 vs +0.0).
@@ -3567,7 +3577,10 @@ mod tests {
         assert_eq!(entries_pos.len(), entries_neg.len());
         for ((k1, v1), (k2, v2)) in entries_pos.iter().zip(entries_neg.iter()) {
             assert_eq!(k1, k2);
-            assert_eq!(v1, v2, "Datum-level comparison treats -0.0 and +0.0 as equal");
+            assert_eq!(
+                v1, v2,
+                "Datum-level comparison treats -0.0 and +0.0 as equal"
+            );
         }
     }
 
@@ -3588,7 +3601,11 @@ mod tests {
         let list_neg = row_neg.unpack_first().unwrap_list();
 
         assert_eq!(list_pos, list_neg);
-        assert_eq!(hash(&list_pos), hash(&list_neg), "equal lists must have same hash");
+        assert_eq!(
+            hash(&list_pos),
+            hash(&list_neg),
+            "equal lists must have same hash"
+        );
 
         // Unequal lists should have different hashes (with asymptotic probability 1)
         let mut row_a = Row::default();
@@ -3606,7 +3623,11 @@ mod tests {
         let list_b = row_b.unpack_first().unwrap_list();
 
         assert_ne!(list_a, list_b);
-        assert_ne!(hash(&list_a), hash(&list_b), "unequal lists must have different hashes");
+        assert_ne!(
+            hash(&list_a),
+            hash(&list_b),
+            "unequal lists must have different hashes"
+        );
     }
 
     /// Ord/PartialOrd for DatumList: less, equal, greater.
@@ -3626,7 +3647,6 @@ mod tests {
         });
         let list_13 = row_13.unpack_first().unwrap_list();
 
-
         let mut row_123 = Row::default();
         row_123.packer().push_list_with(|p| {
             p.push(Datum::Int32(1));
@@ -3640,7 +3660,7 @@ mod tests {
         assert_eq!(list_13.cmp(&list_12), Ordering::Greater);
         assert_eq!(list_12.cmp(&list_12), Ordering::Equal);
         // shorter prefix compares less
-        assert_eq!(list_12.cmp(&list_123), Ordering::Less); 
+        assert_eq!(list_12.cmp(&list_123), Ordering::Less);
     }
 
     /// Hash must agree with Eq: equal maps must have the same hash.
@@ -3661,7 +3681,11 @@ mod tests {
         let map_neg = row_neg.unpack_first().unwrap_map();
 
         assert_eq!(map_pos, map_neg);
-        assert_eq!(hash(&map_pos), hash(&map_neg), "equal maps must have same hash");
+        assert_eq!(
+            hash(&map_pos),
+            hash(&map_neg),
+            "equal maps must have same hash"
+        );
 
         let mut row_a = Row::default();
         row_a.packer().push_dict_with(|p| {
@@ -3678,7 +3702,11 @@ mod tests {
         let map_b = row_b.unpack_first().unwrap_map();
 
         assert_ne!(map_a, map_b);
-        assert_ne!(hash(&map_a), hash(&map_b), "unequal maps must have different hashes");
+        assert_ne!(
+            hash(&map_a),
+            hash(&map_b),
+            "unequal maps must have different hashes"
+        );
     }
 
     /// Ord/PartialOrd for DatumMap: less, equal, greater (by key then value).
@@ -3709,5 +3737,44 @@ mod tests {
         assert_eq!(map_a2.cmp(&map_a1), Ordering::Greater);
         assert_eq!(map_a1.cmp(&map_a1), Ordering::Equal);
         assert_eq!(map_a1.cmp(&map_b1), Ordering::Less); // "a" < "b"
+    }
+
+    /// Datum puts Null last in the enum so that nulls sort last (PostgreSQL default).
+    /// This ordering is used when comparing DatumList/DatumMap (e.g. jsonb_agg tiebreaker).
+    #[mz_ore::test]
+    fn test_datum_list_and_map_null_sorts_last() {
+        // DatumList: [1] < [null] so non-null sorts before null
+        let mut row_list_1 = Row::default();
+        row_list_1
+            .packer()
+            .push_list_with(|p| p.push(Datum::Int32(1)));
+        let list_1 = row_list_1.unpack_first().unwrap_list();
+
+        let mut row_list_null = Row::default();
+        row_list_null
+            .packer()
+            .push_list_with(|p| p.push(Datum::Null));
+        let list_null = row_list_null.unpack_first().unwrap_list();
+
+        assert_eq!(list_1.cmp(&list_null), Ordering::Less);
+        assert_eq!(list_null.cmp(&list_1), Ordering::Greater);
+
+        // DatumMap: {"k": 1} < {"k": null} so non-null sorts before null (same as jsonb_agg)
+        let mut row_map_1 = Row::default();
+        row_map_1.packer().push_dict_with(|p| {
+            p.push(Datum::String("k"));
+            p.push(Datum::Int32(1));
+        });
+        let map_1 = row_map_1.unpack_first().unwrap_map();
+
+        let mut row_map_null = Row::default();
+        row_map_null.packer().push_dict_with(|p| {
+            p.push(Datum::String("k"));
+            p.push(Datum::Null);
+        });
+        let map_null = row_map_null.unpack_first().unwrap_map();
+
+        assert_eq!(map_1.cmp(&map_null), Ordering::Less);
+        assert_eq!(map_null.cmp(&map_1), Ordering::Greater);
     }
 }
