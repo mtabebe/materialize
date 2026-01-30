@@ -98,7 +98,12 @@ pub enum AdapterError {
         expected: Vec<String>,
     },
     /// The selection value for a table mutation operation refers to an invalid object.
-    InvalidTableMutationSelection,
+    InvalidTableMutationSelection {
+        /// The full name of the problematic object (e.g. a source or source-export table).
+        object_name: String,
+        /// Human-readable type of the object (e.g. "source", "source-export table").
+        object_type: String,
+    },
     /// Expression violated a column's constraint
     ConstraintViolation(NotNullViolation),
     /// Transaction cluster was dropped in the middle of a transaction.
@@ -568,7 +573,9 @@ impl AdapterError {
             AdapterError::InvalidSetCluster => SqlState::ACTIVE_SQL_TRANSACTION,
             AdapterError::InvalidStorageClusterSize { .. } => SqlState::FEATURE_NOT_SUPPORTED,
             AdapterError::SourceOrSinkSizeRequired { .. } => SqlState::FEATURE_NOT_SUPPORTED,
-            AdapterError::InvalidTableMutationSelection => SqlState::INVALID_TRANSACTION_STATE,
+            AdapterError::InvalidTableMutationSelection { .. } => {
+                SqlState::INVALID_TRANSACTION_STATE
+            }
             AdapterError::ConstraintViolation(NotNullViolation(_)) => SqlState::NOT_NULL_VIOLATION,
             AdapterError::ConcurrentClusterDrop => SqlState::INVALID_TRANSACTION_STATE,
             AdapterError::ConcurrentDependencyDrop { .. } => SqlState::UNDEFINED_OBJECT,
@@ -843,8 +850,18 @@ impl fmt::Display for AdapterError {
             AdapterError::SourceOrSinkSizeRequired { .. } => {
                 write!(f, "must specify either cluster or size option")
             }
-            AdapterError::InvalidTableMutationSelection => {
-                f.write_str("invalid selection: operation may only refer to user-defined tables")
+            AdapterError::InvalidTableMutationSelection {
+                object_name,
+                object_type,
+            } => {
+                write!(
+                    f,
+                    "invalid selection: operation may only refer to user-defined tables. \
+                     {object_type} '{}' may not be used in this operation; \
+                     the selection may refer to views and materialized views, but transitive \
+                     dependencies must not include sources or source-export tables",
+                    object_name.quoted()
+                )
             }
             AdapterError::ReplaceMaterializedViewSealed { name } => {
                 write!(
