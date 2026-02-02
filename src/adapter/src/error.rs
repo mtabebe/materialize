@@ -330,6 +330,17 @@ impl AdapterError {
                 specify size via SIZE option."
                     .into(),
             ),
+             AdapterError::InvalidTableMutationSelection {
+                object_name,
+                object_type,
+            } => Some(
+                    format!(
+                    "{object_type} '{}' may not be used in this operation; \
+                     the selection may refer to views and materialized views, but transitive \
+                     dependencies must not include sources or source-export tables",
+                    object_name.quoted()
+                    )
+            ),
             AdapterError::SafeModeViolation(_) => Some(
                 "The Materialize server you are connected to is running in \
                  safe mode, which limits the features that are available."
@@ -850,17 +861,10 @@ impl fmt::Display for AdapterError {
             AdapterError::SourceOrSinkSizeRequired { .. } => {
                 write!(f, "must specify either cluster or size option")
             }
-            AdapterError::InvalidTableMutationSelection {
-                object_name,
-                object_type,
-            } => {
+            AdapterError::InvalidTableMutationSelection { .. } => {
                 write!(
                     f,
-                    "invalid selection: operation may only refer to user-defined tables. \
-                     {object_type} '{}' may not be used in this operation; \
-                     the selection may refer to views and materialized views, but transitive \
-                     dependencies must not include sources or source-export tables",
-                    object_name.quoted()
+                    "invalid selection: operation may only refer to user-defined tables, even transitively."
                 )
             }
             AdapterError::ReplaceMaterializedViewSealed { name } => {
