@@ -101,6 +101,13 @@ CREATE TABLE bar (
 
   Do not use `rust-gdb` to debug sqllogictest on MacOS because `gdb` will print
   a bunch of error messages and then freeze.
+* To run sqllogictests with **coverage** (for feeding into a diff-coverage or
+  PR report), use `--coverage`. This runs the tests under `cargo llvm-cov`
+  and writes `coverage/slt.lcov`:
+
+  ```bash
+  bin/sqllogictest --coverage -- test/sqllogictest/jsonb.slt
+  ```
 
 ## Materialize-specific behavior in sqllogictest
 

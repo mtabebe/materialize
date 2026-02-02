@@ -209,6 +209,65 @@ def main() -> int:
 
     env = dict(os.environ)
     if args.program in KNOWN_PROGRAMS:
+        # sqllogictest with coverage: run under cargo llvm-cov and write lcov for the coverage report
+        if args.coverage and args.program == "sqllogictest":
+            # Use release-like profile so clusterd and sqllogictest match (both use coverage profile).
+            args.release = True
+            for arg in args.args:
+                if arg.startswith("test/sqllogictest/sqlite/") or arg.startswith(
+                    "./test/sqllogictest/sqlite/"
+                ):
+                    update_sqlite_repo()
+                    break
+            (MZ_ROOT / "coverage").mkdir(exist_ok=True)
+            env["CARGO_LLVM_COV_SETUP"] = "no"
+            env["MZ_SOFT_ASSERTIONS"] = "1"
+            # Write raw coverage (profraw) into coverage/ so they don't clutter cwd.
+            # Inherited by sqllogictest and any spawned clusterd processes.
+            env["LLVM_PROFILE_FILE"] = str(MZ_ROOT / "coverage" / "slt-%p-%9m%c.profraw")
+            # Build clusterd so sqllogictest can spawn it (same dir as sqllogictest for PATH).
+            (build_ret, built_programs) = _cargo_build(args, extra_programs=[])
+            if build_ret != 0:
+                return build_ret
+            artifact_dir = pathlib.Path(built_programs[0]).resolve().parent
+            env["PATH"] = str(artifact_dir) + os.pathsep + env.get("PATH", "")
+            # sqllogictest looks for clusterd in image_dir; under cargo llvm-cov run the
+            # binary lives in target/coverage/deps/ so current_exe().parent() is wrong.
+            env["MZ_ORCHESTRATOR_IMAGE_DIR"] = str(artifact_dir)
+            formatted_params = [
+                f"{key}={value}"
+                for key, value in get_default_system_parameters().items()
+            ]
+            system_parameter_default = ";".join(formatted_params)
+            _connect_sql(args.postgres)
+            slt_args = [
+                f"--postgres-url={args.postgres}",
+                f"--system-parameter-default={system_parameter_default}",
+                *args.args,
+            ]
+            cmd = [
+                "cargo",
+                "llvm-cov",
+                "run",
+                "--bin",
+                "sqllogictest",
+                "--profile",
+                "coverage",
+                "--lcov",
+                "--output-path",
+                str(MZ_ROOT / "coverage" / "slt.lcov"),
+                "--",
+                *slt_args,
+            ]
+            print("$", " ".join(shlex.quote(c) for c in cmd), file=sys.stderr)
+            proc = subprocess.run(cmd, env=env, cwd=MZ_ROOT)
+            if proc.returncode == 0:
+                print(
+                    "Wrote coverage to coverage/slt.lcov (feed into your coverage report)",
+                    file=sys.stderr,
+                )
+            return proc.returncode
+
         build_func = _cargo_build
 
         (build_retcode, built_programs) = build_func(
@@ -489,9 +548,11 @@ def _cargo_command(args: argparse.Namespace, *subcommands: str) -> list[str]:
     if args.channel:
         command += [args.channel]
     command += subcommands
-    if args.release:
+    if args.coverage:
+        command += ["--profile", "coverage"]
+    elif args.release:
         command += ["--release"]
-    if args.optimized:
+    if args.optimized and not args.coverage:
         command += [
             "--cargo-profile" if subcommands == ("nextest", "run") else "--profile",
             "optimized",
@@ -506,7 +567,15 @@ def _cargo_command(args: argparse.Namespace, *subcommands: str) -> list[str]:
 
 
 def _cargo_artifact_path(args: argparse.Namespace, program: str) -> pathlib.Path:
-    dir_name = "release" if args.release else "optimized" if args.optimized else "debug"
+    dir_name = (
+        "coverage"
+        if args.coverage
+        else "release"
+        if args.release
+        else "optimized"
+        if args.optimized
+        else "debug"
+    )
     if args.sanitizer != "none":
         artifact_path = MZ_ROOT / "target" / SANITIZER_TARGET / dir_name
     else:

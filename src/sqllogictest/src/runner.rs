@@ -30,7 +30,7 @@ use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -1013,9 +1013,12 @@ impl<'a> RunnerInner<'a> {
         };
 
         let secrets_dir = temp_dir.path().join("secrets");
+        let image_dir = env::var_os("MZ_ORCHESTRATOR_IMAGE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| env::current_exe().unwrap().parent().unwrap().to_path_buf());
         let orchestrator = Arc::new(
             ProcessOrchestrator::new(ProcessOrchestratorConfig {
-                image_dir: env::current_exe()?.parent().unwrap().to_path_buf(),
+                image_dir,
                 suppress_output: false,
                 environment_id: environment_id.to_string(),
                 secrets_dir: secrets_dir.clone(),

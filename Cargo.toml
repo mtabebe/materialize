@@ -309,6 +309,14 @@ inherits = "optimized"
 debug = "line-tables-only"
 debug-assertions = true
 
+# Used by `mz run --coverage`. Avoids E0391 "cycle detected when optimizing MIR"
+# for UnaryFunc::eq <-> MirScalarExpr::eq when -Cinstrument-coverage is enabled.
+[profile.coverage]
+inherits = "release"
+
+[profile.coverage.package."mz-expr"]
+opt-level = 0
+
 # IMPORTANT: when patching a dependency, you should only depend on "main",
 # "master", or an upstream release branch (e.g., "v7.x"). Do *not* depend on a
 # feature/patch branch (e.g., "fix-thing" or "pr-1234"). Feature/patch branches
