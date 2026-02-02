@@ -26,10 +26,11 @@ from materialize import MZ_ROOT, buildkite, ci_util
 Coverage = dict[str, OrderedDict[int, int | None]]
 SOURCE_RE = re.compile(
     r"""
-    ( src/(.*$)"
+    ( src/(.*$)
     | external/(.*$)
     | /usr/local/lib/rustlib/(.*$)
     | /var/lib/buildkite-agent/builds/buildkite-.*/materialize/[^/]*/src/(.*$)
+    | .*/(src/.*$)
     )""",
     re.VERBOSE,
 )
