@@ -35,7 +35,7 @@ simple
 INSERT INTO salary_exceptions (employee, salary, type)
 SELECT 'Alice', salary, type FROM emp_view LIMIT 1
 ----
-db error: ERROR: invalid selection: operation may only refer to user-defined tables, even transitively.
+db error: ERROR: invalid selection: operation may only (transitively) refer to non-source, non-system tables
 DETAIL: source-export table '"materialize.public.employees_from_src"' may not be used in this operation; the selection may refer to views and materialized views, but transitive dependencies must not include sources or source-export tables
 
 # Same error when selecting directly from source-export table
@@ -43,7 +43,7 @@ simple
 INSERT INTO salary_exceptions (employee, salary, type)
 SELECT 'Bob', counter, 'part_time' FROM employees_from_src LIMIT 1
 ----
-db error: ERROR: invalid selection: operation may only refer to user-defined tables, even transitively.
+db error: ERROR: invalid selection: operation may only (transitively) refer to non-source, non-system tables
 DETAIL: source-export table '"materialize.public.employees_from_src"' may not be used in this operation; the selection may refer to views and materialized views, but transitive dependencies must not include sources or source-export tables
 
 # Same error when selecting directly from the source. Use a derived table to
@@ -52,21 +52,21 @@ simple
 INSERT INTO salary_exceptions (employee, salary, type)
 SELECT 'Dave', f1::int, 'contractor' FROM (SELECT * FROM emp_src LIMIT 1) AS t(f1)
 ----
-db error: ERROR: invalid selection: operation may only refer to user-defined tables, even transitively.
+db error: ERROR: invalid selection: operation may only (transitively) refer to non-source, non-system tables
 DETAIL: source '"materialize.public.emp_src"' may not be used in this operation; the selection may refer to views and materialized views, but transitive dependencies must not include sources or source-export tables
 
 # Same error: UPDATE with WHERE subquery that transitively refers to source
 simple
 UPDATE salary_exceptions SET type = 'updated' WHERE salary IN (SELECT salary FROM emp_view)
 ----
-db error: ERROR: invalid selection: operation may only refer to user-defined tables, even transitively.
+db error: ERROR: invalid selection: operation may only (transitively) refer to non-source, non-system tables
 DETAIL: source-export table '"materialize.public.employees_from_src"' may not be used in this operation; the selection may refer to views and materialized views, but transitive dependencies must not include sources or source-export tables
 
 # Same error: DELETE with WHERE subquery that transitively refers to source
 simple
 DELETE FROM salary_exceptions WHERE salary IN (SELECT salary FROM emp_view)
 ----
-db error: ERROR: invalid selection: operation may only refer to user-defined tables, even transitively.
+db error: ERROR: invalid selection: operation may only (transitively) refer to non-source, non-system tables
 DETAIL: source-export table '"materialize.public.employees_from_src"' may not be used in this operation; the selection may refer to views and materialized views, but transitive dependencies must not include sources or source-export tables
 
 # Set up a plain old table and do the same thing, it should now work

@@ -864,7 +864,7 @@ impl fmt::Display for AdapterError {
             AdapterError::InvalidTableMutationSelection { .. } => {
                 write!(
                     f,
-                    "invalid selection: operation may only refer to user-defined tables, even transitively."
+                    "invalid selection: operation may only (transitively) refer to non-source, non-system tables"
                 )
             }
             AdapterError::ReplaceMaterializedViewSealed { name } => {
