@@ -48,6 +48,12 @@ impl<'a> Array<'a> {
     }
 }
 
+/// Returns true if this array's dimensions are valid for the Int2Vector type.
+/// Int2Vector is 1-D; empty arrays use 0 dimensions (PostgreSQL convention).
+pub fn has_int2vector_dims(array: &Array<'_>) -> bool {
+    array.dims().len() == 1 || (array.dims().len() == 0 && array.elements().iter().next().is_none())
+}
+
 /// The dimensions of an [`Array`].
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct ArrayDimensions<'a> {

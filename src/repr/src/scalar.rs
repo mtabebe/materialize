@@ -31,7 +31,7 @@ use proptest::strategy::Union;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::adt::array::{Array, ArrayDimension};
+use crate::adt::array::{has_int2vector_dims, Array, ArrayDimension};
 use crate::adt::char::{Char, CharLength};
 use crate::adt::date::Date;
 use crate::adt::interval::Interval;
@@ -1066,7 +1066,7 @@ impl<'a> Datum<'a> {
                         })
                     }
                     (Datum::Array(array), ReprScalarType::Int2Vector) => {
-                        array.dims().len() == 1
+                        has_int2vector_dims(&array)
                             && array
                                 .elements
                                 .iter()
@@ -1204,7 +1204,7 @@ impl<'a> Datum<'a> {
                         })
                     }
                     (Datum::Array(array), SqlScalarType::Int2Vector) => {
-                        array.dims().len() == 1
+                        has_int2vector_dims(&array)
                             && array
                                 .elements
                                 .iter()

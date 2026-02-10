@@ -16,7 +16,7 @@ use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
 use itertools::Itertools;
 use mz_ore::cast::ReinterpretCast;
 use mz_pgwire_common::Format;
-use mz_repr::adt::array::ArrayDimension;
+use mz_repr::adt::array::{has_int2vector_dims, ArrayDimension};
 use mz_repr::adt::char;
 use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
@@ -174,8 +174,10 @@ impl Value {
                 Some(Value::Array { dims, elements })
             }
             (Datum::Array(array), SqlScalarType::Int2Vector) => {
-                let dims = array.dims().into_iter();
-                assert!(dims.count() == 1, "int2vector must be 1 dimensional");
+                assert!(
+                    has_int2vector_dims(&array),
+                    "int2vector must be 1 dimensional, or empty"
+                );
                 let elements = array
                     .elements()
                     .iter()

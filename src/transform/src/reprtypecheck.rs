@@ -21,6 +21,7 @@ use mz_expr::{
 };
 use mz_ore::soft_panic_or_log;
 use mz_ore::stack::{CheckedRecursion, RecursionGuard, RecursionLimitError};
+use mz_repr::adt::array::has_int2vector_dims;
 use mz_repr::adt::range::Range;
 use mz_repr::explain::{DummyHumanizer, ExprHumanizer};
 use mz_repr::{
@@ -680,7 +681,9 @@ fn datum_difference_with_column_type(
                     Ok(())
                 }
                 (Datum::Array(array), ReprScalarType::Int2Vector) => {
-                    if array.dims().len() != 1 {
+                    if !has_int2vector_dims(&array) {
+                        /// Int2Vector is 1-D, but empty arrays use 0 dimensions (PostgreSQL convention,
+                        /// the error message just mentions 1 dimension, but 0 dimensions are allowed when empty.
                         return Err(DatumTypeDifference::MismatchDimensions {
                             ctor: "int2vector".to_string(),
                             got: array.dims().len(),
