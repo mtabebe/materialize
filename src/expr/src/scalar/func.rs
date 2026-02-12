@@ -1733,9 +1733,10 @@ fn jsonb_get_path_stringify<'a>(
 }
 
 #[sqlfunc(is_infix_op = true, sqlname = "?", propagates_nulls = true)]
-fn jsonb_contains_string<'a>(a: Datum<'a>, k: &str) -> bool {
+fn jsonb_contains_string<'a>(a: JsonbRef<'a>, k: &str) -> bool {
     // https://www.postgresql.org/docs/current/datatype-json.html#JSON-CONTAINMENT
-    match a {
+    // NULL::jsonb is not accepted (JsonbRef rejects it), so the evaluator returns NULL.
+    match a.into_datum() {
         Datum::List(list) => list.iter().any(|k2| Datum::from(k) == k2),
         Datum::Map(dict) => dict.iter().any(|(k2, _v)| k == k2),
         Datum::String(string) => string == k,
