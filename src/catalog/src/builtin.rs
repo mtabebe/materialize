@@ -3377,6 +3377,7 @@ pub static MZ_CLUSTERS: LazyLock<BuiltinTable> = LazyLock::new(|| BuiltinTable {
             "introspection_interval",
             SqlScalarType::Interval.nullable(true),
         )
+        .with_column("sealed", SqlScalarType::Bool.nullable(false))
         .with_key(vec![0])
         .finish(),
     column_comments: BTreeMap::from_iter([

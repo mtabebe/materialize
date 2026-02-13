@@ -3165,6 +3165,7 @@ impl DefaultPrivileges {
 pub struct ClusterConfig {
     pub variant: ClusterVariant,
     pub workload_class: Option<String>,
+    pub sealed: bool,
 }
 
 impl ClusterConfig {
@@ -3181,6 +3182,7 @@ impl From<ClusterConfig> for durable::ClusterConfig {
         Self {
             variant: config.variant.into(),
             workload_class: config.workload_class,
+            sealed: config.sealed,
         }
     }
 }
@@ -3190,6 +3192,7 @@ impl From<durable::ClusterConfig> for ClusterConfig {
         Self {
             variant: config.variant.into(),
             workload_class: config.workload_class,
+            sealed: config.sealed,
         }
     }
 }

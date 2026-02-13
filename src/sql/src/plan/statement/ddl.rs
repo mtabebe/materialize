@@ -4761,8 +4761,10 @@ generate_extracted_config!(
     (Managed, bool),
     (Replicas, Vec<ReplicaDefinition<Aug>>),
     (ReplicationFactor, u32),
+    (Sealed, bool),
     (Size, String),
     (Schedule, ClusterScheduleOptionValue),
+    (Unsealed, bool),
     (WorkloadClass, OptionalString)
 );
 
@@ -4856,10 +4858,12 @@ pub fn plan_create_cluster_inner(
         managed,
         replicas,
         replication_factor,
+        sealed: _,
         seen: _,
         size,
         disk,
         schedule,
+        unsealed: _,
         workload_class,
     }: ClusterOptionExtracted = options.try_into()?;
 
@@ -5091,8 +5095,10 @@ pub fn unplan_create_cluster(
                 managed: Some(true),
                 replicas: None,
                 replication_factor,
+                sealed: None,
                 size: Some(size),
                 schedule: Some(schedule),
+                unsealed: None,
                 workload_class,
             };
             let options = options_extracted.into_values(scx.catalog);
@@ -6231,10 +6237,12 @@ pub fn plan_alter_cluster(
                 managed,
                 replicas: replica_defs,
                 replication_factor,
+                sealed,
                 seen: _,
                 size,
                 disk,
                 schedule,
+                unsealed,
                 workload_class,
             }: ClusterOptionExtracted = set_options.try_into()?;
 
@@ -6410,6 +6418,22 @@ pub fn plan_alter_cluster(
             if let Some(workload_class) = workload_class {
                 options.workload_class = AlterOptionParameter::Set(workload_class.0);
             }
+
+            // Resolve SEALED and UNSEALED into a single boolean value.
+            // UNSEALED is syntactic sugar: UNSEALED = !SEALED
+            match (sealed, unsealed) {
+                (Some(_), Some(_)) => {
+                    sql_bail!("cannot specify both SEALED and UNSEALED options");
+                }
+                (Some(val), None) => {
+                    options.sealed = AlterOptionParameter::Set(val);
+                }
+                (None, Some(val)) => {
+                    // UNSEALED means not sealed, so we invert the value
+                    options.sealed = AlterOptionParameter::Set(!val);
+                }
+                (None, None) => {}
+            }
         }
         AlterClusterAction::ResetOptions(reset_options) => {
             use AlterOptionParameter::Reset;
@@ -6432,6 +6456,7 @@ pub fn plan_alter_cluster(
                     Managed => options.managed = Reset,
                     Replicas => options.replicas = Reset,
                     ReplicationFactor => options.replication_factor = Reset,
+                    Sealed | Unsealed => options.sealed = Reset,
                     Size => options.size = Reset,
                     Schedule => options.schedule = Reset,
                     WorkloadClass => options.workload_class = Reset,

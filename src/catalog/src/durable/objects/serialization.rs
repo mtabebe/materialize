@@ -54,6 +54,7 @@ impl RustType<proto::ClusterConfig> for ClusterConfig {
         proto::ClusterConfig {
             variant: self.variant.into_proto(),
             workload_class: self.workload_class.clone(),
+            sealed: self.sealed,
         }
     }
 
@@ -61,6 +62,7 @@ impl RustType<proto::ClusterConfig> for ClusterConfig {
         Ok(Self {
             variant: proto.variant.into_rust()?,
             workload_class: proto.workload_class,
+            sealed: proto.sealed,
         })
     }
 }

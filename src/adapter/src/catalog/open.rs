@@ -984,6 +984,7 @@ fn add_new_remove_old_builtin_clusters_migration(
                         schedule: Default::default(),
                     }),
                     workload_class: None,
+                    sealed: false,
                 },
                 &HashSet::new(),
             )?;

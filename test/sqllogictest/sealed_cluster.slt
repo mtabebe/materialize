@@ -1,0 +1,167 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for the SEALED/UNSEALED cluster option.
+
+mode cockroach
+
+# Create a test cluster
+statement ok
+CREATE CLUSTER test_sealed SIZE 'scale=1,workers=1'
+
+# Happy path: basic seal/unseal lifecycle
+# ---------------------------------------
+
+# Default is unsealed
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: explicit boolean values
+# -----------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED = true)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED = false)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED = false)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED = true)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: RESET returns to default (unsealed)
+# -----------------------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed RESET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: idempotent operations
+# ---------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: combine with other options
+# --------------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED, SIZE 'scale=2,workers=2')
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+# Error: conflicting SEALED and UNSEALED in same statement
+# --------------------------------------------------------
+
+statement error cannot specify both SEALED and UNSEALED options
+ALTER CLUSTER test_sealed SET (SEALED, UNSEALED)
+
+# Error: nonexistent cluster
+# --------------------------
+
+statement error unknown cluster 'nonexistent'
+ALTER CLUSTER nonexistent SET (SEALED)
+
+# Error: nonexistent cluster with IF EXISTS (no error, noop)
+# ----------------------------------------------------------
+
+statement ok
+ALTER CLUSTER IF EXISTS nonexistent SET (SEALED)
+
+# Error: invalid value type
+# -------------------------
+
+statement error invalid SEALED: cannot use value as boolean
+ALTER CLUSTER test_sealed SET (SEALED = 'yes')
+
+statement error invalid SEALED: cannot use value as boolean
+ALTER CLUSTER test_sealed SET (SEALED = 42)
+
+# Cleanup
+# -------
+
+statement ok
+DROP CLUSTER test_sealed CASCADE
