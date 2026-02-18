@@ -22,7 +22,7 @@ use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
 use mz_repr::adt::mz_acl_item::{AclItem, MzAclItem};
 use mz_repr::adt::pg_legacy_name::NAME_MAX_BYTES;
-use mz_repr::adt::range::{Range, RangeInner};
+use mz_repr::adt::range::{Range, RangeInner, RangeLowerBound, RangeUpperBound};
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::strconv::{self, Nestable};
 use mz_repr::{Datum, RowArena, RowPacker, RowRef, SqlRelationType, SqlScalarType};
@@ -30,8 +30,10 @@ use postgres_types::{FromSql, IsNull, ToSql, Type as PgType};
 use uuid::Uuid;
 
 use crate::types::{UINT2, UINT4, UINT8};
+use crate::value::error::IntoDatumError;
 use crate::{Interval, Jsonb, Numeric, Type, UInt2, UInt4, UInt8};
 
+pub mod error;
 pub mod interval;
 pub mod jsonb;
 pub mod numeric;
@@ -117,6 +119,37 @@ pub enum Value {
     /// A list of privileges granted to a user that uses [`mz_repr::adt::system::Oid`]s for role
     /// references. This type is used primarily for compatibility with PostgreSQL.
     AclItem(AclItem),
+}
+
+/// Converts a `Range<Box<Value>>` into a `Range<Datum>` by converting each bound with `into_datum`.
+fn value_range_to_datum_range<'a>(
+    range: Range<Box<Value>>,
+    buf: &'a RowArena,
+    element_type: &Type,
+) -> Result<Range<Datum<'a>>, IntoDatumError> {
+    match range.inner {
+        None => Ok(Range::new(None)),
+        Some(RangeInner { lower, upper }) => {
+            let lower_datum = lower
+                .bound
+                .map(|elem| elem.into_datum(buf, element_type))
+                .transpose()?;
+            let upper_datum = upper
+                .bound
+                .map(|elem| elem.into_datum(buf, element_type))
+                .transpose()?;
+            Ok(Range::new(Some((
+                RangeLowerBound {
+                    inclusive: lower.inclusive,
+                    bound: lower_datum,
+                },
+                RangeUpperBound {
+                    inclusive: upper.inclusive,
+                    bound: upper_datum,
+                },
+            ))))
+        }
+    }
 }
 
 impl Value {
@@ -221,24 +254,30 @@ impl Value {
     }
 
     /// Converts a Materialize datum from this value.
-    pub fn into_datum<'a>(self, buf: &'a RowArena, typ: &Type) -> Datum<'a> {
-        match self {
+    pub fn into_datum<'a>(
+        self,
+        buf: &'a RowArena,
+        typ: &Type,
+    ) -> Result<Datum<'a>, IntoDatumError> {
+        Ok(match self {
             Value::Array { dims, elements } => {
                 let element_pg_type = match typ {
                     Type::Array(t) => &*t,
                     _ => panic!("Value::Array should have type Type::Array. Found {:?}", typ),
                 };
-                buf.make_datum(|packer| {
+                let elements: Result<Vec<_>, _> = elements
+                    .into_iter()
+                    .map(|element| match element {
+                        Some(element) => element.into_datum(buf, element_pg_type),
+                        None => Ok(Datum::Null),
+                    })
+                    .collect();
+                let elements = elements?;
+                buf.try_make_datum(|packer| {
                     packer
-                        .try_push_array(
-                            &dims,
-                            elements.into_iter().map(|element| match element {
-                                Some(element) => element.into_datum(buf, element_pg_type),
-                                None => Datum::Null,
-                            }),
-                        )
-                        .unwrap();
-                })
+                        .try_push_array(&dims, elements.into_iter())
+                        .map_err(IntoDatumError::from)
+                })?
             }
             Value::Int2Vector { .. } => {
                 // This situation is handled gracefully by Value::decode; if we
@@ -264,26 +303,34 @@ impl Value {
                     Type::List(t) => &*t,
                     _ => panic!("Value::List should have type Type::List. Found {:?}", typ),
                 };
-                buf.make_datum(|packer| {
-                    packer.push_list(elems.into_iter().map(|elem| match elem {
+                let elems: Result<Vec<_>, _> = elems
+                    .into_iter()
+                    .map(|elem| match elem {
                         Some(elem) => elem.into_datum(buf, elem_pg_type),
-                        None => Datum::Null,
-                    }));
-                })
+                        None => Ok(Datum::Null),
+                    })
+                    .collect();
+                let elems = elems?;
+                buf.make_datum(|packer| packer.push_list(elems.into_iter()))
             }
             Value::Map(map) => {
                 let elem_pg_type = match typ {
                     Type::Map { value_type } => &*value_type,
                     _ => panic!("Value::Map should have type Type::Map. Found {:?}", typ),
                 };
+                let mut map_elems = Vec::with_capacity(map.len() * 2);
+                for (k, v) in map {
+                    map_elems.push(Datum::String(buf.push_string(k)));
+                    map_elems.push(match v {
+                        Some(elem) => elem.into_datum(buf, elem_pg_type)?,
+                        None => Datum::Null,
+                    });
+                }
                 buf.make_datum(|packer| {
                     packer.push_dict_with(|row| {
-                        for (k, v) in map {
-                            row.push(Datum::String(&k));
-                            row.push(match v {
-                                Some(elem) => elem.into_datum(buf, elem_pg_type),
-                                None => Datum::Null,
-                            });
+                        for chunk in map_elems.chunks(2) {
+                            row.push(chunk[0]);
+                            row.push(chunk[1]);
                         }
                     });
                 })
@@ -310,13 +357,26 @@ impl Value {
                     Type::Range { element_type } => &*element_type,
                     _ => panic!("Value::Range should have type Type::Range. Found {:?}", typ),
                 };
-                let range = range.into_bounds(|elem| elem.into_datum(buf, elem_pg_type));
-
-                buf.make_datum(|packer| packer.push_range(range).unwrap())
+                let range = value_range_to_datum_range(range, buf, elem_pg_type)?;
+                buf.try_make_datum(|packer| packer.push_range(range).map_err(IntoDatumError::from))?
             }
             Value::MzAclItem(mz_acl_item) => Datum::MzAclItem(mz_acl_item),
             Value::AclItem(acl_item) => Datum::AclItem(acl_item),
-        }
+        })
+    }
+
+    /// Like [`into_datum`] but maps the error to a formatted string for decode/parameter contexts.
+    ///
+    /// Callers can then convert the `String` to their preferred error type (e.g. `io::Error`,
+    /// protocol error). The message is `"unable to decode {context}: {error}"`.
+    pub fn into_datum_decode_error<'a>(
+        self,
+        buf: &'a RowArena,
+        typ: &Type,
+        context: &str,
+    ) -> Result<Datum<'a>, String> {
+        self.into_datum(buf, typ)
+            .map_err(|e| format!("unable to decode {}: {}", context, e))
     }
 
     /// Serializes this value to `buf` in the specified `format`.
@@ -786,9 +846,11 @@ impl Value {
                 // TODO: We should be able to push ranges without scratch space, but that requires
                 // a different `push_range` API.
                 let buf = RowArena::new();
-                let range = range.into_bounds(|elem| elem.into_datum(&buf, element_type));
-
-                packer.push_range(range).unwrap()
+                let range = value_range_to_datum_range(range, &buf, element_type)
+                    .map_err(|e| Box::<dyn Error + Sync + Send>::from(e))?;
+                packer
+                    .push_range(range)
+                    .map_err(|e| Box::<dyn Error + Sync + Send>::from(e))?;
             }
             Type::MzAclItem => packer.push(Datum::MzAclItem(strconv::parse_mz_acl_item(s)?)),
             Type::AclItem => packer.push(Datum::AclItem(strconv::parse_acl_item(s)?)),
