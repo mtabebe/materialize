@@ -311,7 +311,7 @@ impl Value {
                     })
                     .collect();
                 let elems = elems?;
-                buf.make_datum(|packer| packer.push_list(elems.into_iter()))
+                buf.make_datum(|packer| packer.push_list(elems))
             }
             Value::Map(map) => {
                 let elem_pg_type = match typ {
@@ -365,7 +365,7 @@ impl Value {
         })
     }
 
-    /// Like [`into_datum`] but maps the error to a formatted string for decode/parameter contexts.
+    /// Like [`Self::into_datum`] but maps the error to a formatted string for decode/parameter contexts.
     ///
     /// Callers can then convert the `String` to their preferred error type (e.g. `io::Error`,
     /// protocol error). The message is `"unable to decode {context}: {error}"`.
@@ -847,10 +847,10 @@ impl Value {
                 // a different `push_range` API.
                 let buf = RowArena::new();
                 let range = value_range_to_datum_range(range, &buf, element_type)
-                    .map_err(|e| Box::<dyn Error + Sync + Send>::from(e))?;
+                    .map_err(Box::<dyn Error + Sync + Send>::from)?;
                 packer
                     .push_range(range)
-                    .map_err(|e| Box::<dyn Error + Sync + Send>::from(e))?;
+                    .map_err(Box::<dyn Error + Sync + Send>::from)?;
             }
             Type::MzAclItem => packer.push(Datum::MzAclItem(strconv::parse_mz_acl_item(s)?)),
             Type::AclItem => packer.push(Datum::AclItem(strconv::parse_acl_item(s)?)),
