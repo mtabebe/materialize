@@ -1,0 +1,290 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for the SEALED/UNSEALED cluster option.
+
+mode cockroach
+
+# Create a test cluster
+statement ok
+CREATE CLUSTER test_sealed SIZE 'scale=1,workers=1'
+
+# Happy path: basic seal/unseal lifecycle
+# ---------------------------------------
+
+# Default is unsealed
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: explicit boolean values
+# -----------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED = true)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED = false)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED = false)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED = true)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: RESET returns to default (unsealed)
+# -----------------------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed RESET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Happy path: idempotent operations
+# ---------------------------------
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+true
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+query B
+SELECT sealed FROM mz_clusters WHERE name = 'test_sealed'
+----
+false
+
+# Error: combining SEALED with compute-altering options
+# ------------------------------------------------------
+
+statement error cannot change SIZE of sealed cluster 'test_sealed'
+ALTER CLUSTER test_sealed SET (SEALED, SIZE 'scale=1,workers=2')
+
+# But unsealing and resizing in one statement is fine
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED, SIZE 'scale=1,workers=1')
+
+# Error: conflicting SEALED and UNSEALED in same statement
+# --------------------------------------------------------
+
+statement error cannot specify both SEALED and UNSEALED options
+ALTER CLUSTER test_sealed SET (SEALED, UNSEALED)
+
+# Error: nonexistent cluster
+# --------------------------
+
+statement error unknown cluster 'nonexistent'
+ALTER CLUSTER nonexistent SET (SEALED)
+
+# Error: nonexistent cluster with IF EXISTS (no error, noop)
+# ----------------------------------------------------------
+
+statement ok
+ALTER CLUSTER IF EXISTS nonexistent SET (SEALED)
+
+# Error: invalid value type
+# -------------------------
+
+statement error invalid SEALED: cannot use value as boolean
+ALTER CLUSTER test_sealed SET (SEALED = 'yes')
+
+statement error invalid SEALED: cannot use value as boolean
+ALTER CLUSTER test_sealed SET (SEALED = '42')
+
+# =============================================================================
+# Sealed cluster restriction enforcement
+# =============================================================================
+
+# --- Setup: create objects before sealing ---
+
+statement ok
+CREATE TABLE t_for_sealed (a INT)
+
+# Create an MV without a separate index so we can test DROP MV in isolation
+statement ok
+CREATE MATERIALIZED VIEW mv_sealed IN CLUSTER test_sealed AS SELECT * FROM t_for_sealed
+
+# Create a standalone index for index-specific tests
+statement ok
+CREATE DEFAULT INDEX idx_sealed IN CLUSTER test_sealed ON t_for_sealed
+
+# Seal the cluster
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+# --- CREATE operations should fail on sealed cluster ---
+
+statement error cannot create materialized view on sealed cluster 'test_sealed'
+CREATE MATERIALIZED VIEW mv_blocked IN CLUSTER test_sealed AS SELECT 1
+
+statement error cannot create index on sealed cluster 'test_sealed'
+CREATE DEFAULT INDEX IN CLUSTER test_sealed ON mv_sealed
+
+statement error cannot create source on sealed cluster 'test_sealed'
+CREATE SOURCE src_blocked IN CLUSTER test_sealed FROM LOAD GENERATOR COUNTER
+
+statement error cannot create continual task on sealed cluster 'test_sealed'
+CREATE CONTINUAL TASK ct_blocked (a INT) IN CLUSTER test_sealed ON INPUT t_for_sealed AS (
+    DELETE FROM ct_blocked WHERE a IS NOT NULL;
+    INSERT INTO ct_blocked SELECT * FROM t_for_sealed;
+)
+
+# --- DROP operations should fail on sealed cluster ---
+
+# Dropping a standalone index from a sealed cluster should fail
+statement error cannot drop index from sealed cluster 'test_sealed'
+DROP INDEX idx_sealed
+
+# Dropping a materialized view from a sealed cluster should fail.
+# Note: the error may reference a dependent index since CASCADE checks
+# dependent objects on the sealed cluster too.
+statement error cannot drop .* from sealed cluster 'test_sealed'
+DROP MATERIALIZED VIEW mv_sealed
+
+# --- Replica topology changes should fail ---
+# Note: managed cluster check fires before sealed check for CREATE REPLICA,
+# so we test this on an unmanaged cluster.
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+statement ok
+CREATE CLUSTER test_sealed_unmanaged REPLICAS (r1 (SIZE 'scale=1,workers=1'))
+
+statement ok
+ALTER CLUSTER test_sealed_unmanaged SET (SEALED)
+
+statement error cannot create replica on sealed cluster 'test_sealed_unmanaged'
+CREATE CLUSTER REPLICA test_sealed_unmanaged.r2 SIZE 'scale=1,workers=1'
+
+# Also verify DROP REPLICA is blocked on sealed unmanaged cluster
+statement error cannot drop replica of sealed cluster 'test_sealed_unmanaged'
+DROP CLUSTER REPLICA test_sealed_unmanaged.r1
+
+statement ok
+DROP CLUSTER test_sealed_unmanaged CASCADE
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+# --- ALTER CLUSTER compute options should fail ---
+
+statement error cannot change SIZE of sealed cluster 'test_sealed'
+ALTER CLUSTER test_sealed SET (SIZE 'scale=1,workers=2')
+
+statement error cannot change REPLICATION FACTOR of sealed cluster 'test_sealed'
+ALTER CLUSTER test_sealed SET (REPLICATION FACTOR 2)
+
+statement error cannot change SCHEDULE of sealed cluster 'test_sealed'
+ALTER CLUSTER test_sealed SET (SCHEDULE = ON REFRESH)
+
+# --- Allowed operations on sealed cluster ---
+
+# Seal/unseal toggling always works
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+# Renaming is allowed
+statement ok
+ALTER CLUSTER test_sealed RENAME TO test_sealed2
+
+statement ok
+ALTER CLUSTER test_sealed2 RENAME TO test_sealed
+
+# --- Unseal, then DROP individual objects works ---
+
+statement ok
+ALTER CLUSTER test_sealed SET (UNSEALED)
+
+statement ok
+DROP INDEX idx_sealed
+
+statement ok
+DROP MATERIALIZED VIEW mv_sealed
+
+# --- DROP CLUSTER CASCADE is allowed on sealed cluster ---
+
+statement ok
+CREATE MATERIALIZED VIEW mv_sealed2 IN CLUSTER test_sealed AS SELECT 1
+
+statement ok
+ALTER CLUSTER test_sealed SET (SEALED)
+
+# The cluster itself can be dropped even when sealed
+statement ok
+DROP CLUSTER test_sealed CASCADE
+
+# Cleanup
+statement ok
+DROP TABLE t_for_sealed CASCADE

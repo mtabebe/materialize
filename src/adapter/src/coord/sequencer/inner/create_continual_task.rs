@@ -57,6 +57,8 @@ impl Coordinator {
         let name = plan.name.clone();
         let cluster_id = plan.continual_task.cluster_id;
 
+        self.ensure_cluster_not_sealed(&cluster_id, "create continual task")?;
+
         // Put a placeholder in the catalog so the optimizer can find something
         // for the sink_id.
         let id_ts = self.get_catalog_write_ts().await;

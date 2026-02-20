@@ -308,6 +308,8 @@ impl Coordinator {
             ..
         } = &plan;
 
+        self.ensure_cluster_not_sealed(cluster_id, "create index")?;
+
         // Collect optimizer parameters.
         let compute_instance = self
             .instance_snapshot(*cluster_id)
