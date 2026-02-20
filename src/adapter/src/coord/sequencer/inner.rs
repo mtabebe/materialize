@@ -158,6 +158,20 @@ struct CreateSourceInner {
 }
 
 impl Coordinator {
+    /// Returns an error if the given cluster is sealed.
+    /// `operation` should describe what was attempted, e.g., "create materialized view".
+    fn ensure_cluster_not_sealed(
+        &self,
+        cluster_id: &mz_controller_types::ClusterId,
+        operation: &str,
+    ) -> Result<(), AdapterError> {
+        let cluster = self.catalog().get_cluster(*cluster_id);
+        if cluster.config.sealed {
+            coord_bail!("cannot {} on sealed cluster '{}'", operation, cluster.name);
+        }
+        Ok(())
+    }
+
     /// Sequences the next staged of a [Staged] plan. This is designed for use with plans that
     /// execute both on and off of the coordinator thread. Stages can either produce another stage
     /// to execute or a final response. An explicit [Span] is passed to allow for convenient
@@ -304,6 +318,7 @@ impl Coordinator {
                     let cluster_id = plan
                         .in_cluster
                         .expect("ingestion plans must specify cluster");
+                    self.ensure_cluster_not_sealed(&cluster_id, "create source")?;
                     match desc.connection {
                         GenericSourceConnection::Postgres(_)
                         | GenericSourceConnection::MySql(_)
@@ -326,6 +341,7 @@ impl Coordinator {
                 }
                 plan::DataSourceDesc::Webhook { .. } => {
                     let cluster_id = plan.in_cluster.expect("webhook plans must specify cluster");
+                    self.ensure_cluster_not_sealed(&cluster_id, "create source")?;
                     if let Some(cluster) = self.catalog().try_get_cluster(cluster_id) {
                         let enable_multi_replica_sources = ENABLE_MULTI_REPLICA_SOURCES
                             .get(self.catalog().system_config().dyncfgs());
@@ -1065,6 +1081,11 @@ impl Coordinator {
             in_cluster,
         } = plan;
 
+        return_if_err!(
+            self.ensure_cluster_not_sealed(&in_cluster, "create sink"),
+            ctx
+        );
+
         // First try to allocate an ID and an OID. If either fails, we're done.
         let id_ts = self.get_catalog_write_ts().await;
         let (item_id, global_id) =
@@ -1657,6 +1678,24 @@ impl Coordinator {
                                 cluster.replica(*replica_id).expect("Catalog out of sync");
                             if !replica.config.location.internal() {
                                 coord_bail!("cannot drop replica of managed cluster");
+                            }
+                        }
+                        if cluster.config.sealed {
+                            coord_bail!("cannot drop replica of sealed cluster '{}'", cluster.name);
+                        }
+                    }
+                }
+                ObjectId::Item(id) => {
+                    let entry = self.catalog().get_entry(id);
+                    if let Some(cluster_id) = entry.item().cluster_id() {
+                        if !clusters_to_drop.contains(&cluster_id) {
+                            let cluster = self.catalog().get_cluster(cluster_id);
+                            if cluster.config.sealed {
+                                coord_bail!(
+                                    "cannot drop {} from sealed cluster '{}'",
+                                    entry.item().typ(),
+                                    cluster.name
+                                );
                             }
                         }
                     }

@@ -335,6 +335,8 @@ impl Coordinator {
             ..
         } = &plan;
 
+        self.ensure_cluster_not_sealed(cluster_id, "create materialized view")?;
+
         // Validate any references in the materialized view's expression. We do
         // this on the unoptimized plan to better reflect what the user typed.
         // We want to reject queries that depend on log sources, for example,

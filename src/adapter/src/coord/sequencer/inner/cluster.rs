@@ -159,6 +159,7 @@ impl Coordinator {
         use mz_catalog::memory::objects::ClusterVariant::*;
         use mz_sql::plan::AlterOptionParameter::*;
         let cluster = self.catalog.get_cluster(cluster_id);
+        let cluster_name = cluster.name.clone();
         let config = cluster.config.clone();
         let mut new_config = config.clone();
 
@@ -265,6 +266,34 @@ impl Coordinator {
             Set(sealed) => new_config.sealed = *sealed,
             Reset => new_config.sealed = false,
             Unchanged => {}
+        }
+
+        // If the cluster is (or is becoming) sealed, reject compute-altering options.
+        if new_config.sealed {
+            if !matches!(options.managed, Unchanged) {
+                coord_bail!("cannot change MANAGED of sealed cluster '{}'", cluster_name);
+            }
+            if !matches!(options.size, Unchanged) {
+                coord_bail!("cannot change SIZE of sealed cluster '{}'", cluster_name);
+            }
+            if !matches!(options.replication_factor, Unchanged) {
+                coord_bail!(
+                    "cannot change REPLICATION FACTOR of sealed cluster '{}'",
+                    cluster_name
+                );
+            }
+            if !matches!(options.availability_zones, Unchanged) {
+                coord_bail!(
+                    "cannot change AVAILABILITY ZONES of sealed cluster '{}'",
+                    cluster_name
+                );
+            }
+            if !matches!(options.schedule, Unchanged) {
+                coord_bail!(
+                    "cannot change SCHEDULE of sealed cluster '{}'",
+                    cluster_name
+                );
+            }
         }
 
         if new_config == config {
@@ -1039,6 +1068,10 @@ impl Coordinator {
             if billed_as.is_some() && !*internal {
                 coord_bail!("must specify INTERNAL when specifying BILLED AS");
             }
+        }
+
+        if cluster.config.sealed {
+            coord_bail!("cannot create replica on sealed cluster '{}'", cluster.name);
         }
 
         // Replicas have the same owner as their cluster.
