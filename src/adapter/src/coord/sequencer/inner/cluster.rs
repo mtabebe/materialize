@@ -34,7 +34,7 @@ use mz_sql::plan::{
     ComputeReplicaIntrospectionConfig, CreateClusterManagedPlan, CreateClusterPlan,
     CreateClusterReplicaPlan, CreateClusterUnmanagedPlan, CreateClusterVariant, PlanClusterOption,
 };
-use mz_sql::plan::{AlterClusterPlan, AlterClusterReoptimizePlan, OnTimeoutAction};
+use mz_sql::plan::{AlterClusterPlan, OnTimeoutAction};
 use mz_sql::session::metadata::SessionMetadata;
 use mz_sql::session::vars::{MAX_REPLICAS_PER_CLUSTER, SystemVars, Var};
 use tracing::{Instrument, Span, debug};
@@ -125,24 +125,6 @@ impl Coordinator {
     ) {
         let stage = return_if_err!(self.alter_cluster_validate(ctx.session(), plan).await, ctx);
         self.sequence_staged(ctx, Span::current(), stage).await;
-    }
-
-    pub(crate) fn sequence_alter_cluster_reoptimize(
-        &self,
-        plan: AlterClusterReoptimizePlan,
-    ) -> Result<ExecuteResponse, AdapterError> {
-        let cluster = self.catalog().get_cluster(plan.id);
-        if !cluster.config.sealed {
-            coord_bail!(
-                "cannot reoptimize unsealed cluster '{}'; seal it first with ALTER CLUSTER {} SET (SEALED)",
-                plan.name,
-                plan.name
-            );
-        }
-
-        // TODO: Implement arrangement inventory, duplicate detection, and
-        // re-rendering. For now, this is a validated no-op.
-        Ok(ExecuteResponse::AlteredObject(ObjectType::Cluster))
     }
 
     #[instrument]

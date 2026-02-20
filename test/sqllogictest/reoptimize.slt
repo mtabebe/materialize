@@ -51,3 +51,145 @@ ALTER CLUSTER nonexistent_cluster REOPTIMIZE
 statement ok
 DROP CLUSTER test_reoptimize CASCADE
 
+# =============================================================================
+# REOPTIMIZE shared index creation
+# =============================================================================
+
+# Create tables and cluster for arrangement sharing tests
+statement ok
+CREATE TABLE customers (id INT, name TEXT)
+
+statement ok
+CREATE TABLE orders (id INT, customer_id INT, amount INT)
+
+statement ok
+CREATE CLUSTER test_reopt_sharing SIZE 'scale=1,workers=1'
+
+# Create two MVs that join on the same key — both will internally
+# arrange `customers` by `id` and `orders` by `customer_id`.
+statement ok
+CREATE MATERIALIZED VIEW mv_total_spend IN CLUSTER test_reopt_sharing AS
+  SELECT c.name, SUM(o.amount) AS total
+  FROM orders o JOIN customers c ON o.customer_id = c.id
+  GROUP BY c.name
+
+statement ok
+CREATE MATERIALIZED VIEW mv_order_count IN CLUSTER test_reopt_sharing AS
+  SELECT c.name, COUNT(*) AS cnt
+  FROM orders o JOIN customers c ON o.customer_id = c.id
+  GROUP BY c.name
+
+# No reoptimize indexes on the cluster before REOPTIMIZE
+query I
+SELECT COUNT(*) FROM mz_indexes WHERE cluster_id = (SELECT id FROM mz_clusters WHERE name = 'test_reopt_sharing') AND name LIKE 'mz_reoptimize_%'
+----
+0
+
+# Seal and reoptimize
+statement ok
+ALTER CLUSTER test_reopt_sharing SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_reopt_sharing REOPTIMIZE
+
+# After REOPTIMIZE, shared indexes should have been created for the
+# duplicate arrangements. Verify by checking for mz_reoptimize_ prefix.
+query B
+SELECT COUNT(*) > 0 FROM mz_indexes WHERE cluster_id = (SELECT id FROM mz_clusters WHERE name = 'test_reopt_sharing') AND name LIKE 'mz_reoptimize_%'
+----
+true
+
+# REOPTIMIZE is idempotent — running again succeeds and does not error
+statement ok
+ALTER CLUSTER test_reopt_sharing REOPTIMIZE
+
+# Cleanup
+statement ok
+DROP CLUSTER test_reopt_sharing CASCADE
+
+statement ok
+DROP TABLE customers CASCADE
+
+statement ok
+DROP TABLE orders CASCADE
+
+# =============================================================================
+# REOPTIMIZE MV correctness after re-optimization (Phase 4)
+# =============================================================================
+
+# Create tables with data *before* sealing so that MVs have results to verify.
+statement ok
+CREATE TABLE cust (id INT, name TEXT)
+
+statement ok
+INSERT INTO cust VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+
+statement ok
+CREATE TABLE ord (id INT, customer_id INT, amount INT)
+
+statement ok
+INSERT INTO ord VALUES (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300), (5, 3, 150)
+
+statement ok
+CREATE CLUSTER test_reopt_mv SIZE 'scale=1,workers=1'
+
+# Create two MVs that join on the same key — both will internally
+# arrange `cust` by `id` and `ord` by `customer_id`.
+statement ok
+CREATE MATERIALIZED VIEW mv_spend IN CLUSTER test_reopt_mv AS
+  SELECT c.name, SUM(o.amount) AS total
+  FROM ord o JOIN cust c ON o.customer_id = c.id
+  GROUP BY c.name
+
+statement ok
+CREATE MATERIALIZED VIEW mv_cnt IN CLUSTER test_reopt_mv AS
+  SELECT c.name, COUNT(*) AS cnt
+  FROM ord o JOIN cust c ON o.customer_id = c.id
+  GROUP BY c.name
+
+# Verify MV results before reoptimize
+query TI rowsort
+SELECT * FROM mv_spend
+----
+Alice  300
+Bob  50
+Charlie  450
+
+query TI rowsort
+SELECT * FROM mv_cnt
+----
+Alice  2
+Bob  1
+Charlie  2
+
+# Seal and reoptimize (creates shared indexes + re-optimizes MV dataflows)
+statement ok
+ALTER CLUSTER test_reopt_mv SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_reopt_mv REOPTIMIZE
+
+# Verify MV results are still correct after re-optimization
+query TI rowsort
+SELECT * FROM mv_spend
+----
+Alice  300
+Bob  50
+Charlie  450
+
+query TI rowsort
+SELECT * FROM mv_cnt
+----
+Alice  2
+Bob  1
+Charlie  2
+
+# Cleanup
+statement ok
+DROP CLUSTER test_reopt_mv CASCADE
+
+statement ok
+DROP TABLE cust CASCADE
+
+statement ok
+DROP TABLE ord CASCADE

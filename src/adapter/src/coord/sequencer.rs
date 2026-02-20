@@ -472,7 +472,9 @@ impl Coordinator {
                     self.sequence_alter_cluster_staged(ctx, plan).await;
                 }
                 Plan::AlterClusterReoptimize(plan) => {
-                    let result = self.sequence_alter_cluster_reoptimize(plan);
+                    let result = self
+                        .sequence_alter_cluster_reoptimize(&mut ctx, plan)
+                        .await;
                     ctx.retire(result);
                 }
                 Plan::AlterClusterRename(plan) => {

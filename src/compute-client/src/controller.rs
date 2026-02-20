@@ -837,6 +837,101 @@ where
         Ok(())
     }
 
+    /// Atomically removes old export collections and creates a new dataflow.
+    ///
+    /// This is used during re-optimization: the old MV dataflow's export collections are removed
+    /// from the inner instance before the new dataflow is created, avoiding the panic in
+    /// `add_collection` when a collection with the same `GlobalId` already exists.
+    pub fn replan_dataflow(
+        &mut self,
+        instance_id: ComputeInstanceId,
+        old_export_ids: Vec<GlobalId>,
+        mut dataflow: DataflowDescription<mz_compute_types::plan::Plan<T>, (), T>,
+        subscribe_target_replica: Option<ReplicaId>,
+    ) -> Result<(), DataflowCreationError> {
+        use DataflowCreationError::*;
+
+        let instance = self.instance(instance_id)?;
+
+        // Validation: target replica
+        if let Some(replica_id) = subscribe_target_replica {
+            if !instance.replicas.contains(&replica_id) {
+                return Err(ReplicaMissing(replica_id));
+            }
+        }
+
+        // Validation: as_of
+        let as_of = dataflow.as_of.as_ref().ok_or(MissingAsOf)?;
+        if as_of.is_empty() && dataflow.subscribe_ids().next().is_some() {
+            return Err(EmptyAsOfForSubscribe);
+        }
+        if as_of.is_empty() && dataflow.copy_to_ids().next().is_some() {
+            return Err(EmptyAsOfForCopyTo);
+        }
+
+        // Validation: input collections
+        let storage_ids = dataflow.imported_source_ids().collect();
+        let mut import_read_holds = self.storage_collections.acquire_read_holds(storage_ids)?;
+        for id in dataflow.imported_index_ids() {
+            let read_hold = instance.acquire_read_hold(id)?;
+            import_read_holds.push(read_hold);
+        }
+        for hold in &import_read_holds {
+            if PartialOrder::less_than(as_of, hold.since()) {
+                return Err(SinceViolation(hold.id()));
+            }
+        }
+
+        // Validation: storage sink collections
+        for id in dataflow.persist_sink_ids() {
+            if self.storage_collections.check_exists(id).is_err() {
+                return Err(CollectionMissing(id));
+            }
+        }
+        let time_dependence = self
+            .determine_time_dependence(instance_id, &dataflow)
+            .expect("must exist");
+
+        let instance = self.instance_mut(instance_id).expect("validated");
+
+        // Remove old export collections from outer state.
+        for id in &old_export_ids {
+            instance.collections.remove(id);
+        }
+
+        // Insert new export collections into outer state.
+        let mut shared_collection_state = BTreeMap::new();
+        for id in dataflow.export_ids() {
+            let shared = SharedCollectionState::new(as_of.clone());
+            let collection = Collection {
+                write_only: dataflow.sink_exports.contains_key(&id),
+                compute_dependencies: dataflow.imported_index_ids().collect(),
+                shared: shared.clone(),
+                time_dependence: time_dependence.clone(),
+            };
+            instance.collections.insert(id, collection);
+            shared_collection_state.insert(id, shared);
+        }
+
+        dataflow.time_dependence = time_dependence;
+
+        // Atomically remove old collections and create new dataflow in the inner instance.
+        instance.call(move |i| {
+            for id in old_export_ids {
+                i.remove_collection(id);
+            }
+            i.create_dataflow(
+                dataflow,
+                import_read_holds,
+                subscribe_target_replica,
+                shared_collection_state,
+            )
+            .expect("validated")
+        });
+
+        Ok(())
+    }
+
     /// Drop the read capability for the given collections and allow their resources to be
     /// reclaimed.
     pub fn drop_collections(

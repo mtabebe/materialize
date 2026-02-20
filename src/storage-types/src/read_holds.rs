@@ -162,6 +162,16 @@ impl<T: TimelyTimestamp> ReadHold<T> {
         self.try_downgrade(Antichain::new())
             .expect("known to succeed");
     }
+
+    /// Forget this read hold without sending any changes through the channel.
+    ///
+    /// This silently clears the held `since` so that the `Drop` impl becomes
+    /// a no-op.  The caller is responsible for accounting the capability change
+    /// through some other mechanism (e.g. directly updating the
+    /// `SharedCollectionState`).
+    pub fn forget(&mut self) {
+        std::mem::take(&mut self.since);
+    }
 }
 
 impl<T: TimelyTimestamp> Clone for ReadHold<T> {
