@@ -146,7 +146,7 @@ use crate::plan::statement::{StatementContext, StatementDesc, scl};
 use crate::plan::typeconv::CastContext;
 use crate::plan::with_options::{OptionalDuration, OptionalString, TryFromValue};
 use crate::plan::{
-    AlterClusterPlan, AlterClusterPlanStrategy, AlterClusterRenamePlan,
+    AlterClusterPlan, AlterClusterPlanStrategy, AlterClusterRenamePlan, AlterClusterReoptimizePlan,
     AlterClusterReplicaRenamePlan, AlterClusterSwapPlan, AlterConnectionPlan, AlterItemRenamePlan,
     AlterMaterializedViewApplyReplacementPlan, AlterNetworkPolicyPlan, AlterNoopPlan,
     AlterOptionParameter, AlterRetainHistoryPlan, AlterRolePlan, AlterSchemaRenamePlan,
@@ -6440,6 +6440,12 @@ pub fn plan_alter_cluster(
                 }
                 (None, None) => {}
             }
+        }
+        AlterClusterAction::Reoptimize => {
+            return Ok(Plan::AlterClusterReoptimize(AlterClusterReoptimizePlan {
+                id: cluster.id(),
+                name: cluster.name().to_string(),
+            }));
         }
         AlterClusterAction::ResetOptions(reset_options) => {
             use AlterOptionParameter::Reset;

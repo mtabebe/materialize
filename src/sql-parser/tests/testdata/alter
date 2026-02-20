@@ -98,9 +98,23 @@ ALTER CLUSTER foo SWAP WITH bar
 AlterObjectSwap(AlterObjectSwapStatement { object_type: Cluster, name_a: Cluster(Ident("foo")), name_b: Ident("bar") })
 
 parse-statement
+ALTER CLUSTER foo REOPTIMIZE
+----
+ALTER CLUSTER foo REOPTIMIZE
+=>
+AlterCluster(AlterClusterStatement { if_exists: false, name: Ident("foo"), action: Reoptimize })
+
+parse-statement
+ALTER CLUSTER IF EXISTS foo REOPTIMIZE
+----
+ALTER CLUSTER IF EXISTS foo REOPTIMIZE
+=>
+AlterCluster(AlterClusterStatement { if_exists: true, name: Ident("foo"), action: Reoptimize })
+
+parse-statement
 ALTER CLUSTER cluster.too_many SWAP WITH cluster.this_wont_work
 ----
-error: Expected one of OWNER or RENAME or RESET or SET or SWAP, found dot
+error: Expected one of OWNER or RENAME or REOPTIMIZE or RESET or SET or SWAP, found dot
 ALTER CLUSTER cluster.too_many SWAP WITH cluster.this_wont_work
                      ^
 
