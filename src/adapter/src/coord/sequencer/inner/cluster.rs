@@ -261,6 +261,12 @@ impl Coordinator {
             Unchanged => {}
         }
 
+        match &options.sealed {
+            Set(sealed) => new_config.sealed = *sealed,
+            Reset => new_config.sealed = false,
+            Unchanged => {}
+        }
+
         if new_config == config {
             return Ok(StageResult::Response(ExecuteResponse::AlteredObject(
                 ObjectType::Cluster,
@@ -468,6 +474,7 @@ impl Coordinator {
             config: ClusterConfig {
                 variant: ClusterVariant::Managed(new_config),
                 workload_class: workload_class.clone(),
+                sealed: false,
             },
         });
         self.catalog_transact(Some(session), ops).await?;
@@ -632,6 +639,7 @@ impl Coordinator {
         let config = ClusterConfig {
             variant: cluster_variant,
             workload_class,
+            sealed: false,
         };
         let ops = vec![catalog::Op::CreateCluster {
             id,

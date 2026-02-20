@@ -410,6 +410,7 @@ impl CatalogState {
         }
         packer.push(Datum::from(introspection_debugging));
         packer.push(Datum::from(introspection_interval));
+        packer.push(Datum::from(cluster.config.sealed));
 
         let mut updates = Vec::new();
 

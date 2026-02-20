@@ -795,6 +795,7 @@ fn default_cluster_config(args: &BootstrapArgs) -> Result<ClusterConfig, Catalog
             schedule: Default::default(),
         }),
         workload_class: None,
+        sealed: false,
     })
 }
 
