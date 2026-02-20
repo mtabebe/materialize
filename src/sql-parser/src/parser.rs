@@ -4569,8 +4569,10 @@ impl<'a> Parser<'a> {
             MANAGED,
             REPLICAS,
             REPLICATION,
+            SEALED,
             SIZE,
             SCHEDULE,
+            UNSEALED,
             WORKLOAD,
         ])?;
         let name = match option {
@@ -4590,8 +4592,10 @@ impl<'a> Parser<'a> {
                 self.expect_keyword(FACTOR)?;
                 ClusterOptionName::ReplicationFactor
             }
+            SEALED => ClusterOptionName::Sealed,
             SIZE => ClusterOptionName::Size,
             SCHEDULE => ClusterOptionName::Schedule,
+            UNSEALED => ClusterOptionName::Unsealed,
             WORKLOAD => {
                 self.expect_keyword(CLASS)?;
                 ClusterOptionName::WorkloadClass

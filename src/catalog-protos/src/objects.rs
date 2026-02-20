@@ -1151,6 +1151,7 @@ pub enum ClusterSchedule {
 pub struct ClusterConfig {
     pub workload_class: Option<String>,
     pub variant: ClusterVariant,
+    pub sealed: bool,
 }
 
 #[derive(
