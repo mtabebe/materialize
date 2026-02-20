@@ -127,6 +127,7 @@ mod create_materialized_view;
 mod create_view;
 mod explain_timestamp;
 mod peek;
+mod reoptimize;
 mod secret;
 mod subscribe;
 

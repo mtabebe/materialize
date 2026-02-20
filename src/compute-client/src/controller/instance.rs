@@ -41,14 +41,14 @@ use mz_storage_client::controller::{IntrospectionType, WallclockLag, WallclockLa
 use mz_storage_types::read_holds::{self, ReadHold};
 use mz_storage_types::read_policy::ReadPolicy;
 use thiserror::Error;
-use timely::PartialOrder;
 use timely::progress::frontier::MutableAntichain;
 use timely::progress::{Antichain, ChangeBatch, Timestamp};
+use timely::PartialOrder;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::controller::error::{
-    CollectionMissing, ERROR_TARGET_REPLICA_FAILED, HydrationCheckBadTarget,
+    CollectionMissing, HydrationCheckBadTarget, ERROR_TARGET_REPLICA_FAILED,
 };
 use crate::controller::instance_client::PeekError;
 use crate::controller::replica::{ReplicaClient, ReplicaConfig};
@@ -310,7 +310,43 @@ impl<T: ComputeControllerTimestamp> Instance<T> {
         }
     }
 
-    fn remove_collection(&mut self, id: GlobalId) {
+    pub(crate) fn remove_collection(&mut self, id: GlobalId) {
+        if let Some(collection) = self.collections.get_mut(&id) {
+            // Synchronously apply negative capability changes for the
+            // implied and warmup read holds directly to the
+            // SharedCollectionState, then defuse the holds so their
+            // Drop impls don't queue duplicate (and now stale) changes
+            // through the command channel.  This is critical when the
+            // collection will be immediately replaced (e.g. during
+            // replan_dataflow): without this, the async release would
+            // apply old-timestamp decrements against the NEW
+            // collection's SharedCollectionState and trip the negative-
+            // capability assertion.
+            let mut changes: ChangeBatch<T> = ChangeBatch::new();
+            changes.extend(
+                collection
+                    .implied_read_hold
+                    .since()
+                    .iter()
+                    .map(|t| (t.clone(), -1)),
+            );
+            changes.extend(
+                collection
+                    .warmup_read_hold
+                    .since()
+                    .iter()
+                    .map(|t| (t.clone(), -1)),
+            );
+            collection.shared.lock_read_capabilities(|caps| {
+                caps.update_iter(changes.drain());
+            });
+            // Defuse holds so Drop is a no-op.
+            collection.implied_read_hold.forget();
+            collection.warmup_read_hold.forget();
+        }
+
+        // Update introspection.
+        self.report_dependency_updates(id, Diff::MINUS_ONE);
         // Remove per-replica collection state.
         for replica in self.replicas.values_mut() {
             replica.remove_collection(id);

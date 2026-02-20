@@ -3850,6 +3850,30 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Like `try_ship_dataflow`, but atomically removes old export collections before
+    /// creating the new dataflow. Used during re-optimization to replace MV dataflows
+    /// without triggering the `add_collection` panic for duplicate GlobalIds.
+    pub(crate) async fn try_replan_dataflow(
+        &mut self,
+        old_export_ids: Vec<GlobalId>,
+        dataflow: DataflowDescription<Plan>,
+        instance: ComputeInstanceId,
+        subscribe_target_replica: Option<ReplicaId>,
+    ) -> Result<(), DataflowCreationError> {
+        // We must only install read policies for indexes, not for sinks.
+        // Sinks are write-only compute collections that don't have read policies.
+        let export_ids = dataflow.exported_index_ids().collect();
+
+        self.controller
+            .compute
+            .replan_dataflow(instance, old_export_ids, dataflow, subscribe_target_replica)?;
+
+        self.initialize_compute_read_policies(export_ids, instance, CompactionWindow::Default)
+            .await;
+
+        Ok(())
+    }
+
     /// Call into the compute controller to allow writes to the specified IDs
     /// from the specified instance. Calling this function multiple times and
     /// calling it on a read-only instance has no effect.
