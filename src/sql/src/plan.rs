@@ -175,6 +175,7 @@ pub enum Plan {
     ExplainSinkSchema(ExplainSinkSchemaPlan),
     Insert(InsertPlan),
     AlterCluster(AlterClusterPlan),
+    AlterClusterReoptimize(AlterClusterReoptimizePlan),
     AlterClusterSwap(AlterClusterSwapPlan),
     AlterNoop(AlterNoopPlan),
     AlterSetCluster(AlterSetClusterPlan),
@@ -220,7 +221,11 @@ impl Plan {
     /// [`PlanKind`].
     pub fn generated_from(stmt: &StatementKind) -> &'static [PlanKind] {
         match stmt {
-            StatementKind::AlterCluster => &[PlanKind::AlterNoop, PlanKind::AlterCluster],
+            StatementKind::AlterCluster => &[
+                PlanKind::AlterNoop,
+                PlanKind::AlterCluster,
+                PlanKind::AlterClusterReoptimize,
+            ],
             StatementKind::AlterConnection => &[PlanKind::AlterNoop, PlanKind::AlterConnection],
             StatementKind::AlterDefaultPrivileges => &[PlanKind::AlterDefaultPrivileges],
             StatementKind::AlterIndex => &[PlanKind::AlterRetainHistory, PlanKind::AlterNoop],
@@ -416,6 +421,7 @@ impl Plan {
                 ObjectType::NetworkPolicy => "alter network policy",
             },
             Plan::AlterCluster(_) => "alter cluster",
+            Plan::AlterClusterReoptimize(_) => "alter cluster reoptimize",
             Plan::AlterClusterRename(_) => "alter cluster rename",
             Plan::AlterClusterSwap(_) => "alter cluster swap",
             Plan::AlterClusterReplicaRename(_) => "alter cluster replica rename",
@@ -1277,6 +1283,12 @@ pub struct AlterClusterPlan {
     pub name: String,
     pub options: PlanClusterOption,
     pub strategy: AlterClusterPlanStrategy,
+}
+
+#[derive(Debug)]
+pub struct AlterClusterReoptimizePlan {
+    pub id: ClusterId,
+    pub name: String,
 }
 
 #[derive(Debug)]

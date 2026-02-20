@@ -113,6 +113,7 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::AlterClusterSwap(_)
         | Plan::AlterClusterReplicaRename(_)
         | Plan::AlterCluster(_)
+        | Plan::AlterClusterReoptimize(_)
         | Plan::AlterConnection(_)
         | Plan::AlterSource(_)
         | Plan::AlterSetCluster(_)

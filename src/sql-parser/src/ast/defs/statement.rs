@@ -2471,6 +2471,7 @@ pub enum AlterClusterAction<T: AstInfo> {
         with_options: Vec<ClusterAlterOption<T>>,
     },
     ResetOptions(Vec<ClusterOptionName>),
+    Reoptimize,
 }
 
 /// `ALTER CLUSTER .. SET ...`
@@ -2510,6 +2511,9 @@ impl<T: AstInfo> AstDisplay for AlterClusterStatement<T> {
                 f.write_str("RESET (");
                 f.write_node(&display::comma_separated(options));
                 f.write_str(")");
+            }
+            AlterClusterAction::Reoptimize => {
+                f.write_str("REOPTIMIZE");
             }
         }
     }

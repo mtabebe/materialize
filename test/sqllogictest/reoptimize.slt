@@ -1,0 +1,53 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for the REOPTIMIZE command on sealed clusters.
+
+mode cockroach
+
+# =============================================================================
+# REOPTIMIZE command basics
+# =============================================================================
+
+# Create a fresh cluster for reoptimize tests
+statement ok
+CREATE CLUSTER test_reoptimize SIZE 'scale=1,workers=1'
+
+# --- REOPTIMIZE requires sealed cluster ---
+
+statement error cannot reoptimize unsealed cluster 'test_reoptimize'
+ALTER CLUSTER test_reoptimize REOPTIMIZE
+
+# --- REOPTIMIZE on sealed cluster succeeds ---
+
+statement ok
+ALTER CLUSTER test_reoptimize SET (SEALED)
+
+statement ok
+ALTER CLUSTER test_reoptimize REOPTIMIZE
+
+# --- REOPTIMIZE is idempotent ---
+
+statement ok
+ALTER CLUSTER test_reoptimize REOPTIMIZE
+
+# --- REOPTIMIZE with IF EXISTS on nonexistent cluster is a no-op ---
+
+statement ok
+ALTER CLUSTER IF EXISTS nonexistent_cluster REOPTIMIZE
+
+# --- REOPTIMIZE on nonexistent cluster errors ---
+
+statement error unknown cluster 'nonexistent_cluster'
+ALTER CLUSTER nonexistent_cluster REOPTIMIZE
+
+# Cleanup reoptimize test cluster
+statement ok
+DROP CLUSTER test_reoptimize CASCADE
+

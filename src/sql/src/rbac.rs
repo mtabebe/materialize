@@ -1034,6 +1034,12 @@ fn generate_rbac_requirements(
             item_usage: &CREATE_ITEM_USAGE,
             ..Default::default()
         },
+        Plan::AlterClusterReoptimize(plan::AlterClusterReoptimizePlan { id, name: _ }) => {
+            RbacRequirements {
+                ownership: vec![ObjectId::Cluster(*id)],
+                ..Default::default()
+            }
+        }
         Plan::AlterSetCluster(plan::AlterSetClusterPlan { id, set_cluster }) => RbacRequirements {
             ownership: vec![ObjectId::Item(*id)],
             privileges: vec![(

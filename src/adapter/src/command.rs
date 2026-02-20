@@ -840,6 +840,7 @@ impl ExecuteResponse {
             AlterClusterRename
             | AlterClusterSwap
             | AlterCluster
+            | AlterClusterReoptimize
             | AlterClusterReplicaRename
             | AlterOwner
             | AlterItemRename
