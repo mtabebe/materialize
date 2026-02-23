@@ -22,7 +22,7 @@ use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
 use mz_repr::adt::mz_acl_item::{AclItem, MzAclItem};
 use mz_repr::adt::pg_legacy_name::NAME_MAX_BYTES;
-use mz_repr::adt::range::{Range, RangeInner, RangeLowerBound, RangeUpperBound};
+use mz_repr::adt::range::{Range, RangeInner};
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::strconv::{self, Nestable};
 use mz_repr::{Datum, RowArena, RowPacker, RowRef, SqlRelationType, SqlScalarType};
@@ -119,37 +119,6 @@ pub enum Value {
     /// A list of privileges granted to a user that uses [`mz_repr::adt::system::Oid`]s for role
     /// references. This type is used primarily for compatibility with PostgreSQL.
     AclItem(AclItem),
-}
-
-/// Converts a `Range<Box<Value>>` into a `Range<Datum>` by converting each bound with `into_datum`.
-fn value_range_to_datum_range<'a>(
-    range: Range<Box<Value>>,
-    buf: &'a RowArena,
-    element_type: &Type,
-) -> Result<Range<Datum<'a>>, IntoDatumError> {
-    match range.inner {
-        None => Ok(Range::new(None)),
-        Some(RangeInner { lower, upper }) => {
-            let lower_datum = lower
-                .bound
-                .map(|elem| elem.into_datum(buf, element_type))
-                .transpose()?;
-            let upper_datum = upper
-                .bound
-                .map(|elem| elem.into_datum(buf, element_type))
-                .transpose()?;
-            Ok(Range::new(Some((
-                RangeLowerBound {
-                    inclusive: lower.inclusive,
-                    bound: lower_datum,
-                },
-                RangeUpperBound {
-                    inclusive: upper.inclusive,
-                    bound: upper_datum,
-                },
-            ))))
-        }
-    }
 }
 
 impl Value {
@@ -357,7 +326,7 @@ impl Value {
                     Type::Range { element_type } => &*element_type,
                     _ => panic!("Value::Range should have type Type::Range. Found {:?}", typ),
                 };
-                let range = value_range_to_datum_range(range, buf, elem_pg_type)?;
+                let range = range.try_into_bounds(|elem| elem.into_datum(buf, elem_pg_type))?;
                 buf.try_make_datum(|packer| packer.push_range(range).map_err(IntoDatumError::from))?
             }
             Value::MzAclItem(mz_acl_item) => Datum::MzAclItem(mz_acl_item),
@@ -846,7 +815,8 @@ impl Value {
                 // TODO: We should be able to push ranges without scratch space, but that requires
                 // a different `push_range` API.
                 let buf = RowArena::new();
-                let range = value_range_to_datum_range(range, &buf, element_type)
+                let range = range
+                    .try_into_bounds(|elem| elem.into_datum(&buf, element_type))
                     .map_err(Box::<dyn Error + Sync + Send>::from)?;
                 packer
                     .push_range(range)
