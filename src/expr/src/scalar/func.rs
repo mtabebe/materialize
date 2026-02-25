@@ -1732,7 +1732,7 @@ fn jsonb_get_path_stringify<'a>(
     jsonb_stringify(json.into_datum(), temp_storage)
 }
 
-#[sqlfunc(is_infix_op = true, sqlname = "?", propagates_nulls = true)]
+#[sqlfunc(is_infix_op = true, sqlname = "?")]
 fn jsonb_contains_string<'a>(a: JsonbRef<'a>, k: &str) -> bool {
     // https://www.postgresql.org/docs/current/datatype-json.html#JSON-CONTAINMENT
     // When the left operand is SQL NULL (NULL::jsonb), JsonbRef::try_from_result rejects it,
