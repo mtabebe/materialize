@@ -162,6 +162,14 @@ pub const ENABLE_S3_TABLES_REGION_CHECK: Config<bool> = Config::new(
     "Whether to enforce that S3 Tables connections are in the same region as the environment.",
 );
 
+/// Number of user IDs to pre-allocate in a batch. Pre-allocating IDs avoids
+/// a persist write + oracle call per DDL statement.
+pub const USER_ID_POOL_BATCH_SIZE: Config<u32> = Config::new(
+    "user_id_pool_batch_size",
+    512,
+    "Number of user IDs to pre-allocate in a batch for DDL operations.",
+);
+
 /// Adds the full set of all adapter `Config`s.
 pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
     configs
@@ -186,4 +194,5 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&CONSTRAINT_BASED_TIMESTAMP_SELECTION)
         .add(&PERSIST_FAST_PATH_ORDER)
         .add(&ENABLE_S3_TABLES_REGION_CHECK)
+        .add(&USER_ID_POOL_BATCH_SIZE)
 }
