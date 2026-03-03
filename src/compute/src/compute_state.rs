@@ -527,13 +527,25 @@ impl<'a, A: Allocate + 'static> ActiveComputeState<'a, A> {
                 lower: as_of.clone(),
             });
 
-            let existing = self.compute_state.collections.insert(object_id, collection);
-            if existing.is_some() {
-                error!(
+            if self.compute_state.collections.contains_key(&object_id) {
+                // A collection with this ID already exists and is being
+                // replaced (e.g. during REOPTIMIZE re-planning of an MV).
+                // Clean up the old collection's resources before inserting
+                // the replacement.
+                tracing::info!(
                     id = ?object_id,
-                    "existing collection for newly created dataflow",
+                    "replacing existing collection for re-planned dataflow",
                 );
+                // Remove old trace (index arrangement) if any.
+                self.compute_state.traces.remove(&object_id);
+                // Remove from suspended collections if waiting.
+                self.compute_state.suspended_collections.remove(&object_id);
+                // Remove the old collection state; dropping its
+                // Rc<DataflowIndex> may also drop the old timely dataflow
+                // if this was the last export referencing it.
+                self.compute_state.collections.remove(&object_id);
             }
+            self.compute_state.collections.insert(object_id, collection);
         }
 
         let (start_signal, suspension_token) = StartSignal::new();
