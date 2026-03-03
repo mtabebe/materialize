@@ -611,6 +611,7 @@ UNINTERESTING_SYSTEM_PARAMETERS = [
     "oidc_issuer",
     "oidc_audience",
     "oidc_authentication_claim",
+    "user_id_pool_batch_size",
 ]
 
 
