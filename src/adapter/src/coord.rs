@@ -306,7 +306,6 @@ impl IdPool {
     }
 }
 
-
 #[derive(Debug)]
 pub enum Message {
     Command(OpenTelemetryContext, Command),

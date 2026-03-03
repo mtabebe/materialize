@@ -671,7 +671,7 @@ impl Coordinator {
     ) {
         let (connection_id, connection_gid) = match self.allocate_user_id().await {
             Ok(item_id) => item_id,
-            Err(err) => return ctx.retire(Err(err.into())),
+            Err(err) => return ctx.retire(Err(err)),
         };
 
         match &plan.connection.details {
@@ -1058,8 +1058,7 @@ impl Coordinator {
         } = plan;
 
         // First try to allocate an ID and an OID. If either fails, we're done.
-        let (item_id, global_id) =
-            return_if_err!(self.allocate_user_id().await, ctx);
+        let (item_id, global_id) = return_if_err!(self.allocate_user_id().await, ctx);
 
         let catalog_sink = Sink {
             create_sql: sink.create_sql,
