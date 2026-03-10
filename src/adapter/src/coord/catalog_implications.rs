@@ -81,6 +81,7 @@ impl Coordinator {
         &mut self,
         ctx: Option<&mut ExecuteContext>,
         catalog_updates: Vec<ParsedStateUpdate>,
+        catalog_write_ts: Timestamp,
     ) -> Result<(), AdapterError> {
         let start = Instant::now();
 
@@ -143,6 +144,7 @@ impl Coordinator {
             catalog_implications.into_iter().collect_vec(),
             cluster_commands.into_iter().collect_vec(),
             cluster_replica_commands.into_iter().collect_vec(),
+            catalog_write_ts,
         )
         .await?;
 
@@ -160,6 +162,7 @@ impl Coordinator {
         implications: Vec<(CatalogItemId, CatalogImplication)>,
         cluster_commands: Vec<(ClusterId, CatalogImplication)>,
         cluster_replica_commands: Vec<((ClusterId, ReplicaId), CatalogImplication)>,
+        catalog_write_ts: Timestamp,
     ) -> Result<(), AdapterError> {
         let mut tables_to_drop = BTreeSet::new();
         let mut sources_to_drop = vec![];
@@ -226,7 +229,10 @@ impl Coordinator {
                 CatalogImplication::Table(CatalogImplicationKind::Altered {
                     prev: prev_table,
                     new: new_table,
-                }) => self.handle_alter_table(prev_table, new_table).await?,
+                }) => {
+                    self.handle_alter_table(prev_table, new_table, catalog_write_ts)
+                        .await?
+                }
 
                 CatalogImplication::Table(CatalogImplicationKind::Dropped(table, full_name)) => {
                     let global_ids = table.global_ids();
@@ -572,8 +578,12 @@ impl Coordinator {
         // Have to create sources first and then tables, because tables within
         // one transaction can depend on sources.
         if !table_collections_to_create.is_empty() {
-            self.create_table_collections(table_collections_to_create, execution_timestamps_to_set)
-                .await?;
+            self.create_table_collections(
+                table_collections_to_create,
+                execution_timestamps_to_set,
+                catalog_write_ts,
+            )
+            .await?;
         }
         // It is _very_ important that we only initialize read policies after we
         // have created all the sources/collections. Some of the sources created
@@ -919,6 +929,7 @@ impl Coordinator {
         &mut self,
         table_collections_to_create: BTreeMap<GlobalId, CollectionDescription<Timestamp>>,
         execution_timestamps_to_set: BTreeSet<StatementLoggingId>,
+        _catalog_write_ts: Timestamp,
     ) -> Result<(), AdapterError> {
         // If we have tables, determine the initial validity for the table.
         let register_ts = self.get_local_write_ts().await.timestamp;
@@ -1144,6 +1155,7 @@ impl Coordinator {
         &mut self,
         prev_table: Table,
         new_table: Table,
+        _catalog_write_ts: Timestamp,
     ) -> Result<(), AdapterError> {
         let existing_gid = prev_table.global_id_writes();
         let new_gid = new_table.global_id_writes();
@@ -1170,6 +1182,8 @@ impl Coordinator {
             .desc
             .at_version(RelationVersionSelector::Specific(new_version));
 
+        // Get a fresh write timestamp — can't reuse catalog_write_ts because
+        // group_commit advances the txns frontier past it.
         let register_ts = self.get_local_write_ts().await.timestamp;
 
         // Alter the table description, creating a "new" collection.

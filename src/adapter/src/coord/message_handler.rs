@@ -260,7 +260,7 @@ impl Coordinator {
             .collect();
 
         match self.catalog_transact_inner(None, ops).await {
-            Ok((table_updates, catalog_updates)) => {
+            Ok((table_updates, catalog_updates, _catalog_write_ts)) => {
                 assert!(
                     catalog_updates.is_empty(),
                     "applying builtin table updates does not produce catalog implications"

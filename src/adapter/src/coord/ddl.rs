@@ -102,14 +102,14 @@ impl Coordinator {
     {
         let start = Instant::now();
 
-        let (table_updates, catalog_updates) = self
+        let (table_updates, catalog_updates, catalog_write_ts) = self
             .catalog_transact_inner(ctx.as_ref().map(|ctx| ctx.session().conn_id()), ops)
             .await?;
 
         // We can't run this concurrently with the explicit side effects,
         // because both want to borrow self mutably.
         let apply_implications_res = self
-            .apply_catalog_implications(ctx.as_deref_mut(), catalog_updates)
+            .apply_catalog_implications(ctx.as_deref_mut(), catalog_updates, catalog_write_ts)
             .await;
 
         // We would get into an inconsistent state if we updated the catalog but
@@ -164,9 +164,11 @@ impl Coordinator {
 
         let conn_id = conn_id.or_else(|| ctx.as_ref().map(|ctx| ctx.session().conn_id()));
 
-        let (table_updates, catalog_updates) = self.catalog_transact_inner(conn_id, ops).await?;
+        let (table_updates, catalog_updates, catalog_write_ts) =
+            self.catalog_transact_inner(conn_id, ops).await?;
 
-        let apply_catalog_implications_fut = self.apply_catalog_implications(ctx, catalog_updates);
+        let apply_catalog_implications_fut =
+            self.apply_catalog_implications(ctx, catalog_updates, catalog_write_ts);
 
         // Apply catalog implications concurrently with the table updates.
         let (combined_apply_res, ()) = futures::future::join(
@@ -294,7 +296,7 @@ impl Coordinator {
         &mut self,
         conn_id: Option<&ConnectionId>,
         ops: Vec<catalog::Op>,
-    ) -> Result<(BuiltinTableAppendNotify, Vec<ParsedStateUpdate>), AdapterError> {
+    ) -> Result<(BuiltinTableAppendNotify, Vec<ParsedStateUpdate>, Timestamp), AdapterError> {
         if self.controller.read_only() {
             return Err(AdapterError::ReadOnly);
         }
@@ -569,7 +571,7 @@ impl Coordinator {
             }
         }
 
-        Ok((builtin_update_notify, catalog_updates))
+        Ok((builtin_update_notify, catalog_updates, oracle_write_ts))
     }
 
     pub(crate) fn drop_replica(&mut self, cluster_id: ClusterId, replica_id: ReplicaId) {
