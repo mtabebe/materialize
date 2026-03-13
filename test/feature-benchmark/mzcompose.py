@@ -77,6 +77,7 @@ from materialize.feature_benchmark.scenarios.benchmark_main import (
 )
 from materialize.feature_benchmark.scenarios.concurrency import *  # noqa: F401 F403
 from materialize.feature_benchmark.scenarios.customer import *  # noqa: F401 F403
+from materialize.feature_benchmark.scenarios.ddl import *  # noqa: F401 F403
 from materialize.feature_benchmark.scenarios.optbench import *  # noqa: F401 F403
 from materialize.feature_benchmark.scenarios.scale import *  # noqa: F401 F403
 from materialize.feature_benchmark.scenarios.skew import *  # noqa: F401 F403
