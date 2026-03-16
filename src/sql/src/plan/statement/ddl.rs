@@ -4259,12 +4259,12 @@ pub fn plan_create_index(
         Some(kp) => kp.to_vec(),
         None => {
             // `key_parts` is None if we're creating a "default" index.
+            // Use numeric column references directly. Named references would call
+            // get_unambiguous_name per column, which scans all columns — O(n * k)
+            // where k is the number of key columns.
             let key = on_desc.typ().default_key();
             key.iter()
-                .map(|i| match on_desc.get_unambiguous_name(*i) {
-                    Some(n) => Expr::Identifier(vec![n.clone().into()]),
-                    _ => Expr::Value(Value::Number((i + 1).to_string())),
-                })
+                .map(|i| Expr::Value(Value::Number((i + 1).to_string())))
                 .collect()
         }
     };
