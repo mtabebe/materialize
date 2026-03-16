@@ -344,15 +344,15 @@ def launch_cluster(
         for d in descs
     ]
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(
-        asyncio.gather(
+    async def _setup_all():
+        await asyncio.gather(
             *(
                 setup(i, git_rev if d.checkout else "HEAD")
                 for (i, d) in zip(instances, descs)
             )
         )
-    )
+
+    asyncio.run(_setup_all())
 
     hosts_str = "".join(
         f"{i.private_ip_address}\t{d.name}\n" for (i, d) in zip(instances, descs)
