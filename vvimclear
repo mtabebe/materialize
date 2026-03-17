@@ -1,0 +1,24 @@
+[33mdiff --git a/misc/python/materialize/scratch.py b/misc/python/materialize/scratch.py[m
+[33mindex 3663e6abe0..2acae55ff8 100644[m
+[33m--- a/misc/python/materialize/scratch.py[m
+[33m+++ b/misc/python/materialize/scratch.py[m
+[35m@@ -340,15 +340,15 @@[m [mdef launch_cluster([m
+         for d in descs[m
+     ][m
+ [m
+[31m-    loop = asyncio.get_event_loop()[m
+[31m-    loop.run_until_complete([m
+[31m-        asyncio.gather([m
+[32m+[m[32m    async def _setup_all():[m
+[32m+[m[32m        await asyncio.gather([m
+             *([m
+                 setup(i, git_rev if d.checkout else "HEAD")[m
+                 for (i, d) in zip(instances, descs)[m
+             )[m
+         )[m
+[31m-    )[m
+[32m+[m
+[32m+[m[32m    asyncio.run(_setup_all())[m
+ [m
+     hosts_str = "".join([m
+         f"{i.private_ip_address}\t{d.name}\n" for (i, d) in zip(instances, descs)[m

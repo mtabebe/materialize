@@ -2776,6 +2776,111 @@ def workflow_stuck_collection(c: Composition) -> None:
     c.await_mz_deployment_status(DeploymentStatus.IS_LEADER, "mz_new", sleep_time=None)
 
 
+def workflow_repro_ddl_detection_restart_loop(c: Composition) -> None:
+    """Reproduce the forced-migration + DDL restart loop bug from CI.
+
+    The CI failure has two components:
+    1. DDL detection restart loop: concurrent DDL causes repeated halt/restart
+    2. Forced migration breaks compute state: after repeated restarts with
+       forced migrations, a replica-targeted MV goes missing from the compute
+       controller, permanently blocking the caught_up check.
+
+    This repro creates a replica-targeted MV, then runs concurrent DDL with
+    forced migrations enabled on mz_new. If the compute controller bug
+    triggers, mz_new will never reach ReadyToPromote even after DDL stops.
+    """
+    c.down(destroy_volumes=True)
+    c.up("mz_old")
+
+    c.sql(
+        """
+        ALTER SYSTEM SET cluster = quickstart;
+        ALTER SYSTEM SET enable_replica_targeted_materialized_views = true;
+        """,
+        service="mz_old",
+        port=6877,
+        user="mz_system",
+    )
+
+    # Create a cluster with two replicas and a replica-targeted MV,
+    # matching the pattern from the CI failure (replica_targeted_mv_2).
+    c.sql(
+        """
+        CREATE TABLE repro_t1 (a INT);
+        INSERT INTO repro_t1 VALUES (1);
+        CREATE CLUSTER repro_cluster REPLICAS (r1 (SIZE 'scale=1,workers=1'), r2 (SIZE 'scale=1,workers=1'));
+        CREATE MATERIALIZED VIEW repro_targeted_mv IN CLUSTER repro_cluster REPLICA r2
+            AS SELECT count(*) AS cnt FROM repro_t1;
+        """,
+        service="mz_old",
+    )
+
+    # Start mz_new with forced migrations (replacement) to trigger
+    # the builtin schema migration on every restart.
+    with c.override(
+        Materialized(
+            name="mz_new",
+            sanity_restart=False,
+            deploy_generation=1,
+            system_parameter_defaults={
+                **SYSTEM_PARAMETER_DEFAULTS,
+                "with_0dt_deployment_ddl_check_interval": "300s",
+            },
+            restart="on-failure",
+            external_metadata_store=True,
+            default_replication_factor=2,
+            force_migrations="replacement",
+        ),
+    ):
+        c.up("mz_new")
+
+        ddl_error = [None]
+
+        def run_sustained_ddl():
+            try:
+                for i in range(30):
+                    c.sql(
+                        f"CREATE TABLE repro_ddl_{i} (x INT);",
+                        service="mz_old",
+                    )
+                    time.sleep(1)
+            except Exception as e:
+                ddl_error[0] = e
+
+        ddl_thread = Thread(target=run_sustained_ddl)
+        ddl_thread.start()
+
+        # Wait 15s for mz_new to enter restart loop, then verify it's stuck.
+        time.sleep(15)
+        try:
+            c.await_mz_deployment_status(
+                DeploymentStatus.READY_TO_PROMOTE, "mz_new", timeout=20
+            )
+            assert False, "mz_new should NOT have reached ReadyToPromote while DDL is ongoing"
+        except Exception:
+            print("Good: mz_new is still stuck in Initializing (restart loop)")
+
+        ddl_thread.join()
+        if ddl_error[0]:
+            raise ddl_error[0]
+
+        # After DDL stops, mz_new should recover — unless the forced
+        # migration bug has corrupted compute state (the CI failure).
+        c.await_mz_deployment_status(
+            DeploymentStatus.READY_TO_PROMOTE, "mz_new", timeout=120
+        )
+
+        c.promote_mz("mz_new")
+        c.await_mz_deployment_status(DeploymentStatus.IS_LEADER, "mz_new")
+
+        result = c.sql_query(
+            "SELECT count(*) FROM mz_tables WHERE name LIKE 'repro_%';",
+            service="mz_new",
+        )
+        count = int(result[0][0])
+        assert count == 31, f"Expected 31 repro tables (1 initial + 30 DDL), got {count}"
+
+
 def workflow_ddl_detection_with_id_pool(c: Composition) -> None:
     """Verify that DDL detection works correctly with batch-allocated user IDs.
 

@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lsof:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(./bin/sqllogictest:*)",
+      "Bash(bk api:*)",
+      "Bash(bk org:*)",
+      "Bash(bk use:*)",
+      "Bash(bk build:*)",
+      "Bash(bk builds:*)",
+      "Bash(bk configure:*)",
+      "Bash(pgrep:*)",
+      "Bash(/private/tmp/claude-501/ddl_benchmark.sh with_phase2:*)",
+      "Bash($PSQL:*)",
+      "Bash(/opt/homebrew/bin/psql:*)",
+      "Bash(pkill:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:us.i.posthog.com)",
+      "WebFetch(domain:api.buildkite.com)",
+      "Bash(bk pipeline:*)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
