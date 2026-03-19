@@ -1036,6 +1036,230 @@ where
         }
     }
 
+    /// Waits until the upper frontier has advanced past `frontier`, without
+    /// reading the batch. This is the "wait phase" of a split
+    /// wait-then-lease-then-read pattern used by Listen::next to ensure seqno
+    /// holds are acquired before reading batch data.
+    pub async fn wait_for_upper_gt(
+        &self,
+        frontier: &Antichain<T>,
+        watch: &mut StateWatch<K, V, T, D>,
+        reader_id: Option<&LeasedReaderId>,
+        retry: Option<RetryParameters>,
+    ) {
+        // Check if data is already available.
+        let mut seqno = match self.applier.next_listen_batch(frontier) {
+            Ok(_batch) => return,
+            Err(seqno) => seqno,
+        };
+
+        // The latest state still doesn't have a new frontier for us:
+        // watch+sleep in a loop until it does.
+        let retry = retry.unwrap_or_else(|| next_listen_batch_retry_params(&self.applier.cfg));
+        let sleeps = self
+            .applier
+            .metrics
+            .retries
+            .next_listen_batch
+            .stream(retry.into_retry(SystemTime::now()).into_retry_stream());
+
+        enum Wake<'a, K, V, T, D> {
+            Watch(&'a mut StateWatch<K, V, T, D>),
+            Sleep(MetricsRetryStream),
+        }
+        let mut watch_fut = std::pin::pin!(
+            watch
+                .wait_for_seqno_ge(seqno.next())
+                .map(Wake::Watch)
+                .instrument(trace_span!("wait_for_upper_gt::watch"))
+        );
+        let mut sleep_fut = std::pin::pin!(
+            sleeps
+                .sleep()
+                .map(Wake::Sleep)
+                .instrument(trace_span!("wait_for_upper_gt::sleep"))
+        );
+
+        loop {
+            let wake = match future::select(watch_fut.as_mut(), sleep_fut.as_mut()).await {
+                future::Either::Left((wake, _)) => wake,
+                future::Either::Right((wake, _)) => wake,
+            };
+            match &wake {
+                Wake::Watch(_) => self.applier.metrics.watch.listen_woken_via_watch.inc(),
+                Wake::Sleep(_) => {
+                    self.applier.metrics.watch.listen_woken_via_sleep.inc();
+                    self.applier.fetch_and_update_state(Some(seqno)).await;
+                }
+            }
+
+            seqno = match self.applier.next_listen_batch(frontier) {
+                Ok(_batch) => {
+                    match &wake {
+                        Wake::Watch(_) => {
+                            self.applier.metrics.watch.listen_resolved_via_watch.inc()
+                        }
+                        Wake::Sleep(_) => {
+                            self.applier.metrics.watch.listen_resolved_via_sleep.inc()
+                        }
+                    }
+                    return;
+                }
+                Err(seqno) => seqno,
+            };
+
+            match wake {
+                Wake::Watch(watch) => {
+                    watch_fut.set(
+                        watch
+                            .wait_for_seqno_ge(seqno.next())
+                            .map(Wake::Watch)
+                            .instrument(trace_span!("wait_for_upper_gt::watch")),
+                    );
+                }
+                Wake::Sleep(sleeps) => {
+                    debug!(
+                        "{:?}: {} {} wait_for_upper_gt didn't find new data, retrying in {:?}",
+                        reader_id,
+                        self.applier.shard_metrics.name,
+                        self.shard_id(),
+                        sleeps.next_sleep()
+                    );
+                    sleep_fut.set(
+                        sleeps
+                            .sleep()
+                            .map(Wake::Sleep)
+                            .instrument(trace_span!("wait_for_upper_gt::sleep")),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Waits until the upper frontier is greater than or equal to `as_of`,
+    /// without reading the snapshot batches. This is the "wait phase" of a
+    /// split wait-then-lease-then-read pattern used by ReadHandle::snapshot.
+    pub async fn wait_for_upper_ge(
+        &self,
+        as_of: &Antichain<T>,
+    ) -> Result<(), Since<T>> {
+        let start = Instant::now();
+        let (mut seqno, mut upper) = match self.applier.snapshot(as_of) {
+            Ok(_batches) => return Ok(()),
+            Err(SnapshotErr::AsOfNotYetAvailable(seqno, Upper(upper))) => (seqno, upper),
+            Err(SnapshotErr::AsOfHistoricalDistinctionsLost(Since(since))) => {
+                return Err(Since(since));
+            }
+        };
+
+        let mut watch = self.applier.watch();
+        let watch = &mut watch;
+        let sleeps = self
+            .applier
+            .metrics
+            .retries
+            .snapshot
+            .stream(Retry::persist_defaults(SystemTime::now()).into_retry_stream());
+
+        enum Wake<'a, K, V, T, D> {
+            Watch(&'a mut StateWatch<K, V, T, D>),
+            Sleep(MetricsRetryStream),
+        }
+        let mut watch_fut = std::pin::pin!(
+            watch
+                .wait_for_seqno_ge(seqno.next())
+                .map(Wake::Watch)
+                .instrument(trace_span!("wait_for_upper_ge::watch")),
+        );
+        let mut sleep_fut = std::pin::pin!(
+            sleeps
+                .sleep()
+                .map(Wake::Sleep)
+                .instrument(trace_span!("wait_for_upper_ge::sleep")),
+        );
+
+        let mut logged_at_info = false;
+        loop {
+            if !logged_at_info && start.elapsed() >= Duration::from_millis(1024) {
+                logged_at_info = true;
+                info!(
+                    "snapshot {} {} as of {:?} not yet available for {} upper {:?}",
+                    self.applier.shard_metrics.name,
+                    self.shard_id(),
+                    as_of.elements(),
+                    seqno,
+                    upper.elements(),
+                );
+            } else {
+                debug!(
+                    "snapshot {} {} as of {:?} not yet available for {} upper {:?}",
+                    self.applier.shard_metrics.name,
+                    self.shard_id(),
+                    as_of.elements(),
+                    seqno,
+                    upper.elements(),
+                );
+            }
+
+            let wake = match future::select(watch_fut.as_mut(), sleep_fut.as_mut()).await {
+                future::Either::Left((wake, _)) => wake,
+                future::Either::Right((wake, _)) => wake,
+            };
+            match &wake {
+                Wake::Watch(_) => self.applier.metrics.watch.snapshot_woken_via_watch.inc(),
+                Wake::Sleep(_) => {
+                    self.applier.metrics.watch.snapshot_woken_via_sleep.inc();
+                    self.applier.fetch_and_update_state(Some(seqno)).await;
+                }
+            }
+
+            (seqno, upper) = match self.applier.snapshot(as_of) {
+                Ok(_batches) => {
+                    if logged_at_info {
+                        info!(
+                            "snapshot {} {} as of {:?} now available",
+                            self.applier.shard_metrics.name,
+                            self.shard_id(),
+                            as_of.elements(),
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(SnapshotErr::AsOfNotYetAvailable(seqno, Upper(upper))) => {
+                    (seqno, upper)
+                }
+                Err(SnapshotErr::AsOfHistoricalDistinctionsLost(Since(since))) => {
+                    return Err(Since(since));
+                }
+            };
+
+            match wake {
+                Wake::Watch(watch) => {
+                    watch_fut.set(
+                        watch
+                            .wait_for_seqno_ge(seqno.next())
+                            .map(Wake::Watch)
+                            .instrument(trace_span!("wait_for_upper_ge::watch")),
+                    );
+                }
+                Wake::Sleep(sleeps) => {
+                    debug!(
+                        "snapshot {} {} sleeping for {:?}",
+                        self.applier.shard_metrics.name,
+                        self.shard_id(),
+                        sleeps.next_sleep()
+                    );
+                    sleep_fut.set(
+                        sleeps
+                            .sleep()
+                            .map(Wake::Sleep)
+                            .instrument(trace_span!("wait_for_upper_ge::sleep")),
+                    );
+                }
+            }
+        }
+    }
+
     async fn apply_unbatched_idempotent_cmd<
         R,
         WorkFn: FnMut(

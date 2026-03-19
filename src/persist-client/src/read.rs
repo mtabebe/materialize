@@ -290,21 +290,43 @@ where
         // If Some, an override for the default listen sleep retry parameters.
         retry: Option<RetryParameters>,
     ) -> (Vec<LeasedBatchPart<T>>, Antichain<T>) {
-        let batch = loop {
+        // Phase 1: Wait for data availability, heartbeating while we wait.
+        // This does NOT read the batch — it only confirms data is available.
+        loop {
             let min_elapsed = self.handle.heartbeat_duration();
-            let next_batch = self.handle.machine.next_listen_batch(
+            let wait = self.handle.machine.wait_for_upper_gt(
                 &self.frontier,
                 &mut self.handle.watch,
                 Some(&self.handle.reader_id),
                 retry,
             );
-            match tokio::time::timeout(min_elapsed, next_batch).await {
-                Ok(batch) => break batch,
+            match tokio::time::timeout(min_elapsed, wait).await {
+                Ok(()) => break,
                 Err(_elapsed) => {
                     self.handle.maybe_downgrade_since(&self.since).await;
                 }
             }
-        };
+        }
+
+        // Phase 2: Acquire seqno hold at the current state version BEFORE
+        // reading the batch. This ensures S_lease <= S_read, so the lease
+        // protects the blobs we're about to read from GC.
+        let lease = self.handle.lease_seqno().await;
+
+        // Phase 3: Read the batch under the hold. This must succeed because
+        // we already confirmed the upper has advanced past our frontier, and
+        // the upper only moves forward.
+        {
+            let duration = *LISTEN_NEXT_SLEEP.lock().unwrap();
+            tokio::time::sleep(duration).await;
+        }
+
+        let batch = self
+            .handle
+            .machine
+            .applier
+            .next_listen_batch(&self.frontier)
+            .expect("batch must be available: we confirmed upper > frontier in wait phase");
 
         // A lot of things across mz have to line up to hold the following
         // invariant and violations only show up as subtle correctness errors,
@@ -380,21 +402,20 @@ where
             }
         }
 
-        // IMPORTANT! Make sure this `lease_batch_parts` stays before the
-        // `maybe_downgrade_since` call. Otherwise, we might give up our
-        // capability on the batch's SeqNo before we lease it, which could lead
-        // to blobs that it references being GC'd.
-
-        {
-            let duration = *LISTEN_NEXT_SLEEP.lock().unwrap();
-            tokio::time::sleep(duration).await;
-        }
+        // IMPORTANT! The lease was acquired BEFORE reading the batch (Phase 2
+        // before Phase 3), so the lease's seqno protects the batch's blobs
+        // from GC. Use lease_batch_parts_with_lease to pass the pre-acquired
+        // lease through.
 
         let filter = FetchBatchFilter::Listen {
             as_of: self.as_of.clone(),
             lower: self.frontier.clone(),
         };
-        let parts = self.handle.lease_batch_parts(batch, filter).collect().await;
+        let parts = self
+            .handle
+            .lease_batch_parts_with_lease(batch, lease, filter)
+            .collect()
+            .await;
 
         self.handle.maybe_downgrade_since(&self.since).await;
 
@@ -851,21 +872,37 @@ where
         &mut self,
         as_of: Antichain<T>,
     ) -> Result<Vec<LeasedBatchPart<T>>, Since<T>> {
-        let batches = loop {
+        // Phase 1: Wait for data availability, heartbeating while we wait.
+        // This does NOT read the batches — it only confirms the snapshot is
+        // serveable.
+        loop {
             let min_elapsed = self.heartbeat_duration();
-            match tokio::time::timeout(min_elapsed, self.machine.snapshot(&as_of)).await {
-                Ok(Ok(batches)) => break batches,
+            match tokio::time::timeout(min_elapsed, self.machine.wait_for_upper_ge(&as_of)).await {
+                Ok(Ok(())) => break,
                 Ok(Err(since)) => return Err(since),
                 Err(_timeout) => {
                     let since = self.since().clone();
                     self.maybe_downgrade_since(&since).await;
                 }
             }
-        };
+        }
 
         if !PartialOrder::less_equal(self.since(), &as_of) {
             return Err(Since(self.since().clone()));
         }
+
+        // Phase 2: Acquire seqno hold at the current state version BEFORE
+        // reading the batches. This ensures S_lease <= S_read, so the lease
+        // protects the blobs we're about to read from GC.
+        let lease = self.lease_seqno().await;
+
+        // Phase 3: Read the batches under the hold. This must succeed because
+        // we already confirmed the upper has advanced past as_of.
+        let batches = self
+            .machine
+            .applier
+            .snapshot(&as_of)
+            .expect("snapshot must be available: we confirmed upper > as_of in wait phase");
 
         let filter = FetchBatchFilter::Snapshot { as_of };
         let mut leased_parts = Vec::new();
@@ -875,7 +912,7 @@ where
             // to distribute work by parts (smallish, more even size) instead of
             // batches (arbitrarily large).
             leased_parts.extend(
-                self.lease_batch_parts(batch, filter.clone())
+                self.lease_batch_parts_with_lease(batch, lease.clone(), filter.clone())
                     .collect::<Vec<_>>()
                     .await,
             );
@@ -898,16 +935,37 @@ where
         Ok(Subscribe::new(snapshot_parts, listen))
     }
 
+    /// Like [`Self::lease_batch_parts_with_lease`], but acquires the lease
+    /// internally via `lease_seqno()`. Kept for callers that don't need the
+    /// split wait-lease-read pattern.
+    #[allow(dead_code)]
     fn lease_batch_parts(
         &mut self,
         batch: HollowBatch<T>,
         filter: FetchBatchFilter<T>,
     ) -> impl Stream<Item = LeasedBatchPart<T>> + '_ {
         stream! {
+            let lease = self.lease_seqno().await;
+            for await part in self.lease_batch_parts_with_lease(batch, lease, filter) {
+                yield part;
+            }
+        }
+    }
+
+    /// Like [`Self::lease_batch_parts`], but takes a pre-acquired [`Lease`]
+    /// instead of calling `lease_seqno()` internally. This is used by the
+    /// split wait-then-lease-then-read pattern where the lease must be
+    /// acquired before reading the batch to prevent GC races.
+    fn lease_batch_parts_with_lease(
+        &self,
+        batch: HollowBatch<T>,
+        lease: Lease,
+        filter: FetchBatchFilter<T>,
+    ) -> impl Stream<Item = LeasedBatchPart<T>> + '_ {
+        stream! {
             let blob = Arc::clone(&self.blob);
             let metrics = Arc::clone(&self.metrics);
             let desc = batch.desc.clone();
-            let lease = self.lease_seqno().await;
             for await part in batch.part_stream(self.shard_id(), &*blob, &*metrics) {
                 yield LeasedBatchPart {
                     metrics: Arc::clone(&self.metrics),
