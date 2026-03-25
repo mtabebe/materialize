@@ -69,6 +69,7 @@ use crate::controller::{
 use crate::storage_collections::metrics::{ShardIdSet, StorageCollectionsMetrics};
 
 mod metrics;
+pub mod shard_pool;
 
 /// An abstraction for keeping track of storage collections and managing access
 /// to them.
@@ -420,9 +421,19 @@ pub struct StorageCollectionsImpl<
     /// For sending updates about read holds to our internal task.
     holds_tx: mpsc::UnboundedSender<(GlobalId, ChangeBatch<T>)>,
 
+    /// Pool of pre-opened shards for reducing DDL latency.
+    shard_pool: Arc<shard_pool::ShardPool<T>>,
+
+    /// Staging area for pre-opened shards between `prepare_state` and
+    /// `create_collections_for_bootstrap`. Maps ShardId to the PreOpenedShard
+    /// that was used to generate it.
+    pending_pre_opened:
+        Arc<Mutex<BTreeMap<ShardId, shard_pool::PreOpenedShard<T>>>>,
+
     /// Handles to tasks we own, making sure they're dropped when we are.
     _background_task: Arc<AbortOnDropHandle<()>>,
     _finalize_shards_task: Arc<AbortOnDropHandle<()>>,
+    _shard_pool_task: Option<Arc<AbortOnDropHandle<()>>>,
 }
 
 // Supporting methods for implementing [StorageCollections].
@@ -555,6 +566,16 @@ where
             }),
         );
 
+        let shard_pool = Arc::new(shard_pool::ShardPool::new());
+        let shard_pool_task = shard_pool::spawn_shard_pool_task(
+            envd_epoch,
+            Arc::clone(&config),
+            persist_location.clone(),
+            Arc::clone(&persist_clients),
+            Arc::clone(&shard_pool),
+            read_only,
+        );
+
         Self {
             finalizable_shards,
             finalized_shards,
@@ -568,8 +589,11 @@ where
             persist: persist_clients,
             cmd_tx,
             holds_tx,
+            shard_pool,
+            pending_pre_opened: Arc::new(Mutex::new(BTreeMap::new())),
             _background_task: Arc::new(background_task.abort_on_drop()),
             _finalize_shards_task: Arc::new(finalize_shards_task.abort_on_drop()),
+            _shard_pool_task: shard_pool_task,
         }
     }
 
@@ -1712,12 +1736,23 @@ where
         ids_to_drop: BTreeSet<GlobalId>,
         ids_to_register: BTreeMap<GlobalId, ShardId>,
     ) -> Result<(), StorageError<T>> {
-        txn.insert_collection_metadata(
-            ids_to_add
-                .into_iter()
-                .map(|id| (id, ShardId::new()))
-                .collect(),
-        )?;
+        let mut pending = self.pending_pre_opened.lock().expect("lock poisoned");
+        let new_mappings: BTreeMap<_, _> = ids_to_add
+            .into_iter()
+            .map(|id| {
+                if let Some(pre_opened) = self.shard_pool.take() {
+                    let shard_id = pre_opened.shard_id;
+                    debug!(%id, %shard_id, "using pre-opened shard from pool");
+                    pending.insert(shard_id, pre_opened);
+                    (id, shard_id)
+                } else {
+                    (id, ShardId::new())
+                }
+            })
+            .collect();
+        drop(pending);
+
+        txn.insert_collection_metadata(new_mappings)?;
         txn.insert_collection_metadata(ids_to_register)?;
 
         // Delete the metadata for any dropped collections.
@@ -1800,11 +1835,19 @@ where
         let persist_client = &persist_client;
         // Reborrow the `&mut self` as immutable, as all the concurrent work to
         // be processed in this stream cannot all have exclusive access.
+        // Take all pending pre-opened shards for use in this bootstrap.
+        let pre_opened_shards = {
+            let mut pending = self.pending_pre_opened.lock().expect("lock poisoned");
+            std::mem::take(&mut *pending)
+        };
+        let pre_opened_shards = Arc::new(std::sync::Mutex::new(pre_opened_shards));
+
         use futures::stream::{StreamExt, TryStreamExt};
         let this = &*self;
         let mut to_register: Vec<_> = futures::stream::iter(enriched_with_metadata)
             .map(|data: Result<_, StorageError<Self::Timestamp>>| {
                 let register_ts = register_ts.clone();
+                let pre_opened_shards = Arc::clone(&pre_opened_shards);
                 async move {
                     let (id, description, metadata) = data?;
 
@@ -1823,15 +1866,56 @@ where
                         description.since.as_ref()
                     };
 
-                    let (write, mut since_handle) = this
-                        .open_data_handles(
+                    // Check if we have a pre-opened shard for this data_shard.
+                    // If so, skip upgrade_version and open_critical_handle (already done).
+                    // Still need write handle + fetch_recent_upper (needs RelationDesc).
+                    let pre_opened = pre_opened_shards
+                        .lock()
+                        .expect("lock poisoned")
+                        .remove(&metadata.data_shard);
+
+                    let (write, mut since_handle) = if let Some(pre_opened) = pre_opened {
+                        debug!(
+                            %id,
+                            shard_id = %metadata.data_shard,
+                            "using pre-opened shard from pool, skipping upgrade_version and open_critical_handle"
+                        );
+
+                        // Apply since join for non-table collections with a since argument,
+                        // same logic as open_critical_handle (line 709-713).
+                        let mut handle = pre_opened.since_handle;
+                        if let Some(since) = since {
+                            let joined = handle.since().join(since);
+                            let current_epoch: PersistEpoch = handle.opaque().decode();
+                            let _ = handle
+                                .compare_and_downgrade_since(
+                                    &Opaque::encode(&current_epoch),
+                                    (&Opaque::encode(&current_epoch), &joined),
+                                )
+                                .await;
+                        }
+
+                        let mut write_handle = this
+                            .open_write_handle(
+                                &id,
+                                metadata.data_shard,
+                                metadata.relation_desc.clone(),
+                                persist_client,
+                            )
+                            .await;
+                        write_handle.fetch_recent_upper().await;
+
+                        (write_handle, SinceHandleWrapper::Critical(handle))
+                    } else {
+                        this.open_data_handles(
                             &id,
                             metadata.data_shard,
                             since,
                             metadata.relation_desc.clone(),
                             persist_client,
                         )
-                        .await;
+                        .await
+                    };
 
                     // Present tables as springing into existence at the register_ts
                     // by advancing the since. Otherwise, we could end up in a
@@ -2399,8 +2483,11 @@ where
             persist: _,
             cmd_tx: _,
             holds_tx: _,
+            shard_pool: _,
+            pending_pre_opened: _,
             _background_task: _,
             _finalize_shards_task: _,
+            _shard_pool_task: _,
         } = self;
 
         let finalizable_shards: Vec<_> = finalizable_shards

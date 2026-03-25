@@ -317,6 +317,23 @@ pub const STATISTICS_RETENTION_DURATION: Config<Duration> = Config::new(
     "The time after which we delete per replica statistics (for sources and sinks) after there have been no updates.",
 );
 
+// Shard pool
+
+/// Whether the pre-opened shard pool is enabled. When enabled, shards are
+/// pre-opened in the background to reduce DDL latency.
+pub const SHARD_POOL_ENABLED: Config<bool> = Config::new(
+    "storage_shard_pool_enabled",
+    true,
+    "Whether the pre-opened shard pool is enabled for reducing DDL latency.",
+);
+
+/// Target number of pre-opened shards to maintain in the pool.
+pub const SHARD_POOL_TARGET_SIZE: Config<usize> = Config::new(
+    "storage_shard_pool_target_size",
+    5,
+    "Target number of pre-opened shards to maintain in the pool.",
+);
+
 /// Adds the full set of all storage `Config`s.
 pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
     configs
@@ -355,5 +372,7 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&crate::sources::sql_server::CDC_CLEANUP_CHANGE_TABLE_MAX_DELETES)
         .add(&crate::sources::sql_server::MAX_LSN_WAIT)
         .add(&crate::sources::sql_server::SNAPSHOT_PROGRESS_REPORT_INTERVAL)
+        .add(&SHARD_POOL_ENABLED)
+        .add(&SHARD_POOL_TARGET_SIZE)
         .add(&STATISTICS_RETENTION_DURATION)
 }
