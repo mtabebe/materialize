@@ -44,7 +44,7 @@ use mz_storage_types::StorageDiff;
 use mz_storage_types::configuration::StorageConfiguration;
 use mz_storage_types::connections::ConnectionContext;
 use mz_storage_types::controller::{CollectionMetadata, StorageError, TxnsCodecRow};
-use mz_storage_types::dyncfgs::STORAGE_DOWNGRADE_SINCE_DURING_FINALIZATION;
+use mz_storage_types::dyncfgs::{SHARD_POOL_ENABLED, STORAGE_DOWNGRADE_SINCE_DURING_FINALIZATION};
 use mz_storage_types::errors::CollectionMissing;
 use mz_storage_types::parameters::StorageParameters;
 use mz_storage_types::read_holds::ReadHold;
@@ -1752,18 +1752,24 @@ where
         ids_to_drop: BTreeSet<GlobalId>,
         ids_to_register: BTreeMap<GlobalId, ShardId>,
     ) -> Result<(), StorageError<T>> {
+        let pool_enabled = {
+            let config = self.config.lock().expect("lock poisoned");
+            SHARD_POOL_ENABLED.get(config.config_set())
+        };
+
         let mut pending = self.pending_pre_opened.lock().expect("lock poisoned");
         let new_mappings: BTreeMap<_, _> = ids_to_add
             .into_iter()
             .map(|id| {
-                if let Some(pre_opened) = self.shard_pool.take() {
-                    let shard_id = pre_opened.shard_id;
-                    debug!(%id, %shard_id, "using pre-opened shard from pool");
-                    pending.insert(shard_id, pre_opened);
-                    (id, shard_id)
-                } else {
-                    (id, ShardId::new())
+                if pool_enabled {
+                    if let Some(pre_opened) = self.shard_pool.take() {
+                        let shard_id = pre_opened.shard_id;
+                        debug!(%id, %shard_id, "using pre-opened shard from pool");
+                        pending.insert(shard_id, pre_opened);
+                        return (id, shard_id);
+                    }
                 }
+                (id, ShardId::new())
             })
             .collect();
         drop(pending);
