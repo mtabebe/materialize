@@ -71,6 +71,20 @@ use crate::storage_collections::metrics::{ShardIdSet, StorageCollectionsMetrics}
 mod metrics;
 pub mod shard_pool;
 
+/// RAII guard that resumes shard pool replenishment on drop.
+struct PoolResumeGuard<T>(Arc<shard_pool::ShardPool<T>>)
+where
+    T: TimelyTimestamp + Lattice + Codec64;
+
+impl<T> Drop for PoolResumeGuard<T>
+where
+    T: TimelyTimestamp + Lattice + Codec64,
+{
+    fn drop(&mut self) {
+        self.0.resume();
+    }
+}
+
 /// An abstraction for keeping track of storage collections and managing access
 /// to them.
 ///
@@ -1826,6 +1840,13 @@ where
             })
             .collect_vec();
 
+        // Pause pool replenishment during the heavy CRDB work below to avoid
+        // connection contention with open_data_handles.
+        self.shard_pool.pause();
+        // Guard ensures resume() is called on all exit paths (success or error).
+        let pool_ref = Arc::clone(&self.shard_pool);
+        let _resume_guard = PoolResumeGuard(pool_ref);
+
         // So that we can open `SinceHandle`s for each collections concurrently.
         let persist_client = self
             .persist
@@ -1836,18 +1857,30 @@ where
         // Reborrow the `&mut self` as immutable, as all the concurrent work to
         // be processed in this stream cannot all have exclusive access.
         // Take all pending pre-opened shards for use in this bootstrap.
-        let pre_opened_shards = {
+        // We distribute them upfront to avoid needing a shared mutex in the
+        // concurrent stream below.
+        let mut pre_opened_shards = {
             let mut pending = self.pending_pre_opened.lock().expect("lock poisoned");
             std::mem::take(&mut *pending)
         };
-        let pre_opened_shards = Arc::new(std::sync::Mutex::new(pre_opened_shards));
+
+        // Pre-distribute: match each collection's data_shard to a pre-opened entry
+        // before entering the concurrent stream, so no shared mutable state is needed.
+        let enriched_with_pre_opened: Vec<_> = enriched_with_metadata
+            .into_iter()
+            .map(|data| {
+                let pre_opened = data.as_ref().ok().and_then(|(_, _, metadata)| {
+                    pre_opened_shards.remove(&metadata.data_shard)
+                });
+                (data, pre_opened)
+            })
+            .collect();
 
         use futures::stream::{StreamExt, TryStreamExt};
         let this = &*self;
-        let mut to_register: Vec<_> = futures::stream::iter(enriched_with_metadata)
-            .map(|data: Result<_, StorageError<Self::Timestamp>>| {
+        let mut to_register: Vec<_> = futures::stream::iter(enriched_with_pre_opened)
+            .map(|(data, pre_opened): (Result<_, StorageError<Self::Timestamp>>, _)| {
                 let register_ts = register_ts.clone();
-                let pre_opened_shards = Arc::clone(&pre_opened_shards);
                 async move {
                     let (id, description, metadata) = data?;
 
@@ -1865,14 +1898,6 @@ where
                     } else {
                         description.since.as_ref()
                     };
-
-                    // Check if we have a pre-opened shard for this data_shard.
-                    // If so, skip upgrade_version and open_critical_handle (already done).
-                    // Still need write handle + fetch_recent_upper (needs RelationDesc).
-                    let pre_opened = pre_opened_shards
-                        .lock()
-                        .expect("lock poisoned")
-                        .remove(&metadata.data_shard);
 
                     let (write, mut since_handle) = if let Some(pre_opened) = pre_opened {
                         debug!(

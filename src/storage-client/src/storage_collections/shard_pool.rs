@@ -34,6 +34,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroI64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -73,6 +74,9 @@ where
     T: TimelyTimestamp + Lattice + Codec64,
 {
     inner: Mutex<VecDeque<PreOpenedShard<T>>>,
+    /// When true, the replenishment task skips pre-opening new shards.
+    /// Set during active DDL to avoid CRDB connection contention.
+    paused: AtomicBool,
 }
 
 impl<T> ShardPool<T>
@@ -83,6 +87,7 @@ where
     pub fn new() -> Self {
         ShardPool {
             inner: Mutex::new(VecDeque::new()),
+            paused: AtomicBool::new(false),
         }
     }
 
@@ -99,6 +104,21 @@ where
     /// Returns the current number of shards in the pool.
     pub fn len(&self) -> usize {
         self.inner.lock().expect("lock poisoned").len()
+    }
+
+    /// Returns whether the replenishment task is currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    /// Pause replenishment (e.g., during active DDL to avoid CRDB contention).
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    /// Resume replenishment.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
     }
 }
 
@@ -211,7 +231,7 @@ pub async fn shard_pool_replenish_task<T>(
             )
         };
 
-        if !enabled {
+        if !enabled || pool.is_paused() {
             continue;
         }
 
