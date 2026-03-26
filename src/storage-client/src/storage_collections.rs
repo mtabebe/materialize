@@ -546,6 +546,8 @@ where
 
         let initial_txn_upper = txns_write.fetch_recent_upper().await.to_owned();
 
+        let shard_pool_metrics = metrics.shard_pool.clone();
+
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (holds_tx, holds_rx) = mpsc::unbounded_channel();
         let mut background_task = BackgroundTask {
@@ -580,7 +582,7 @@ where
             }),
         );
 
-        let shard_pool = Arc::new(shard_pool::ShardPool::new());
+        let shard_pool = Arc::new(shard_pool::ShardPool::new(shard_pool_metrics));
         let shard_pool_task = shard_pool::spawn_shard_pool_task(
             envd_epoch,
             Arc::clone(&config),

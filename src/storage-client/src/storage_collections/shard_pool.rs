@@ -30,8 +30,6 @@
 // RelationDesc, with schema evolution via try_register_schema at DDL time.
 // Saves additional CRDB calls but adds complexity.
 
-// TODO(ddl-perf): Add metrics (pool hits/misses, size, replenishment latency).
-
 use std::collections::VecDeque;
 use std::num::NonZeroI64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use differential_dataflow::lattice::Lattice;
+use mz_ore::cast::CastFrom;
 use mz_ore::task::AbortOnDropHandle;
 use mz_persist_client::cache::PersistClientCache;
 use mz_persist_client::critical::{Opaque, SinceHandle};
@@ -54,6 +53,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::controller::PersistEpoch;
+use crate::storage_collections::metrics::ShardPoolMetrics;
 
 /// A pre-opened shard with its critical since handle already epoch-fenced.
 #[derive(Debug)]
@@ -77,33 +77,50 @@ where
     /// When true, the replenishment task skips pre-opening new shards.
     /// Set during active DDL to avoid CRDB connection contention.
     paused: AtomicBool,
+    metrics: ShardPoolMetrics,
 }
 
 impl<T> ShardPool<T>
 where
     T: TimelyTimestamp + Lattice + Codec64,
 {
-    /// Creates a new empty shard pool.
-    pub fn new() -> Self {
+    /// Creates a new pool with the given metrics.
+    pub fn new(metrics: ShardPoolMetrics) -> Self {
         ShardPool {
             inner: Mutex::new(VecDeque::new()),
             paused: AtomicBool::new(false),
+            metrics,
         }
     }
 
     /// Takes a pre-opened shard from the pool, if one is available.
+    /// Updates hit/miss metrics accordingly.
     pub fn take(&self) -> Option<PreOpenedShard<T>> {
-        self.inner.lock().expect("lock poisoned").pop_front()
+        let result = self.inner.lock().expect("lock poisoned").pop_front();
+        if result.is_some() {
+            self.metrics.hits.inc();
+            self.update_size_metric();
+        } else {
+            self.metrics.misses.inc();
+        }
+        result
     }
 
     /// Returns a pre-opened shard to the pool.
     pub fn put(&self, shard: PreOpenedShard<T>) {
         self.inner.lock().expect("lock poisoned").push_back(shard);
+        self.update_size_metric();
     }
 
     /// Returns the current number of shards in the pool.
     pub fn len(&self) -> usize {
         self.inner.lock().expect("lock poisoned").len()
+    }
+
+    fn update_size_metric(&self) {
+        self.metrics
+            .pool_size
+            .set(u64::cast_from(self.len()));
     }
 
     /// Returns whether the replenishment task is currently paused.
