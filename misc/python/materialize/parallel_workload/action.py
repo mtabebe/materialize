@@ -1568,6 +1568,13 @@ class FlipFlagsAction(Action):
         ]
         self.flags_with_values["enable_case_literal_transform"] = BOOLEAN_FLAG_VALUES
         self.flags_with_values["enable_cast_elimination"] = BOOLEAN_FLAG_VALUES
+        self.flags_with_values["storage_shard_pool_enabled"] = BOOLEAN_FLAG_VALUES
+        self.flags_with_values["storage_shard_pool_target_size"] = [
+            "0",
+            "5",
+            "10",
+            "20",
+        ]
 
         # If you are adding a new config flag in Materialize, consider using it
         # here instead of just marking it as uninteresting to silence the
@@ -1776,6 +1783,7 @@ class FlipFlagsAction(Action):
             "oidc_authentication_claim",
             "console_oidc_client_id",
             "console_oidc_scopes",
+            "storage_shard_pool_replenish_interval",
         ]
 
     def run(self, exe: Executor) -> bool:

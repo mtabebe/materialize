@@ -626,6 +626,9 @@ UNINTERESTING_SYSTEM_PARAMETERS = [
     "enable_mcp_agents_query_tool",
     "enable_mcp_observatory",
     "user_id_pool_batch_size",
+    "storage_shard_pool_enabled",
+    "storage_shard_pool_target_size",
+    "storage_shard_pool_replenish_interval",
 ]
 
 
