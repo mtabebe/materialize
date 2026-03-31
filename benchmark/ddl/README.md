@@ -6,23 +6,39 @@ to understand where time is spent.
 ## Quick Start
 
 ```bash
-# Create 1000 tables in 10 chunks of 100
-./bench.sh create "postgres://user@host:6875/materialize" --tables 1000 --chunks 10
+# 1. Set resource limits (Materialize must be running)
+./set_limits.sh 1000
 
-# Same but with tracing (requires local monitoring stack)
-./bench.sh create "postgres://user@host:6875/materialize" --tables 1000 --chunks 10 --trace
+# 2. Create 1000 tables in 10 chunks of 100
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --tables 1000 --chunks 10
 
-# With a realistic schema
-./bench.sh create "postgres://..." --tables 1000 --chunks 10 --preset medium --trace
+# 3. Stop Materialize, save the catalog for reuse
+./catalog_snapshot.sh save 1000-tables --tables 1000
 
-# Estimate network-adjusted latency (for scratch/local runs)
-./bench.sh create "postgres://..." --tables 1000 --chunks 10 --trace --crdb-rtt 3
-
-# Clean up
-./bench.sh drop "postgres://..."
+# 4. Later, restore and benchmark without recreating tables
+./catalog_snapshot.sh restore 1000-tables
+# start Materialize — boots with 1000 tables already present
 ```
 
-## Options
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `bench.sh` | Create/drop tables in timed chunks with optional tracing |
+| `catalog_snapshot.sh` | Save/restore catalog state for fast benchmarking |
+| `set_limits.sh` | Configure `max_tables` and `max_objects_per_schema` |
+| `analyze_trace.py` | Analyze OpenTelemetry trace JSON from Tempo |
+
+## bench.sh
+
+### Usage
+
+```bash
+./bench.sh create <conn_string> [options]
+./bench.sh drop   <conn_string> [--prefix PREFIX]
+```
+
+### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -37,7 +53,7 @@ to understand where time is spent.
 | `--crdb-rtt MS` | 0 | CRDB round-trip latency for network cost estimate |
 | `--output FILE` | auto | Output CSV path |
 
-## Schema Presets
+### Schema Presets
 
 | Preset | Columns |
 |--------|---------|
@@ -45,6 +61,112 @@ to understand where time is spent.
 | `medium` | `id int, user_id int, org_id int, status text, amount double precision, currency text, description text, created_at timestamp, updated_at timestamp, metadata jsonb` |
 | `wide` | `c1 int, c2 int, .. c50 int` |
 | `json` | `id int, payload jsonb, created_at timestamp` |
+
+### Examples
+
+```bash
+# Basic run
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --tables 1000 --chunks 10
+
+# With tracing
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --tables 1000 --chunks 10 --trace
+
+# With a realistic schema and network cost estimate
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --preset medium --trace --crdb-rtt 3
+
+# Clean up
+./bench.sh drop "postgres://materialize@localhost:6875/materialize"
+```
+
+### Output
+
+- **CSV file**: Per-chunk timing with columns `chunk,tables_in_chunk,start_index,end_index,elapsed_ms[,trace_id]`
+- **Traces directory** (with `--trace`): One JSON file per chunk, plus analysis output showing:
+  - Top spans by self-time
+  - CRDB round-trip count and breakdown
+  - Network-adjusted latency estimate (with `--crdb-rtt`)
+
+## catalog_snapshot.sh
+
+Save and restore Materialize catalog state so you can benchmark with different
+catalog sizes without recreating tables each time. Snapshots capture the persist
+blob, CRDB consensus/tsoracle state, and environment metadata.
+
+**Materialize must be stopped before save/restore.**
+
+### Usage
+
+```bash
+./catalog_snapshot.sh save    <name> [options]
+./catalog_snapshot.sh restore <name> [options]
+./catalog_snapshot.sh list    [options]
+./catalog_snapshot.sh delete  <name> [options]
+./catalog_snapshot.sh info    <name> [options]
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mzdata DIR` | `../../mzdata` | Path to mzdata directory |
+| `--crdb-url URL` | `postgres://root@localhost:26257` | CockroachDB URL |
+| `--snapshot-dir DIR` | `./snapshots` | Where to store snapshots |
+| `--tables N` | - | Number of tables (saved in metadata) |
+
+### Examples
+
+```bash
+# Build a library of catalog sizes
+./set_limits.sh 100
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --tables 100
+# stop Materialize
+./catalog_snapshot.sh save 100-tables --tables 100
+
+# restore, set limits, add more tables
+./catalog_snapshot.sh restore 100-tables
+# start Materialize
+./set_limits.sh 1000
+./bench.sh create "postgres://materialize@localhost:6875/materialize" --tables 900 --prefix bench2
+# stop Materialize
+./catalog_snapshot.sh save 1000-tables --tables 1000
+
+# Manage snapshots
+./catalog_snapshot.sh list
+./catalog_snapshot.sh info 1000-tables
+./catalog_snapshot.sh delete old-snap
+```
+
+## set_limits.sh
+
+Materialize enforces `max_tables` (default 200) and `max_objects_per_schema`
+(default 1000). Use this script to raise them before creating or benchmarking
+with large catalogs.
+
+**Materialize must be running when this script is executed.**
+
+### Usage
+
+```bash
+./set_limits.sh <tables> [options]
+./set_limits.sh --show
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--multiplier N` | 2 | Multiplier applied to table count |
+| `--system-port PORT` | 6877 | Port for mz_system connections |
+| `--host HOST` | localhost | Materialize host |
+| `--show` | - | Show current limits instead of setting them |
+
+### Examples
+
+```bash
+./set_limits.sh 5000                    # sets max_tables=10000, max_objects_per_schema=10000
+./set_limits.sh 5000 --multiplier 3     # sets both to 15000
+./set_limits.sh --show                  # display current values
+```
 
 ## Tracing Setup
 
@@ -61,14 +183,6 @@ bin/environmentd --optimized --monitoring
 psql -U mz_system -h localhost -p 6877 materialize \
   -c "ALTER SYSTEM SET opentelemetry_filter = 'debug';"
 ```
-
-## Output
-
-- **CSV file**: Per-chunk timing with columns `chunk,tables_in_chunk,start_index,end_index,elapsed_ms[,trace_id]`
-- **Traces directory** (with `--trace`): One JSON file per chunk, plus analysis output showing:
-  - Top spans by self-time
-  - CRDB round-trip count and breakdown
-  - Network-adjusted latency estimate (with `--crdb-rtt`)
 
 ## Analyzing Traces Standalone
 
