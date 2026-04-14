@@ -603,25 +603,40 @@ async fn handle_mcp_method(
 
 /// Instructions returned in the `initialize` response for each endpoint type.
 /// These guide the AI agent on how to use the server correctly.
+///
 fn endpoint_instructions(endpoint_type: McpEndpointType) -> Option<String> {
     match endpoint_type {
         McpEndpointType::Agent => None,
-        McpEndpointType::Developer => Some(concat!(
-            "You are connected to the Materialize developer MCP server. ",
-            "You have read-only access to system catalog tables (mz_*, pg_catalog, information_schema) ",
-            "for troubleshooting and observability.\n\n",
-            "IMPORTANT: Before writing queries, discover table schemas using the mz_ontology tables:\n",
-            "- mz_ontology.mz_ontology_entity_types: what catalog entities exist and which tables they map to\n",
-            "- mz_ontology.mz_ontology_link_types: relationships between entities (foreign keys, metrics, etc.)\n",
-            "- mz_ontology.mz_ontology_properties: column names, types, and descriptions for each entity\n",
-            "- mz_ontology.mz_ontology_semantic_types: typed ID domains (CatalogItemId, ReplicaId, etc.)\n\n",
-            "Use these to find the correct tables, join paths, and column names instead of guessing.\n\n",
-            "Key rules:\n",
-            "- mz_source_statuses and mz_sink_statuses use `last_status_change_at` (NOT `updated_at`)\n",
-            "- mz_cluster_replica_utilization only has `replica_id` — JOIN with mz_cluster_replicas and mz_clusters to get names\n",
-            "- Do NOT query mz_introspection.mz_dataflow_arrangement_sizes — it is cluster-scoped and has uint8/text type mismatches\n",
-            "- Use SHOW COLUMNS FROM <table> to verify column names if unsure",
-        ).to_string()),
+        McpEndpointType::Developer => Some(format!(
+            "You are connected to the Materialize developer MCP server. \
+             You have read-only access to system catalog tables (mz_*, pg_catalog, information_schema) \
+             for troubleshooting and observability.\n\n\
+             {ontology}\n\n\
+             ## Additional key rules\n\
+             - mz_source_statuses and mz_sink_statuses use `last_status_change_at` (NOT `updated_at`)\n\
+             - mz_cluster_replica_utilization only has `replica_id` — JOIN with mz_cluster_replicas and mz_clusters to get names\n\
+             - Do NOT query mz_introspection.mz_dataflow_arrangement_sizes — it is cluster-scoped and has uint8/text type mismatches\n\
+             - Use SHOW COLUMNS FROM <table> to verify column names if unsure",
+            ontology = concat!(
+                "IMPORTANT: Before writing any diagnostic query, FIRST try to look up table names, columns, \n",
+                "and join paths from the misc_mz_ontology schema. If the ontology tables exist, you MUST use \n",
+                "them — do NOT guess. If they don't exist (query returns an error), fall back to SHOW COLUMNS \n",
+                "FROM <table> to verify column names before querying.\n\n",
+                "When the ontology is available, follow these steps:\n",
+                "Step 1: Query misc_mz_ontology.entity_types to find the correct table name.\n",
+                "Step 2: Query misc_mz_ontology.properties to discover columns and their semantic types.\n",
+                "Step 3: Query misc_mz_ontology.link_types to find join paths and check if a mapping table is needed.\n",
+                "Step 4: Only then write the final query using the discovered schema.\n\n",
+                "NEVER skip these steps when the ontology is available. Guessing column names causes errors. \n",
+                "Guessing join paths causes silent wrong results.\n\n",
+                "The ontology tables and their columns are:\n",
+                "- misc_mz_ontology.entity_types (name, relation, properties, description)\n",
+                "- misc_mz_ontology.link_types (name, source_entity, target_entity, properties, description)\n",
+                "- misc_mz_ontology.properties (entity_type, column_name, semantic_type, description)\n",
+                "- misc_mz_ontology.semantic_types (name, sql_type, description)\n\n",
+                include_str!("../../../../misc/ontology/mz_ontology.md"),
+            ),
+        )),
     }
 }
 
@@ -1130,8 +1145,10 @@ fn validate_system_catalog_query(sql: &str) -> Result<(), McpRequestError> {
 
     // Use the canonical system schema list, excluding mz_unsafe which contains
     // internal-only objects that should not be exposed to MCP clients.
-    let is_allowed_schema =
-        |s: &str| SYSTEM_SCHEMAS.contains(&s) && s != namespaces::MZ_UNSAFE_SCHEMA;
+    let is_allowed_schema = |s: &str| {
+        (SYSTEM_SCHEMAS.contains(&s) && s != namespaces::MZ_UNSAFE_SCHEMA)
+            || s == "misc_mz_ontology"
+    };
 
     // Helper to check if a table reference is allowed
     let is_system_table = |(schema, table_name): &(Option<String>, String)| {
