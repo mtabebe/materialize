@@ -102,5 +102,6 @@ FROM (VALUES {values}) AS v(oid, schema_name, name, cluster_name, definition, pr
         column_comments: Default::default(),
         sql: Box::leak(sql.into_boxed_str()),
         access: vec![PUBLIC_SELECT],
+        ontology: None,
     }
 }
