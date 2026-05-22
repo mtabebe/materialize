@@ -159,6 +159,17 @@ impl Diagnostics {
     }
 }
 
+/// Result of a [`PersistClient::fork_shard`] call.
+#[derive(Debug)]
+pub struct ForkShardResult {
+    /// The newly allocated shard id for the fork.
+    pub fork_shard_id: ShardId,
+    /// Full S3 blob keys (format: `s<source_shard>/<writer>/<part>`) that the
+    /// fork shard references from the source. Insert these into `fork_blob_refs`
+    /// to prevent the source org's GC from physically deleting them.
+    pub referenced_blob_keys: Vec<String>,
+}
+
 /// A handle for interacting with the set of persist shard made durable at a
 /// single [PersistLocation].
 ///
@@ -853,6 +864,106 @@ impl PersistClient {
     /// We'll be thoughtful about making unnecessary changes, but the **output
     /// of this method needs to be gated from users**, so that it's not subject
     /// to our backward compatibility guarantees.
+    /// Creates a fork of `source_shard` as a new, independent shard.
+    ///
+    /// The fork shard is initialized with all hollow batches from the source
+    /// shard at `as_of`. Each `HollowBatchPart` key is rewritten to an absolute
+    /// `PartialBatchKey` (prefixed `abs:`) so the fork shard can read source
+    /// blobs without copying data. Callers must insert the returned
+    /// `referenced_blob_keys` into the `fork_blob_refs` CRDB table to prevent
+    /// the source org's GC from physically deleting those blobs.
+    pub async fn fork_shard<K, V, T, D>(
+        &self,
+        source_shard: ShardId,
+        as_of: Antichain<T>,
+        diagnostics: Diagnostics,
+    ) -> Result<ForkShardResult, anyhow::Error>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + Sync,
+        D: differential_dataflow::difference::Monoid + Codec64 + Send + Sync,
+    {
+        use crate::internal::paths::PartialBatchKey;
+        use crate::internal::state::{BatchPart, RunPart};
+
+        // Open source shard and wait for the snapshot to be available.
+        let machine = self
+            .make_machine::<K, V, T, D>(source_shard, diagnostics.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("fork_shard: open source: {e:?}"))?;
+
+        // Collect all hollow batches at the given as_of, waiting for upper if needed.
+        let source_batches = machine
+            .unleased_snapshot(&as_of)
+            .await
+            .map_err(|e| anyhow::anyhow!("fork_shard: snapshot since={:?}", e))?;
+
+        // Rewrite each part key to an absolute cross-shard key and collect the
+        // full blob keys so callers can populate fork_blob_refs.
+        let mut referenced_blob_keys = Vec::new();
+        let fork_batches = source_batches
+            .into_iter()
+            .map(|mut batch| {
+                let new_parts = batch
+                    .parts
+                    .into_iter()
+                    .map(|run_part| match run_part {
+                        RunPart::Single(mut part) => {
+                            let abs_key = match &part {
+                                BatchPart::Hollow(h) => {
+                                    let full_key = h.key.complete(&source_shard);
+                                    let abs = PartialBatchKey::from_absolute(&full_key);
+                                    referenced_blob_keys.push(full_key.to_string());
+                                    abs
+                                }
+                                BatchPart::Inline { .. } => return RunPart::Single(part),
+                            };
+                            if let BatchPart::Hollow(ref mut h) = part {
+                                h.key = abs_key;
+                            }
+                            RunPart::Single(part)
+                        }
+                        // RunPart::Many is a structured-data run blob. Rewrite the outer
+                        // key to absolute so the run blob survives GC. The inner part keys
+                        // inside the run blob still reference the source shard and will
+                        // need a deeper treatment (Phase F0b) before structured runs work
+                        // across fork shards.
+                        RunPart::Many(mut run_ref) => {
+                            let full_key = run_ref.key.complete(&source_shard);
+                            referenced_blob_keys.push(full_key.to_string());
+                            run_ref.key = PartialBatchKey::from_absolute(&full_key);
+                            RunPart::Many(run_ref)
+                        }
+                    })
+                    .collect();
+                batch.parts = new_parts;
+                batch
+            })
+            .collect();
+
+        // Allocate the fork shard id and initialize it.
+        let fork_shard_id = ShardId::new();
+        let state_versions = StateVersions::new(
+            self.cfg.clone(),
+            Arc::clone(&self.consensus),
+            Arc::clone(&self.blob),
+            Arc::clone(&self.metrics),
+        );
+        let fork_shard_metrics = self
+            .metrics
+            .shards
+            .shard(&fork_shard_id, &diagnostics.shard_name);
+        state_versions
+            .init_forked_shard::<K, V, T, D>(&fork_shard_metrics, fork_batches)
+            .await?;
+
+        Ok(ForkShardResult {
+            fork_shard_id,
+            referenced_blob_keys,
+        })
+    }
+
     pub async fn inspect_shard<T: Timestamp + Lattice + Codec64>(
         &self,
         shard_id: &ShardId,

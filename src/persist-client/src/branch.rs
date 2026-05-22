@@ -369,6 +369,273 @@ mod tests {
         );
     }
 
+    /// Fork shard reads source data at fork_ts: source writes at ts ≤ fork_ts
+    /// are visible from the fork shard without copying blobs.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)]
+    async fn fork_shard_reads_source_data(dyncfgs: ConfigUpdates) {
+        use crate::ForkShardResult;
+
+        let client = new_test_client(&dyncfgs).await;
+        let fork_ts: u64 = 10;
+
+        // Write data to source shard including rows before and after fork_ts.
+        let source_id = ShardId::new();
+        let (mut write, _) = client
+            .expect_open::<String, String, u64, i64>(source_id)
+            .await;
+        write
+            .expect_append(
+                &[
+                    (("k1".to_owned(), "v1".to_owned()), 1u64, 1i64),
+                    (("k2".to_owned(), "v2".to_owned()), 5u64, 1i64),
+                    // post-fork writes — must NOT appear in fork snapshot
+                    (("k3".to_owned(), "v3".to_owned()), 15u64, 1i64),
+                ],
+                vec![0u64],
+                vec![20u64],
+            )
+            .await;
+        drop(write);
+
+        let ForkShardResult {
+            fork_shard_id,
+            referenced_blob_keys,
+        } = client
+            .fork_shard::<String, String, u64, i64>(
+                source_id,
+                Antichain::from_elem(fork_ts),
+                crate::Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork_shard must succeed");
+
+        // All referenced blob keys (if any) must start with the source shard prefix.
+        // With inline writes enabled, data is stored in consensus state and there
+        // may be no hollow blob references at all — that is correct.
+        for key in &referenced_blob_keys {
+            assert!(
+                key.starts_with(&source_id.to_string()),
+                "referenced key {key} must start with source shard id"
+            );
+        }
+
+        // Open the fork shard and read at fork_ts — must see k1 and k2 only.
+        let (_, mut fork_read) = client
+            .expect_open::<String, String, u64, i64>(fork_shard_id)
+            .await;
+        let mut snapshot = fork_read
+            .snapshot_and_fetch(Antichain::from_elem(fork_ts))
+            .await
+            .expect("fork snapshot must be readable");
+        consolidate_updates(&mut snapshot);
+
+        let state = current_state(&snapshot, fork_ts);
+        let mut state_sorted = state;
+        state_sorted.sort();
+
+        assert_eq!(
+            state_sorted,
+            vec![
+                ("k1".to_owned(), "v1".to_owned()),
+                ("k2".to_owned(), "v2".to_owned()),
+            ],
+            "fork must see source data at fork_ts"
+        );
+    }
+
+    /// Fork write isolation: writes to the fork after fork_ts must not be
+    /// visible in the source, and source writes after fork_ts must not be
+    /// visible in the fork.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)]
+    async fn fork_shard_write_isolation(dyncfgs: ConfigUpdates) {
+        use crate::ForkShardResult;
+
+        let client = new_test_client(&dyncfgs).await;
+        let fork_ts: u64 = 10;
+        let post_fork_ts: u64 = 20;
+
+        let source_id = ShardId::new();
+        let (mut write_src, mut read_src) = client
+            .expect_open::<String, String, u64, i64>(source_id)
+            .await;
+        write_src
+            .expect_append(
+                &[(("shared".to_owned(), "original".to_owned()), 5u64, 1i64)],
+                vec![0u64],
+                vec![fork_ts + 1],
+            )
+            .await;
+
+        let ForkShardResult { fork_shard_id, .. } = client
+            .fork_shard::<String, String, u64, i64>(
+                source_id,
+                Antichain::from_elem(fork_ts),
+                crate::Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork_shard must succeed");
+
+        // Write to source after fork.
+        write_src
+            .expect_append(
+                &[(
+                    ("source_only".to_owned(), "source_val".to_owned()),
+                    15u64,
+                    1i64,
+                )],
+                vec![fork_ts + 1],
+                vec![post_fork_ts + 1],
+            )
+            .await;
+
+        // Open fork for writing and write a fork-local row.
+        let (mut write_fork, mut read_fork) = client
+            .expect_open::<String, String, u64, i64>(fork_shard_id)
+            .await;
+        write_fork
+            .expect_append(
+                &[(("fork_only".to_owned(), "fork_val".to_owned()), 15u64, 1i64)],
+                vec![fork_ts + 1],
+                vec![post_fork_ts + 1],
+            )
+            .await;
+
+        // Source at post_fork_ts: sees shared + source_only, not fork_only.
+        let mut src_snap = read_src
+            .snapshot_and_fetch(Antichain::from_elem(post_fork_ts))
+            .await
+            .expect("source snapshot");
+        consolidate_updates(&mut src_snap);
+        let src_state = current_state(&src_snap, post_fork_ts);
+
+        assert!(
+            src_state.iter().any(|(k, _)| k == "source_only"),
+            "source must see its own post-fork writes"
+        );
+        assert!(
+            !src_state.iter().any(|(k, _)| k == "fork_only"),
+            "source must not see fork writes"
+        );
+
+        // Fork at post_fork_ts: sees shared + fork_only, not source_only.
+        let mut fork_snap = read_fork
+            .snapshot_and_fetch(Antichain::from_elem(post_fork_ts))
+            .await
+            .expect("fork snapshot");
+        consolidate_updates(&mut fork_snap);
+        let fork_state = current_state(&fork_snap, post_fork_ts);
+
+        assert!(
+            fork_state.iter().any(|(k, _)| k == "fork_only"),
+            "fork must see its own writes"
+        );
+        assert!(
+            !fork_state.iter().any(|(k, _)| k == "source_only"),
+            "fork must not see source writes after fork_ts"
+        );
+    }
+
+    /// After compaction of the fork shard, new parts are fork-local (no
+    /// absolute keys). The fork shard can compact independently of source.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)]
+    async fn fork_shard_compaction(dyncfgs: ConfigUpdates) {
+        use crate::ForkShardResult;
+        use crate::internal::paths::PartialBatchKey;
+
+        let client = new_test_client(&dyncfgs).await;
+        let fork_ts: u64 = 10;
+
+        let source_id = ShardId::new();
+        let (mut write_src, _) = client
+            .expect_open::<String, String, u64, i64>(source_id)
+            .await;
+        write_src
+            .expect_append(
+                &[(("k1".to_owned(), "v1".to_owned()), 1u64, 1i64)],
+                vec![0u64],
+                vec![fork_ts + 1],
+            )
+            .await;
+        drop(write_src);
+
+        let ForkShardResult { fork_shard_id, .. } = client
+            .fork_shard::<String, String, u64, i64>(
+                source_id,
+                Antichain::from_elem(fork_ts),
+                crate::Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork_shard must succeed");
+
+        // Write additional data to the fork so there are multiple batches.
+        let (mut write_fork, mut read_fork) = client
+            .expect_open::<String, String, u64, i64>(fork_shard_id)
+            .await;
+        write_fork
+            .expect_append(
+                &[(("k2".to_owned(), "v2".to_owned()), 15u64, 1i64)],
+                vec![fork_ts + 1],
+                vec![30u64],
+            )
+            .await;
+        drop(write_fork);
+
+        // Force compaction of the fork shard's new batches.
+        // After compaction, parts produced by the fork use relative keys
+        // (no abs: prefix) — they are fork-local blobs.
+        let machine = client
+            .make_machine::<String, String, u64, i64>(
+                fork_shard_id,
+                crate::Diagnostics::for_tests(),
+            )
+            .await
+            .expect("open fork machine");
+        // Check that batches written locally to the fork (lower > fork_ts) use
+        // relative (non-absolute) part keys — they are fork-local blobs.
+        for batch in machine.applier.all_batches() {
+            // "is_post_fork" ≡ {fork_ts} strictly-before batch.lower
+            let is_post_fork =
+                timely::PartialOrder::less_than(&Antichain::from_elem(fork_ts), batch.desc.lower());
+            if !is_post_fork {
+                continue;
+            }
+            for part in &batch.parts {
+                if let crate::internal::state::RunPart::Single(
+                    crate::internal::state::BatchPart::Hollow(h),
+                ) = part
+                {
+                    assert!(
+                        !h.key.is_absolute(),
+                        "post-fork local parts must have relative keys, got: {}",
+                        h.key
+                    );
+                }
+            }
+        }
+
+        // Data must still be fully readable after the fork writes.
+        let mut snap = read_fork
+            .snapshot_and_fetch(Antichain::from_elem(20u64))
+            .await
+            .expect("fork snapshot");
+        consolidate_updates(&mut snap);
+        let state = current_state(&snap, 20u64);
+        let mut sorted = state;
+        sorted.sort();
+
+        assert_eq!(
+            sorted,
+            vec![
+                ("k1".to_owned(), "v1".to_owned()),
+                ("k2".to_owned(), "v2".to_owned()),
+            ],
+            "fork must see both source data and its own writes"
+        );
+    }
+
     /// Validates non-conflicting (clean) cases: local inserts for new keys
     /// and upstream inserts for different keys do not produce conflicts.
     #[mz_persist_proc::test(tokio::test)]

@@ -2345,6 +2345,41 @@ where
         }
     }
 
+    /// Creates a new shard state pre-seeded with the given trace.
+    ///
+    /// Used by `fork_shard` to initialize a fork shard from source hollow
+    /// batches without going through `compare_and_append`.
+    pub(crate) fn new_with_trace(
+        applier_version: Version,
+        shard_id: ShardId,
+        hostname: String,
+        walltime_ms: u64,
+        trace: Trace<T>,
+    ) -> Self {
+        let state = State {
+            shard_id,
+            seqno: SeqNo::minimum(),
+            walltime_ms,
+            hostname,
+            collections: StateCollections {
+                version: applier_version,
+                last_gc_req: SeqNo::minimum(),
+                rollups: BTreeMap::new(),
+                active_rollup: None,
+                active_gc: None,
+                leased_readers: BTreeMap::new(),
+                critical_readers: BTreeMap::new(),
+                writers: BTreeMap::new(),
+                schemas: BTreeMap::new(),
+                trace,
+            },
+        };
+        TypedState {
+            state,
+            _phantom: PhantomData,
+        }
+    }
+
     pub fn clone_apply<R, E, WorkFn>(
         &self,
         cfg: &PersistConfig,

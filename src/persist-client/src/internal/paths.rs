@@ -145,12 +145,31 @@ impl PartialBatchKey {
         PartialBatchKey(format!("{}/{}", version, part_id))
     }
 
+    /// Creates a cross-shard absolute key from a fully-qualified [BlobKey].
+    /// The resulting key, when passed to [Self::complete], returns the original
+    /// blob key unchanged regardless of the shard_id argument.
+    ///
+    /// Used by `fork_shard` to reference source-shard blobs from a fork shard
+    /// without copying data. The `abs:` prefix is unambiguous because normal
+    /// keys always start with 'w' (WriterId) or 'n' (version number).
+    pub(crate) fn from_absolute(full_key: &BlobKey) -> Self {
+        PartialBatchKey(format!("abs:{}", full_key.0))
+    }
+
+    pub(crate) fn is_absolute(&self) -> bool {
+        self.0.starts_with("abs:")
+    }
+
     pub fn split(&self) -> Option<(WriterKey, PartId)> {
         split_batch_key(&self.0).ok()
     }
 
     pub fn complete(&self, shard_id: &ShardId) -> BlobKey {
-        BlobKey(format!("{}/{}", shard_id, self))
+        if let Some(full_path) = self.0.strip_prefix("abs:") {
+            BlobKey(full_path.to_owned())
+        } else {
+            BlobKey(format!("{}/{}", shard_id, self))
+        }
     }
 }
 

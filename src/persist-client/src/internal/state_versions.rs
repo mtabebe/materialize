@@ -768,6 +768,93 @@ impl StateVersions {
         (initial_state, diff)
     }
 
+    /// Initializes a fork shard from source hollow batches that already have
+    /// absolute `PartialBatchKey`s (produced by `fork_shard`).
+    ///
+    /// Writes a rollup blob and CaSs the initial state into consensus.
+    /// Returns `Err` only if CaS fails due to the shard already being
+    /// initialized (another fork_shard call raced us).
+    pub(crate) async fn init_forked_shard<K, V, T, D>(
+        &self,
+        shard_metrics: &ShardMetrics,
+        batches: Vec<crate::internal::state::HollowBatch<T>>,
+    ) -> Result<TypedState<K, V, T, D>, anyhow::Error>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64,
+        D: Monoid + Codec64,
+    {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use crate::internal::trace::{FlatTrace, Trace};
+        use timely::progress::Antichain;
+
+        // Build a Trace from the source batches using the legacy_batches path.
+        let flat = FlatTrace::<T> {
+            since: Antichain::from_elem(T::minimum()),
+            legacy_batches: batches.into_iter().map(|b| (Arc::new(b), ())).collect(),
+            hollow_batches: BTreeMap::new(),
+            spine_batches: BTreeMap::new(),
+            merges: BTreeMap::new(),
+        };
+        let trace = Trace::unflatten(flat)
+            .map_err(|e| anyhow::anyhow!("failed to build fork trace: {}", e))?;
+
+        let empty_state = TypedState::<K, V, T, D>::new_with_trace(
+            self.cfg.build_version.clone(),
+            shard_metrics.shard_id,
+            self.cfg.hostname.clone(),
+            (self.cfg.now)(),
+            trace,
+        );
+        let mut initial_state = empty_state.clone_for_rollup();
+        let rollup_seqno = initial_state.seqno();
+        let rollup = HollowRollup {
+            key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
+            encoded_size_bytes: None,
+        };
+        match initial_state
+            .collections
+            .add_rollup((rollup_seqno, &rollup))
+        {
+            Continue(_) => {}
+            Break(NoOpStateTransition(_)) => {
+                panic!("initial fork state transition should not be a no-op")
+            }
+        };
+
+        let encoded_rollup = self.encode_rollup_blob(
+            shard_metrics,
+            initial_state.clone_for_rollup(),
+            vec![],
+            rollup.key,
+        );
+        let () = self.write_rollup_blob(&encoded_rollup).await;
+
+        let diff = StateDiff::from_diff(&empty_state.state, &initial_state.state);
+        let (cas_res, _) =
+            retry_external(&self.metrics.retries.external.maybe_init_cas, || async {
+                self.try_compare_and_set_current(
+                    "init_forked_shard",
+                    shard_metrics,
+                    &initial_state,
+                    &diff,
+                )
+                .await
+                .map_err(|err| err.into())
+            })
+            .await;
+        match cas_res {
+            CaSResult::Committed => Ok(initial_state),
+            CaSResult::ExpectationMismatch => Err(anyhow::anyhow!(
+                "fork shard {} was already initialized — concurrent fork_shard call?",
+                shard_metrics.shard_id
+            )),
+        }
+    }
+
     pub async fn write_rollup_for_state<K, V, T, D>(
         &self,
         shard_metrics: &ShardMetrics,
