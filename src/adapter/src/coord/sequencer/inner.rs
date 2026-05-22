@@ -1955,7 +1955,7 @@ impl Coordinator {
         use mz_persist_client::Diagnostics as PersistDiagnostics;
         use mz_storage_types::sources::SourceData;
 
-        let fork_name = &plan.fork_name;
+        let fork_name = plan.fork_name.clone();
         let fork_org_id = uuid::Uuid::new_v4();
 
         // Collect (global_id, data_shard) for all user tables.
@@ -1996,12 +1996,36 @@ impl Coordinator {
             fork_results.push((global_id, shard_id, result));
         }
 
+        // Build source→fork shard mapping for catalog copy.
+        let shard_mapping: BTreeMap<String, String> = fork_results
+            .iter()
+            .map(|(_, src_shard, result)| {
+                (
+                    src_shard.to_string(),
+                    result.fork_shard_id.to_string(),
+                )
+            })
+            .collect();
+
+        // Copy the source catalog shard into a new shard for fork_org_id,
+        // rewriting StorageCollectionMetadata entries to use fork shard IDs.
+        let source_org_id = self.catalog.config().environment_id.organization_id();
+        let source_catalog_shard = mz_catalog::durable::shard_id(source_org_id, 1);
+        let fork_catalog_shard = mz_catalog::durable::shard_id(fork_org_id, 1);
+        copy_catalog_for_fork(
+            &self.persist_client,
+            source_catalog_shard,
+            fork_catalog_shard,
+            &shard_mapping,
+        )
+        .await
+        .map_err(|e| AdapterError::Internal(format!("copy_catalog_for_fork: {e}")))?;
+
         // TODO(F1): bulk-insert fork_blob_refs rows into CRDB for GC protection.
-        // TODO(F2): write fork catalog shard for fork_org_id using UnopenedPersistCatalogState.
-        // TODO(F2): insert fork_descriptor and fork_shard_map rows into CRDB.
+        // TODO(F3): insert fork_descriptor and fork_shard_map rows into CRDB.
 
         let connection_str = format!(
-            "postgres://materialize@localhost:6875/materialize?application_name=fork_{}",
+            "postgres://materialize@localhost:7875/materialize?application_name=fork_{}",
             fork_name
         );
 
@@ -6045,4 +6069,136 @@ impl Coordinator {
             None
         }
     }
+}
+
+/// Copy the source catalog shard into a new fork catalog shard, rewriting
+/// `StorageCollectionMetadata` entries to use the forked shard IDs.
+///
+/// The `shard_mapping` maps source data shard ID strings to fork data shard ID strings.
+async fn copy_catalog_for_fork(
+    persist_client: &mz_persist_client::PersistClient,
+    source_catalog_shard: mz_persist_client::ShardId,
+    fork_catalog_shard: mz_persist_client::ShardId,
+    shard_mapping: &BTreeMap<String, String>,
+) -> Result<(), anyhow::Error> {
+    use std::sync::Arc;
+
+    use mz_catalog::durable::persist_desc;
+    use mz_persist_client::Diagnostics;
+    use mz_persist_types::codec_impls::UnitSchema;
+    use mz_storage_types::StorageDiff;
+    use mz_storage_types::sources::SourceData;
+
+    // Open source catalog shard to read all entries and get the current upper.
+    let (source_write, mut source_read) = persist_client
+        .open::<SourceData, (), mz_repr::Timestamp, StorageDiff>(
+            source_catalog_shard,
+            Arc::new(persist_desc()),
+            Arc::new(UnitSchema::default()),
+            Diagnostics::from_purpose("fork catalog source"),
+            false,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("open source catalog shard: {e:?}"))?;
+
+    // Use the write handle upper to compute a valid as_of for the snapshot.
+    let upper = source_write.upper().clone();
+    source_write.expire().await;
+
+    let as_of = upper
+        .as_option()
+        .and_then(|u| u.checked_sub(1))
+        .map(mz_repr::Timestamp::from)
+        .ok_or_else(|| anyhow::anyhow!("source catalog shard is at minimum timestamp"))?;
+
+    // Snapshot all current catalog entries.
+    let entries = source_read
+        .snapshot_and_fetch(Antichain::from_elem(as_of))
+        .await
+        .map_err(|_| anyhow::anyhow!("snapshot source catalog: since advanced past as_of"))?;
+    source_read.expire().await;
+
+    // Transform entries: rewrite StorageCollectionMetadata shard IDs.
+    let write_ts = mz_repr::Timestamp::from(1u64);
+    let upper_ts = mz_repr::Timestamp::from(2u64);
+    let updates: Vec<((SourceData, ()), mz_repr::Timestamp, StorageDiff)> = entries
+        .into_iter()
+        .map(|((source_data, ()), _orig_ts, diff)| {
+            let modified = rewrite_catalog_entry_shards(source_data, shard_mapping);
+            ((modified, ()), write_ts, diff)
+        })
+        .collect();
+
+    // Write all catalog entries to the fork shard.
+    let mut fork_write = persist_client
+        .open_writer::<SourceData, (), mz_repr::Timestamp, StorageDiff>(
+            fork_catalog_shard,
+            Arc::new(persist_desc()),
+            Arc::new(UnitSchema::default()),
+            Diagnostics::from_purpose("fork catalog dest"),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("open fork catalog writer: {e:?}"))?;
+
+    fork_write
+        .compare_and_append(
+            updates,
+            Antichain::from_elem(mz_repr::Timestamp::from(0u64)),
+            Antichain::from_elem(upper_ts),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("fork catalog compare_and_append: {e:?}"))?
+        .map_err(|mismatch| {
+            anyhow::anyhow!("fork catalog upper mismatch: {mismatch:?}")
+        })?;
+
+    fork_write.expire().await;
+    Ok(())
+}
+
+/// Rewrite any `StorageCollectionMetadata` entries in a raw catalog row to use
+/// fork shard IDs from `shard_mapping` (source shard id string → fork shard id string).
+fn rewrite_catalog_entry_shards(
+    source_data: mz_storage_types::sources::SourceData,
+    shard_mapping: &BTreeMap<String, String>,
+) -> mz_storage_types::sources::SourceData {
+    use mz_repr::adt::jsonb::{Jsonb, JsonbRef};
+    use mz_storage_types::sources::SourceData;
+
+    let row = match source_data.0 {
+        Ok(row) => row,
+        Err(_) => return source_data,
+    };
+
+    let json = {
+        let datum = row.unpack_first();
+        JsonbRef::from_datum(datum).to_serde_json()
+    };
+
+    // Check if this is a StorageCollectionMetadata entry and rewrite the shard.
+    let modified_json = if let Some(scm) = json.get("StorageCollectionMetadata") {
+        if let Some(shard_str) = scm
+            .get("value")
+            .and_then(|v| v.get("shard"))
+            .and_then(|s| s.as_str())
+        {
+            if let Some(fork_shard) = shard_mapping.get(shard_str) {
+                let mut j = json.clone();
+                j["StorageCollectionMetadata"]["value"]["shard"] =
+                    serde_json::Value::String(fork_shard.clone());
+                j
+            } else {
+                json
+            }
+        } else {
+            json
+        }
+    } else {
+        json
+    };
+
+    let new_row = Jsonb::from_serde_json(modified_json)
+        .expect("catalog entry should produce valid json")
+        .into_row();
+    SourceData(Ok(new_row))
 }
