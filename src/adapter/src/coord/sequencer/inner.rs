@@ -1947,6 +1947,97 @@ impl Coordinator {
         }
     }
 
+    pub(super) async fn sequence_prepare_fork(
+        &mut self,
+        _session: &Session,
+        plan: plan::PrepareForkPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        use mz_persist_client::Diagnostics as PersistDiagnostics;
+        use mz_storage_types::sources::SourceData;
+
+        let fork_name = &plan.fork_name;
+        let fork_org_id = uuid::Uuid::new_v4();
+
+        // Collect (global_id, data_shard) for all user tables.
+        let source_shards: Vec<(GlobalId, mz_persist_client::ShardId)> = self
+            .catalog
+            .entries()
+            .filter_map(|entry| {
+                if let CatalogItem::Table(_) = entry.item() {
+                    let global_id = entry.latest_global_id();
+                    let meta = self
+                        .controller
+                        .storage
+                        .collection_metadata(global_id)
+                        .ok()?;
+                    Some((global_id, meta.data_shard))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Fork each shard and accumulate blob refs for GC protection.
+        let mut fork_results = Vec::new();
+        for (global_id, shard_id) in source_shards {
+            let result = self
+                .persist_client
+                .fork_shard::<SourceData, (), mz_repr::Timestamp, i64>(
+                    shard_id,
+                    PersistDiagnostics::from_purpose("prepare fork"),
+                )
+                .await
+                .map_err(|e| {
+                    AdapterError::Internal(format!(
+                        "fork_shard failed for {:?}: {e}",
+                        global_id
+                    ))
+                })?;
+            fork_results.push((global_id, shard_id, result));
+        }
+
+        // TODO(F1): bulk-insert fork_blob_refs rows into CRDB for GC protection.
+        // TODO(F2): write fork catalog shard for fork_org_id using UnopenedPersistCatalogState.
+        // TODO(F2): insert fork_descriptor and fork_shard_map rows into CRDB.
+
+        let connection_str = format!(
+            "postgres://materialize@localhost:6875/materialize?application_name=fork_{}",
+            fork_name
+        );
+
+        tracing::info!(
+            %fork_name,
+            %fork_org_id,
+            num_shards = fork_results.len(),
+            "PREPARE FORK complete"
+        );
+
+        let row = Row::pack_slice(&[
+            Datum::String(&fork_org_id.to_string()),
+            Datum::String(&connection_str),
+        ]);
+        Ok(Self::send_immediate_rows(vec![row]))
+    }
+
+    pub(super) async fn sequence_drop_fork(
+        &mut self,
+        _session: &Session,
+        plan: plan::DropForkPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        // TODO(F1): DELETE FROM fork_blob_refs WHERE fork_name = $name
+        // TODO(F2): DELETE FROM fork_descriptor / fork_shard_map
+        // TODO(F2): tombstone fork catalog shard
+
+        if !plan.if_exists {
+            // For now, just log — once CRDB tables exist we can look up the fork.
+            tracing::info!(fork_name = %plan.fork_name, "DROP FORK (no-op: fork metadata not yet persisted)");
+        }
+
+        Ok(ExecuteResponse::DroppedObject(
+            mz_sql::catalog::ObjectType::Table,
+        ))
+    }
+
     /// Validates the role attributes for a `CREATE ROLE` statement.
     fn validate_role_attributes(&self, attributes: &RoleAttributesRaw) -> Result<(), AdapterError> {
         if !ENABLE_PASSWORD_AUTH.get(self.catalog().system_config().dyncfgs()) {

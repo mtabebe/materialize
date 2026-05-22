@@ -1,0 +1,48 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for PREPARE FORK / DROP FORK.
+# Phase F2: skeleton — parser, planner, and coordinator sequencer wired up.
+# CRDB persistence and catalog writing are stubbed (TODO in sequencer).
+
+mode cockroach
+
+# Setup: a table with data.
+statement ok
+CREATE TABLE orders (id INT, symbol TEXT)
+
+statement ok
+INSERT INTO orders VALUES (1, 'AAPL'), (2, 'GOOG')
+
+# --- PREPARE FORK basic ---
+
+# PREPARE FORK returns (fork_org_id, connection).
+# Use statement ok since fork_org_id is a random UUID.
+statement ok
+PREPARE FORK test_fork
+
+# --- DROP FORK basic ---
+
+statement ok
+DROP FORK test_fork
+
+# --- DROP FORK IF EXISTS for nonexistent fork ---
+
+statement ok
+DROP FORK IF EXISTS nonexistent_fork
+
+# --- DROP FORK nonexistent without IF EXISTS fails ---
+# TODO: once fork metadata is persisted, this should error.
+# For now it is a no-op.
+statement ok
+DROP FORK nonexistent_fork
+
+# Cleanup
+statement ok
+DROP TABLE orders

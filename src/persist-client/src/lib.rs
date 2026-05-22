@@ -875,7 +875,6 @@ impl PersistClient {
     pub async fn fork_shard<K, V, T, D>(
         &self,
         source_shard: ShardId,
-        as_of: Antichain<T>,
         diagnostics: Diagnostics,
     ) -> Result<ForkShardResult, anyhow::Error>
     where
@@ -887,17 +886,17 @@ impl PersistClient {
         use crate::internal::paths::PartialBatchKey;
         use crate::internal::state::{BatchPart, RunPart};
 
-        // Open source shard and wait for the snapshot to be available.
+        // Open source shard and collect all current hollow batches without blocking.
+        // We take the current state of the trace directly rather than waiting for
+        // a specific timestamp to be available.
         let machine = self
             .make_machine::<K, V, T, D>(source_shard, diagnostics.clone())
             .await
             .map_err(|e| anyhow::anyhow!("fork_shard: open source: {e:?}"))?;
 
-        // Collect all hollow batches at the given as_of, waiting for upper if needed.
-        let source_batches = machine
-            .unleased_snapshot(&as_of)
-            .await
-            .map_err(|e| anyhow::anyhow!("fork_shard: snapshot since={:?}", e))?;
+        // all_batches() returns all hollow batches in the current trace without
+        // any timestamp gating — no blocking wait on the upper.
+        let source_batches = machine.applier.all_batches();
 
         // Rewrite each part key to an absolute cross-shard key and collect the
         // full blob keys so callers can populate fork_blob_refs.

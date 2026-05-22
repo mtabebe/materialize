@@ -4713,6 +4713,9 @@ impl<'a> Parser<'a> {
         } else if self.peek_keyword(BRANCH) {
             self.parse_drop_branch()
                 .map_parser_err(StatementKind::DropBranch)
+        } else if self.peek_keyword(FORK) {
+            self.parse_drop_fork()
+                .map_parser_err(StatementKind::DropFork)
         } else {
             self.parse_drop_objects()
                 .map_parser_err(StatementKind::DropObjects)
@@ -4732,6 +4735,13 @@ impl<'a> Parser<'a> {
             if_exists,
             cascade,
         }))
+    }
+
+    fn parse_drop_fork(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(FORK)?;
+        let if_exists = self.parse_if_exists()?;
+        let name = self.parse_identifier()?;
+        Ok(Statement::DropFork(DropForkStatement { name, if_exists }))
     }
 
     fn parse_merge(&mut self) -> Result<Statement<Raw>, ParserError> {
@@ -9210,6 +9220,11 @@ impl<'a> Parser<'a> {
     /// Parse a `PREPARE` statement, assuming that the `PREPARE` token
     /// has already been consumed.
     fn parse_prepare(&mut self) -> Result<Statement<Raw>, ParserStatementError> {
+        if self.peek_keyword(FORK) {
+            return self
+                .parse_prepare_fork()
+                .map_parser_err(StatementKind::PrepareFork);
+        }
         let name = self
             .parse_identifier()
             .map_parser_err(StatementKind::Prepare)?;
@@ -9233,6 +9248,13 @@ impl<'a> Parser<'a> {
             stmt: Box::new(ast),
             sql: sql.to_string(),
         }))
+    }
+
+    /// Parse a `PREPARE FORK <name>` statement, assuming that `PREPARE` has been consumed.
+    fn parse_prepare_fork(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(FORK)?;
+        let name = self.parse_identifier()?;
+        Ok(Statement::PrepareFork(PrepareForkStatement { name }))
     }
 
     /// Parse a `EXECUTE` statement, assuming that the `EXECUTE` token

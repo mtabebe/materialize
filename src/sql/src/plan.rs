@@ -138,6 +138,8 @@ pub enum Plan {
     MergeBranch(MergeBranchPlan),
     ShowBranches(ShowBranchesPlan),
     ShowBranchStatus(ShowBranchStatusPlan),
+    PrepareFork(PrepareForkPlan),
+    DropFork(DropForkPlan),
     CreateRole(CreateRolePlan),
     CreateCluster(CreateClusterPlan),
     CreateClusterReplica(CreateClusterReplicaPlan),
@@ -284,6 +286,8 @@ impl Plan {
             StatementKind::CreateBranch => &[PlanKind::CreateBranch],
             StatementKind::DropBranch => &[PlanKind::DropBranch],
             StatementKind::MergeBranch => &[PlanKind::MergeBranch],
+            StatementKind::PrepareFork => &[PlanKind::PrepareFork],
+            StatementKind::DropFork => &[PlanKind::DropFork],
             StatementKind::CreateSecret => &[PlanKind::CreateSecret],
             StatementKind::CreateSink => &[PlanKind::CreateSink],
             StatementKind::CreateSource | StatementKind::CreateSubsource => {
@@ -351,6 +355,8 @@ impl Plan {
             Plan::MergeBranch(_) => "merge branch",
             Plan::ShowBranches(_) => "show branches",
             Plan::ShowBranchStatus(_) => "show branch status",
+            Plan::PrepareFork(_) => "prepare fork",
+            Plan::DropFork(_) => "drop fork",
             Plan::CreateRole(_) => "create role",
             Plan::CreateCluster(_) => "create cluster",
             Plan::CreateClusterReplica(_) => "create cluster replica",
@@ -597,6 +603,17 @@ pub struct ShowBranchesPlan;
 #[derive(Debug)]
 pub struct ShowBranchStatusPlan {
     pub branch_name: String,
+}
+
+#[derive(Debug)]
+pub struct PrepareForkPlan {
+    pub fork_name: String,
+}
+
+#[derive(Debug)]
+pub struct DropForkPlan {
+    pub fork_name: String,
+    pub if_exists: bool,
 }
 
 #[derive(Debug)]

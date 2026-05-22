@@ -67,11 +67,11 @@ use mz_sql_parser::ast::{
     CreateTypeMapOption, CreateTypeMapOptionName, CreateTypeStatement, CreateViewStatement,
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
-    DocOnIdentifier, DocOnSchema, DropBranchStatement, DropObjectsStatement, DropOwnedStatement,
+    DocOnIdentifier, DocOnSchema, DropBranchStatement, DropForkStatement, DropObjectsStatement, DropOwnedStatement,
     Expr, Format, FormatSpecifier, IcebergSinkConfigOption, Ident, IfExistsBehavior, IndexOption,
     IndexOptionName, KafkaSinkConfigOption, KeyConstraint, LoadGeneratorOption,
     LoadGeneratorOptionName, MaterializedViewOption, MaterializedViewOptionName,
-    MergeBranchStatement, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption,
+    MergeBranchStatement, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption, PrepareForkStatement,
     NetworkPolicyOptionName, NetworkPolicyRuleDefinition, NetworkPolicyRuleOption,
     NetworkPolicyRuleOptionName, PgConfigOption, PgConfigOptionName, ProtobufSchema,
     QualifiedReplica, RefreshAtOptionValue, RefreshEveryOptionValue, RefreshOptionValue,
@@ -157,8 +157,8 @@ use crate::plan::{
     CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
     CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
     CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan,
-    CreateTypePlan, CreateViewPlan, DataSourceDesc, DropBranchPlan, DropObjectsPlan, DropOwnedPlan,
-    HirRelationExpr, Index, MaterializedView, MergeBranchPlan, NetworkPolicyRule,
+    CreateTypePlan, CreateViewPlan, DataSourceDesc, DropBranchPlan, DropForkPlan, DropObjectsPlan, DropOwnedPlan,
+    HirRelationExpr, Index, MaterializedView, MergeBranchPlan, NetworkPolicyRule, PrepareForkPlan,
     NetworkPolicyRuleAction, NetworkPolicyRuleDirection, Plan, PlanClusterOption, PlanNotice,
     PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink, Source, Table, TableDataSource, Type,
     VariableValue, View, WebhookBodyFormat, WebhookHeaderFilters, WebhookHeaders,
@@ -344,6 +344,44 @@ pub fn plan_merge_branch(
     Ok(Plan::MergeBranch(MergeBranchPlan {
         branch_name,
         into_schema_name,
+    }))
+}
+
+pub fn describe_prepare_fork(
+    _: &StatementContext,
+    _: PrepareForkStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("fork_org_id", SqlScalarType::String.nullable(false))
+            .with_column("connection", SqlScalarType::String.nullable(false))
+            .finish(),
+    )))
+}
+
+pub fn plan_prepare_fork(
+    _scx: &StatementContext,
+    PrepareForkStatement { name }: PrepareForkStatement,
+) -> Result<Plan, PlanError> {
+    Ok(Plan::PrepareFork(PrepareForkPlan {
+        fork_name: normalize::ident(name),
+    }))
+}
+
+pub fn describe_drop_fork(
+    _: &StatementContext,
+    _: DropForkStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn plan_drop_fork(
+    _scx: &StatementContext,
+    DropForkStatement { name, if_exists }: DropForkStatement,
+) -> Result<Plan, PlanError> {
+    Ok(Plan::DropFork(DropForkPlan {
+        fork_name: normalize::ident(name),
+        if_exists,
     }))
 }
 

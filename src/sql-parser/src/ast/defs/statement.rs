@@ -52,6 +52,8 @@ pub enum Statement<T: AstInfo> {
     CreateBranch(CreateBranchStatement),
     DropBranch(DropBranchStatement),
     MergeBranch(MergeBranchStatement),
+    PrepareFork(PrepareForkStatement),
+    DropFork(DropForkStatement),
     CreateWebhookSource(CreateWebhookSourceStatement<T>),
     CreateSource(CreateSourceStatement<T>),
     CreateSubsource(CreateSubsourceStatement<T>),
@@ -134,6 +136,8 @@ impl<T: AstInfo> AstDisplay for Statement<T> {
             Statement::CreateBranch(stmt) => f.write_node(stmt),
             Statement::DropBranch(stmt) => f.write_node(stmt),
             Statement::MergeBranch(stmt) => f.write_node(stmt),
+            Statement::PrepareFork(stmt) => f.write_node(stmt),
+            Statement::DropFork(stmt) => f.write_node(stmt),
             Statement::CreateWebhookSource(stmt) => f.write_node(stmt),
             Statement::CreateSource(stmt) => f.write_node(stmt),
             Statement::CreateSubsource(stmt) => f.write_node(stmt),
@@ -219,6 +223,8 @@ pub fn statement_kind_label_value(kind: StatementKind) -> &'static str {
         StatementKind::CreateBranch => "create_branch",
         StatementKind::DropBranch => "drop_branch",
         StatementKind::MergeBranch => "merge_branch",
+        StatementKind::PrepareFork => "prepare_fork",
+        StatementKind::DropFork => "drop_fork",
         StatementKind::CreateWebhookSource => "create_webhook",
         StatementKind::CreateSource => "create_source",
         StatementKind::CreateSubsource => "create_subsource",
@@ -666,6 +672,38 @@ impl AstDisplay for ShowBranchStatusStatement {
     }
 }
 impl_display!(ShowBranchStatusStatement);
+
+/// `PREPARE FORK <name>`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PrepareForkStatement {
+    pub name: Ident,
+}
+
+impl AstDisplay for PrepareForkStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("PREPARE FORK ");
+        f.write_node(&self.name);
+    }
+}
+impl_display!(PrepareForkStatement);
+
+/// `DROP FORK <name>`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DropForkStatement {
+    pub name: Ident,
+    pub if_exists: bool,
+}
+
+impl AstDisplay for DropForkStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("DROP FORK ");
+        if self.if_exists {
+            f.write_str("IF EXISTS ");
+        }
+        f.write_node(&self.name);
+    }
+}
+impl_display!(DropForkStatement);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionDefaultAwsPrivatelink<T: AstInfo> {

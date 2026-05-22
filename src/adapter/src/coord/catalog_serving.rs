@@ -169,7 +169,9 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::DropBranch(_)
         | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
-        | Plan::ShowBranchStatus(_) => return TargetCluster::Active,
+        | Plan::ShowBranchStatus(_)
+        | Plan::PrepareFork(_)
+        | Plan::DropFork(_) => return TargetCluster::Active,
     };
 
     // Bail if the user has disabled it via the SessionVar.

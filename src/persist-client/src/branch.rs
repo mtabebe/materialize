@@ -404,7 +404,6 @@ mod tests {
         } = client
             .fork_shard::<String, String, u64, i64>(
                 source_id,
-                Antichain::from_elem(fork_ts),
                 crate::Diagnostics::for_tests(),
             )
             .await
@@ -471,7 +470,6 @@ mod tests {
         let ForkShardResult { fork_shard_id, .. } = client
             .fork_shard::<String, String, u64, i64>(
                 source_id,
-                Antichain::from_elem(fork_ts),
                 crate::Diagnostics::for_tests(),
             )
             .await
@@ -564,7 +562,6 @@ mod tests {
         let ForkShardResult { fork_shard_id, .. } = client
             .fork_shard::<String, String, u64, i64>(
                 source_id,
-                Antichain::from_elem(fork_ts),
                 crate::Diagnostics::for_tests(),
             )
             .await
@@ -769,7 +766,6 @@ mod tests {
         let fork_result = client
             .fork_shard::<String, String, u64, i64>(
                 source_id,
-                Antichain::from_elem(fork_ts),
                 crate::Diagnostics::for_tests(),
             )
             .await

@@ -1307,6 +1307,8 @@ impl Coordinator {
                     | Statement::CreateBranch(_)
                     | Statement::DropBranch(_)
                     | Statement::MergeBranch(_)
+                    | Statement::PrepareFork(_)
+                    | Statement::DropFork(_)
                     | Statement::CreateSecret(_)
                     | Statement::CreateSink(_)
                     | Statement::CreateSubsource(_)

@@ -1625,7 +1625,9 @@ fn generate_rbac_requirements(
         | Plan::DropBranch(_)
         | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
-        | Plan::ShowBranchStatus(_) => Default::default(),
+        | Plan::ShowBranchStatus(_)
+        | Plan::PrepareFork(_)
+        | Plan::DropFork(_) => Default::default(),
     }
 }
 

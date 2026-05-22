@@ -909,6 +909,8 @@ impl ExecuteResponse {
             MergeBranch => &[MergedBranch, SendingRowsImmediate],
             ShowBranches => &[SendingRowsImmediate],
             ShowBranchStatus => &[SendingRowsImmediate],
+            PrepareFork => &[SendingRowsImmediate],
+            DropFork => &[DroppedObject],
             CreateRole => &[CreatedRole],
             CreateCluster => &[CreatedCluster],
             CreateClusterReplica => &[CreatedClusterReplica],

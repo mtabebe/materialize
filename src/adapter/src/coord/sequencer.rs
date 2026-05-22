@@ -265,6 +265,14 @@ impl Coordinator {
                     let result = self.sequence_show_branch_status(plan);
                     ctx.retire(result);
                 }
+                Plan::PrepareFork(plan) => {
+                    let result = self.sequence_prepare_fork(ctx.session_mut(), plan).await;
+                    ctx.retire(result);
+                }
+                Plan::DropFork(plan) => {
+                    let result = self.sequence_drop_fork(ctx.session_mut(), plan).await;
+                    ctx.retire(result);
+                }
                 Plan::CreateRole(plan) => {
                     let result = self
                         .sequence_create_role(Some(ctx.session().conn_id()), plan)

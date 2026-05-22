@@ -1037,7 +1037,9 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::DropBranch(_)
         | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
-        | Plan::ShowBranchStatus(_) => BTreeSet::default(),
+        | Plan::ShowBranchStatus(_)
+        | Plan::PrepareFork(_)
+        | Plan::DropFork(_) => BTreeSet::default(),
     };
     let depends_on_required_id = REQUIRED_BUILTIN_TABLES
         .iter()

@@ -791,9 +791,22 @@ impl StateVersions {
         use crate::internal::trace::{FlatTrace, Trace};
         use timely::progress::Antichain;
 
+        // The FlatTrace's since must be >= the since of every batch in it.
+        // Use the meet (greatest lower bound) of all batch since values — which
+        // for a monotone antichain means the max since across all batches.
+        let trace_since = batches
+            .iter()
+            .fold(Antichain::from_elem(T::minimum()), |mut acc, b| {
+                use timely::PartialOrder;
+                if PartialOrder::less_than(&acc, b.desc.since()) {
+                    acc = b.desc.since().clone();
+                }
+                acc
+            });
+
         // Build a Trace from the source batches using the legacy_batches path.
         let flat = FlatTrace::<T> {
-            since: Antichain::from_elem(T::minimum()),
+            since: trace_since,
             legacy_batches: batches.into_iter().map(|b| (Arc::new(b), ())).collect(),
             hollow_batches: BTreeMap::new(),
             spine_batches: BTreeMap::new(),
