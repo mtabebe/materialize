@@ -1857,6 +1857,10 @@ pub struct BranchState {
     pub status: BranchStatus,
     /// Forked tables in this branch: table name → entry.
     pub forked_tables: BTreeMap<String, ForkedTableEntry>,
+    /// Catalog IDs of materialized views created in this branch (in creation order).
+    pub branch_mv_ids: Vec<CatalogItemId>,
+    /// Catalog IDs of indexes created in this branch (in creation order).
+    pub branch_index_ids: Vec<CatalogItemId>,
 }
 
 /// Glues the external world to the Timely workers.
@@ -3266,6 +3270,8 @@ impl Coordinator {
                 source_schema_name: descriptor.source_schema_name.clone(),
                 status: BranchStatus::Active,
                 forked_tables,
+                branch_mv_ids: Vec::new(),
+                branch_index_ids: Vec::new(),
             };
             self.branch_by_schema
                 .insert(descriptor.schema_name.clone(), branch_state);

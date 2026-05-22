@@ -23,10 +23,12 @@ use mz_adapter_types::connection::ConnectionId;
 use mz_adapter_types::dyncfgs::ENABLE_PASSWORD_AUTH;
 use mz_catalog::memory::error::ErrorKind;
 use mz_catalog::memory::objects::{
-    CatalogItem, Connection, DataSourceDesc, Sink, Source, Table, TableDataSource, Type,
+    CatalogItem, Connection, DataSourceDesc, Index as CatalogIndex,
+    MaterializedView as CatalogMaterializedView, Sink, Source, Table, TableDataSource, Type,
 };
 use mz_expr::{
-    CollectionPlan, MapFilterProject, OptimizedMirRelationExpr, ResultSpec, RowSetFinishing,
+    CollectionPlan, Id, MapFilterProject, MirRelationExpr, OptimizedMirRelationExpr, ResultSpec,
+    RowSetFinishing,
 };
 use mz_ore::cast::CastFrom;
 use mz_ore::collections::{CollectionExt, HashSet};
@@ -65,6 +67,7 @@ use mz_sql::plan::{
 use mz_sql::pure::{PurifiedSourceExport, generate_subsource_statements};
 use mz_storage_types::sinks::StorageSinkDesc;
 // Import `plan` module, but only import select elements to avoid merge conflicts on use statements.
+use mz_repr::optimize::OverrideFrom;
 use mz_sql::plan::{
     AlterConnectionAction, AlterConnectionPlan, CreateSourcePlanBundle, ExplainSinkSchemaPlan,
     Explainee, ExplaineeStatement, MutationKind, Params, Plan, PlannedAlterRoleOption,
@@ -156,6 +159,29 @@ struct CreateSourceInner {
     ops: Vec<catalog::Op>,
     sources: Vec<(CatalogItemId, Source)>,
     if_not_exists_ids: BTreeMap<CatalogItemId, QualifiedItemName>,
+}
+
+/// Rewrites every `Id::Global(gid)` node in `expr` where `gid` appears in `remap`,
+/// substituting the mapped value.  Used during `CREATE BRANCH` to point forked MV
+/// plans at delta-table GlobalIds instead of source-table GlobalIds.
+fn remap_global_ids_in_expr(
+    expr: &mut OptimizedMirRelationExpr,
+    remap: &BTreeMap<GlobalId, GlobalId>,
+) {
+    use mz_expr::visit::Visit;
+    expr.as_inner_mut()
+        .visit_mut_post(&mut |node: &mut MirRelationExpr| {
+            if let MirRelationExpr::Get {
+                id: Id::Global(gid),
+                ..
+            } = node
+            {
+                if let Some(&new_gid) = remap.get(gid) {
+                    *gid = new_gid;
+                }
+            }
+        })
+        .expect("recursion limit exceeded during branch MV GlobalId remapping");
 }
 
 impl Coordinator {
@@ -861,7 +887,8 @@ impl Coordinator {
             schema_name: plan.branch_name.clone(),
             owner_id: *session.current_role_id(),
         };
-        self.catalog_transact(Some(session), vec![create_schema_op]).await?;
+        self.catalog_transact(Some(session), vec![create_schema_op])
+            .await?;
 
         // Step 2: Collect info about tables in the source schema.
         // Do this after schema creation (so we can look up the branch schema spec),
@@ -878,13 +905,18 @@ impl Coordinator {
             global_id: GlobalId,
             desc: mz_repr::VersionedRelationDesc,
             resolved_ids: ResolvedIds,
-            custom_logical_compaction_window: Option<mz_adapter_types::compaction::CompactionWindow>,
+            custom_logical_compaction_window:
+                Option<mz_adapter_types::compaction::CompactionWindow>,
             data_source: mz_catalog::memory::objects::TableDataSource,
             /// The source table's create_sql; used to generate the delta table's create_sql.
             source_create_sql: Option<String>,
         }
 
-        let (source_tables, branch_schema_spec, database_name): (Vec<SourceTableInfo>, SchemaSpecifier, String) = {
+        let (source_tables, branch_schema_spec, database_name): (
+            Vec<SourceTableInfo>,
+            SchemaSpecifier,
+            String,
+        ) = {
             let catalog = self.catalog();
             // Resolve source schema
             let source_schema = catalog
@@ -893,9 +925,11 @@ impl Coordinator {
                     &plan.source_schema_name,
                     session.conn_id(),
                 )
-                .map_err(|e| AdapterError::Catalog(mz_catalog::memory::error::Error {
-                    kind: mz_catalog::memory::error::ErrorKind::Sql(e),
-                }))?;
+                .map_err(|e| {
+                    AdapterError::Catalog(mz_catalog::memory::error::Error {
+                        kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                    })
+                })?;
 
             // Resolve branch schema (just created above)
             let branch_schema = catalog
@@ -904,9 +938,11 @@ impl Coordinator {
                     &plan.branch_name,
                     session.conn_id(),
                 )
-                .map_err(|e| AdapterError::Catalog(mz_catalog::memory::error::Error {
-                    kind: mz_catalog::memory::error::ErrorKind::Sql(e),
-                }))?;
+                .map_err(|e| {
+                    AdapterError::Catalog(mz_catalog::memory::error::Error {
+                        kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                    })
+                })?;
             let branch_schema_spec = branch_schema.id.clone();
 
             let database_name = match &plan.source_database_spec {
@@ -947,9 +983,12 @@ impl Coordinator {
                 .controller
                 .storage
                 .collection_metadata(info.global_id)
-                .map_err(|_| AdapterError::Internal(
-                    format!("source table {:?} not found in storage", info.global_id)
-                ))?
+                .map_err(|_| {
+                    AdapterError::Internal(format!(
+                        "source table {:?} not found in storage",
+                        info.global_id
+                    ))
+                })?
                 .data_shard;
 
             // Allocate IDs for the delta table.
@@ -999,7 +1038,8 @@ impl Coordinator {
                 item: CatalogItem::Table(delta_table),
                 owner_id: *session.current_role_id(),
             };
-            self.catalog_transact(Some(session), vec![create_item_op]).await?;
+            self.catalog_transact(Some(session), vec![create_item_op])
+                .await?;
 
             // Place a critical since hold on the source shard at branch_ts to prevent GC.
             let hold_reader_id = CriticalReaderId::new();
@@ -1044,7 +1084,10 @@ impl Coordinator {
             // via bootstrap_branch_state).
             let _ = self.controller.storage_collections.set_source_for_fork(
                 delta_global_id,
-                mz_storage_types::controller::ForkSource { source_shard, branch_ts },
+                mz_storage_types::controller::ForkSource {
+                    source_shard,
+                    branch_ts,
+                },
             );
 
             forked_tables.insert(
@@ -1060,6 +1103,432 @@ impl Coordinator {
             );
         }
 
+        // Step 3b: Replicate materialized views from the source schema into the branch.
+        //
+        // Build a GlobalId remap from source-table GlobalIds → delta-table GlobalIds so
+        // that cloned MV plans read from the forked (isolated) copies.
+        let gid_remap: BTreeMap<GlobalId, GlobalId> = forked_tables
+            .values()
+            .map(|e| {
+                let source_gid = self
+                    .catalog()
+                    .get_entry(&e.source_catalog_id)
+                    .latest_global_id();
+                (source_gid, e.delta_global_id)
+            })
+            .collect();
+
+        struct SourceMvInfo {
+            name: String,
+            cluster_id: mz_controller_types::ClusterId,
+            locally_optimized_expr: Arc<OptimizedMirRelationExpr>,
+            raw_expr: Arc<mz_sql::plan::HirRelationExpr>,
+            rel_typ: mz_repr::SqlRelationType,
+            column_names: Vec<mz_repr::ColumnName>,
+            non_null_assertions: Vec<usize>,
+            resolved_ids: ResolvedIds,
+            target_replica: Option<mz_controller_types::ReplicaId>,
+            custom_logical_compaction_window: Option<CompactionWindow>,
+            source_create_sql: String,
+        }
+
+        // cross_schema_mv_names: MVs that reference tables outside the source schema.
+        // We emit a NOTICE for each so the user knows the branch MV mixes branched and live data.
+        let (source_mvs, cross_schema_mv_names): (Vec<SourceMvInfo>, Vec<String>) = {
+            let catalog = self.catalog();
+            let source_schema = catalog
+                .resolve_schema_in_database(
+                    &plan.source_database_spec,
+                    &plan.source_schema_name,
+                    session.conn_id(),
+                )
+                .map_err(|e| {
+                    AdapterError::Catalog(mz_catalog::memory::error::Error {
+                        kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                    })
+                })?;
+            let source_schema_spec = source_schema.id.clone();
+
+            let mut mvs = Vec::new();
+            let mut cross_schema = Vec::new();
+            for (item_name, item_id) in &source_schema.items {
+                let entry = catalog.get_entry(item_id);
+                if let CatalogItem::MaterializedView(mv) = entry.item() {
+                    let has_external_dep = mv
+                        .locally_optimized_expr
+                        .depends_on()
+                        .into_iter()
+                        .filter_map(|gid| catalog.try_get_entry_by_global_id(&gid))
+                        .any(|dep_entry| {
+                            dep_entry.name().qualifiers.schema_spec != source_schema_spec
+                        });
+                    if has_external_dep {
+                        cross_schema.push(item_name.clone());
+                    }
+                    mvs.push(SourceMvInfo {
+                        name: item_name.clone(),
+                        cluster_id: mv.cluster_id,
+                        locally_optimized_expr: Arc::clone(&mv.locally_optimized_expr),
+                        raw_expr: Arc::clone(&mv.raw_expr),
+                        rel_typ: mv.desc.latest().typ().clone(),
+                        column_names: mv.desc.latest().iter_names().cloned().collect(),
+                        non_null_assertions: mv.non_null_assertions.clone(),
+                        resolved_ids: mv.resolved_ids.clone(),
+                        target_replica: mv.target_replica,
+                        custom_logical_compaction_window: mv.custom_logical_compaction_window,
+                        source_create_sql: mv.create_sql.clone(),
+                    });
+                }
+            }
+            (mvs, cross_schema)
+        };
+
+        for mv_name in &cross_schema_mv_names {
+            session.add_notice(AdapterNotice::BranchMvCrossSchemaRef {
+                mv_name: mv_name.clone(),
+            });
+        }
+
+        let mut branch_mv_ids: Vec<CatalogItemId> = Vec::new();
+
+        for info in source_mvs {
+            // Clone the locally-optimized MIR plan and rewrite GlobalId references so
+            // the branch MV reads from the forked delta tables rather than the source tables.
+            let mut branch_expr: OptimizedMirRelationExpr = (*info.locally_optimized_expr).clone();
+            remap_global_ids_in_expr(&mut branch_expr, &gid_remap);
+            let branch_expr_for_catalog = branch_expr.clone();
+
+            // Build a valid create_sql for the branch MV by renaming all schema
+            // references from the source schema to the branch schema.
+            let branch_create_sql = {
+                let mut stmt = mz_sql::parse::parse(&info.source_create_sql)
+                    .expect("source MV has invalid create_sql")
+                    .into_element()
+                    .ast;
+                let _ = mz_sql::ast::transform::create_stmt_rename_schema_refs(
+                    &mut stmt,
+                    &database_name,
+                    &plan.source_schema_name,
+                    &plan.branch_name,
+                );
+                stmt.to_ast_string_stable()
+            };
+
+            let (branch_mv_catalog_id, branch_mv_global_id) = self.allocate_user_id().await?;
+            let (_, view_id) = self.allocate_transient_id();
+
+            let compute_instance = match self.instance_snapshot(info.cluster_id) {
+                Ok(ci) => ci,
+                Err(e) => {
+                    warn!(
+                        "skipping branch MV {:?}: compute instance {:?} not found: {e:?}",
+                        info.name, info.cluster_id
+                    );
+                    continue;
+                }
+            };
+            let optimizer_config = optimize::OptimizerConfig::from(self.catalog().system_config())
+                .override_from(&self.catalog.get_cluster(info.cluster_id).config.features());
+            let mut optimizer = optimize::materialized_view::Optimizer::new(
+                self.owned_catalog().as_optimizer_catalog(),
+                compute_instance,
+                branch_mv_global_id,
+                view_id,
+                info.column_names.clone(),
+                info.non_null_assertions.clone(),
+                None,
+                format!("branch/{}/{}", plan.branch_name, info.name),
+                optimizer_config,
+                self.optimizer_metrics(),
+            );
+
+            // Enter global MIR + LIR optimization, skipping the HIR→MIR stage since
+            // we already have a locally-optimized MIR from the source MV.
+            let rel_typ = info.rel_typ.clone();
+            let global_mir_plan = match optimizer.optimize((branch_expr, rel_typ)) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "skipping branch MV {:?}: global MIR optimizer error: {e:?}",
+                        info.name
+                    );
+                    continue;
+                }
+            };
+            let global_lir_plan = match optimizer.optimize(global_mir_plan) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "skipping branch MV {:?}: LIR optimizer error: {e:?}",
+                        info.name
+                    );
+                    continue;
+                }
+            };
+
+            let lir_desc = global_lir_plan.desc().clone();
+            let (mut df_desc, _df_meta) = global_lir_plan.unapply();
+
+            // Determine the as_of from the current sinces of the input collections.
+            // Read-policy initialization may have advanced the delta tables' sinces
+            // past branch_ts, so we ask the storage layer what it can actually serve.
+            let id_bundle =
+                crate::optimize::dataflows::dataflow_import_id_bundle(&df_desc, info.cluster_id);
+            let read_holds = self.acquire_read_holds(&id_bundle);
+            let as_of = read_holds.least_valid_read();
+
+            df_desc.set_as_of(as_of.clone());
+            df_desc.set_initial_as_of(as_of.clone());
+
+            // Create the catalog item for the branch MV.
+            let branch_mv_name = QualifiedItemName {
+                qualifiers: mz_sql::names::ItemQualifiers {
+                    database_spec: plan.source_database_spec.clone(),
+                    schema_spec: branch_schema_spec.clone(),
+                },
+                item: info.name.clone(),
+            };
+            let mv_collections = [(mz_repr::RelationVersion::root(), branch_mv_global_id)]
+                .into_iter()
+                .collect();
+            let create_mv_op = catalog::Op::CreateItem {
+                id: branch_mv_catalog_id,
+                name: branch_mv_name,
+                item: CatalogItem::MaterializedView(CatalogMaterializedView {
+                    create_sql: branch_create_sql,
+                    collections: mv_collections,
+                    raw_expr: info.raw_expr,
+                    locally_optimized_expr: Arc::new(branch_expr_for_catalog),
+                    desc: mz_repr::VersionedRelationDesc::new(lir_desc.clone()),
+                    resolved_ids: info.resolved_ids,
+                    dependencies: mz_sql::names::DependencyIds(std::collections::BTreeSet::new()),
+                    replacement_target: None,
+                    cluster_id: info.cluster_id,
+                    target_replica: info.target_replica,
+                    non_null_assertions: info.non_null_assertions,
+                    custom_logical_compaction_window: info.custom_logical_compaction_window,
+                    refresh_schedule: None,
+                    initial_as_of: Some(as_of.clone()),
+                    optimized_plan: None,
+                    physical_plan: None,
+                    dataflow_metainfo: None,
+                }),
+                owner_id: *session.current_role_id(),
+            };
+            self.catalog_transact(Some(session), vec![create_mv_op])
+                .await?;
+
+            // Register the MV's storage collection.
+            let storage_metadata = self.catalog.state().storage_metadata();
+            let collection_desc = mz_storage_client::controller::CollectionDescription::for_other(
+                lir_desc,
+                Some(as_of.clone()),
+            );
+            self.controller
+                .storage
+                .create_collections(
+                    storage_metadata,
+                    None,
+                    vec![(branch_mv_global_id, collection_desc)],
+                )
+                .await
+                .unwrap_or_terminate("cannot fail to create branch MV storage collection");
+
+            // Initialize storage read policies.
+            self.initialize_storage_read_policies(
+                std::collections::BTreeSet::from([branch_mv_catalog_id]),
+                CompactionWindow::Default,
+            )
+            .await;
+
+            // Ship the compute dataflow and allow writes to the sink.
+            self.ship_dataflow(df_desc, info.cluster_id, info.target_replica)
+                .await;
+            self.allow_writes(info.cluster_id, branch_mv_global_id);
+
+            branch_mv_ids.push(branch_mv_catalog_id);
+        }
+
+        // Collect and replicate indexes whose indexed table was forked into the branch.
+        struct SourceIndexInfo {
+            name: String,
+            on_source_global_id: GlobalId,
+            keys: Arc<[mz_expr::MirScalarExpr]>,
+            cluster_id: mz_controller_types::ClusterId,
+            resolved_ids: ResolvedIds,
+            custom_logical_compaction_window: Option<CompactionWindow>,
+            source_create_sql: String,
+        }
+
+        let source_indexes: Vec<SourceIndexInfo> = {
+            let catalog = self.catalog();
+            let source_schema = catalog
+                .resolve_schema_in_database(
+                    &plan.source_database_spec,
+                    &plan.source_schema_name,
+                    session.conn_id(),
+                )
+                .map_err(|e| {
+                    AdapterError::Catalog(mz_catalog::memory::error::Error {
+                        kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                    })
+                })?;
+
+            let mut indexes = Vec::new();
+            for (item_name, item_id) in &source_schema.items {
+                let entry = catalog.get_entry(item_id);
+                if let CatalogItem::Index(idx) = entry.item() {
+                    // Only replicate indexes on tables that were forked.
+                    if gid_remap.contains_key(&idx.on) {
+                        indexes.push(SourceIndexInfo {
+                            name: item_name.clone(),
+                            on_source_global_id: idx.on,
+                            keys: Arc::clone(&idx.keys),
+                            cluster_id: idx.cluster_id,
+                            resolved_ids: idx.resolved_ids.clone(),
+                            custom_logical_compaction_window: idx.custom_logical_compaction_window,
+                            source_create_sql: idx.create_sql.clone(),
+                        });
+                    }
+                }
+            }
+            indexes
+        };
+
+        let mut branch_index_ids: Vec<CatalogItemId> = Vec::new();
+
+        for info in source_indexes {
+            let delta_global_id = match gid_remap.get(&info.on_source_global_id) {
+                Some(gid) => *gid,
+                None => {
+                    warn!(
+                        "skipping branch index {:?}: source GlobalId not in remap",
+                        info.name
+                    );
+                    continue;
+                }
+            };
+
+            let (branch_idx_catalog_id, branch_idx_global_id) = self.allocate_user_id().await?;
+
+            let compute_instance = match self.instance_snapshot(info.cluster_id) {
+                Ok(ci) => ci,
+                Err(e) => {
+                    warn!(
+                        "skipping branch index {:?}: compute instance {:?} not found: {e:?}",
+                        info.name, info.cluster_id
+                    );
+                    continue;
+                }
+            };
+
+            let optimizer_config = optimize::OptimizerConfig::from(self.catalog().system_config())
+                .override_from(&self.catalog.get_cluster(info.cluster_id).config.features());
+            let mut optimizer = optimize::index::Optimizer::new(
+                self.owned_catalog(),
+                compute_instance,
+                branch_idx_global_id,
+                optimizer_config,
+                self.optimizer_metrics(),
+            );
+
+            let branch_idx_name = QualifiedItemName {
+                qualifiers: mz_sql::names::ItemQualifiers {
+                    database_spec: plan.source_database_spec.clone(),
+                    schema_spec: branch_schema_spec.clone(),
+                },
+                item: info.name.clone(),
+            };
+
+            let index_plan = optimize::index::Index::new(
+                branch_idx_name.clone(),
+                delta_global_id,
+                info.keys.to_vec(),
+            );
+
+            let global_mir_plan = match optimizer.optimize(index_plan) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "skipping branch index {:?}: MIR optimizer error: {e:?}",
+                        info.name
+                    );
+                    continue;
+                }
+            };
+            let global_lir_plan = match optimizer.optimize(global_mir_plan) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "skipping branch index {:?}: LIR optimizer error: {e:?}",
+                        info.name
+                    );
+                    continue;
+                }
+            };
+
+            let (mut df_desc, _df_meta) = global_lir_plan.unapply();
+
+            let id_bundle =
+                crate::optimize::dataflows::dataflow_import_id_bundle(&df_desc, info.cluster_id);
+            let read_holds = self.acquire_read_holds(&id_bundle);
+            let since = read_holds.least_valid_read();
+            df_desc.set_as_of(since);
+
+            let branch_create_sql = {
+                // The source create_sql contains an internal `[uN AS ...]` reference to the
+                // source table GlobalId. Swap it to the delta table GlobalId so that catalog
+                // re-parsing resolves to the forked table, not the source.
+                let gid_fixed = info.source_create_sql.replace(
+                    &format!("[{}", info.on_source_global_id),
+                    &format!("[{}", delta_global_id),
+                );
+                let mut stmt = mz_sql::parse::parse(&gid_fixed)
+                    .expect("source index has invalid create_sql")
+                    .into_element()
+                    .ast;
+                let _ = mz_sql::ast::transform::create_stmt_rename_schema_refs(
+                    &mut stmt,
+                    &database_name,
+                    &plan.source_schema_name,
+                    &plan.branch_name,
+                );
+                stmt.to_ast_string_stable()
+            };
+
+            let owner_id = self
+                .catalog()
+                .get_entry_by_global_id(&delta_global_id)
+                .owner_id()
+                .clone();
+
+            let create_idx_op = catalog::Op::CreateItem {
+                id: branch_idx_catalog_id,
+                name: branch_idx_name,
+                item: CatalogItem::Index(CatalogIndex {
+                    create_sql: branch_create_sql,
+                    global_id: branch_idx_global_id,
+                    on: delta_global_id,
+                    keys: info.keys,
+                    conn_id: None,
+                    resolved_ids: info.resolved_ids,
+                    cluster_id: info.cluster_id,
+                    is_retained_metrics_object: false,
+                    custom_logical_compaction_window: info.custom_logical_compaction_window,
+                    optimized_plan: None,
+                    physical_plan: None,
+                    dataflow_metainfo: None,
+                }),
+                owner_id,
+            };
+            self.catalog_transact(Some(session), vec![create_idx_op])
+                .await?;
+
+            self.ship_dataflow(df_desc, info.cluster_id, None).await;
+
+            branch_index_ids.push(branch_idx_catalog_id);
+        }
+
         // Step 4: Persist the branch descriptor to the durable catalog.
         let branch_schema_id = mz_sql::names::SchemaId::from(branch_schema_spec.clone());
         let durable_descriptor = mz_catalog::durable::objects::BranchDescriptor {
@@ -1069,8 +1538,8 @@ impl Coordinator {
             status: "active".to_string(),
             forked_tables: forked_tables
                 .iter()
-                .map(|(table_name, entry)| {
-                    mz_catalog::durable::objects::BranchForkedTableEntry {
+                .map(
+                    |(table_name, entry)| mz_catalog::durable::objects::BranchForkedTableEntry {
                         table_name: table_name.clone(),
                         source_catalog_id: entry.source_catalog_id,
                         source_shard: entry.source_shard,
@@ -1078,8 +1547,8 @@ impl Coordinator {
                         delta_catalog_id: entry.delta_catalog_id,
                         delta_global_id: entry.delta_global_id,
                         hold_reader_id: entry.hold_reader_id.clone(),
-                    }
-                })
+                    },
+                )
                 .collect(),
         };
         self.catalog_transact(
@@ -1097,8 +1566,11 @@ impl Coordinator {
             source_schema_name: plan.source_schema_name.clone(),
             status: crate::coord::BranchStatus::Active,
             forked_tables,
+            branch_mv_ids,
+            branch_index_ids,
         };
-        self.branch_by_schema.insert(plan.branch_name.clone(), branch_state);
+        self.branch_by_schema
+            .insert(plan.branch_name.clone(), branch_state);
 
         Ok(ExecuteResponse::CreatedBranch)
     }
@@ -1108,13 +1580,36 @@ impl Coordinator {
         session: &Session,
         plan: plan::DropBranchPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
-
         let Some(branch_state) = self.branch_by_schema.remove(&plan.schema_name) else {
             if !plan.if_exists {
                 coord_bail!("branch \"{}\" does not exist", plan.schema_name);
             }
             return Ok(ExecuteResponse::DroppedBranch);
         };
+
+        // Drop branch MVs first (they depend on the delta tables).
+        for mv_catalog_id in &branch_state.branch_mv_ids {
+            let drop_op =
+                catalog::Op::DropObjects(vec![catalog::DropObjectInfo::Item(*mv_catalog_id)]);
+            if let Err(e) = self.catalog_transact(Some(session), vec![drop_op]).await {
+                warn!(
+                    "could not drop branch MV {:?} for branch {}: {e:?}",
+                    mv_catalog_id, plan.schema_name
+                );
+            }
+        }
+
+        // Drop branch indexes (depend on delta tables; drop after MVs which may use them).
+        for idx_catalog_id in &branch_state.branch_index_ids {
+            let drop_op =
+                catalog::Op::DropObjects(vec![catalog::DropObjectInfo::Item(*idx_catalog_id)]);
+            if let Err(e) = self.catalog_transact(Some(session), vec![drop_op]).await {
+                warn!(
+                    "could not drop branch index {:?} for branch {}: {e:?}",
+                    idx_catalog_id, plan.schema_name
+                );
+            }
+        }
 
         // Release read holds and drop delta tables for each forked table.
         for (_, entry) in &branch_state.forked_tables {
@@ -1158,9 +1653,9 @@ impl Coordinator {
             }
 
             // Drop the delta table from the catalog.
-            let drop_op = catalog::Op::DropObjects(vec![
-                catalog::DropObjectInfo::Item(entry.delta_catalog_id),
-            ]);
+            let drop_op = catalog::Op::DropObjects(vec![catalog::DropObjectInfo::Item(
+                entry.delta_catalog_id,
+            )]);
             // Best-effort drop; log on failure but don't block DROP BRANCH.
             if let Err(e) = self.catalog_transact(Some(session), vec![drop_op]).await {
                 warn!(
@@ -1216,10 +1711,7 @@ impl Coordinator {
                 ]);
                 Ok(Self::send_immediate_rows(vec![row]))
             }
-            None => coord_bail!(
-                "unknown branch \"{}\"",
-                plan.branch_name
-            ),
+            None => coord_bail!("unknown branch \"{}\"", plan.branch_name),
         }
     }
 
@@ -1580,9 +2072,15 @@ impl Coordinator {
         for obj_id in &drop_ids {
             if let mz_sql::names::ObjectId::Schema((db_spec, schema_spec)) = obj_id {
                 if let mz_sql::names::SchemaSpecifier::Id(_) = schema_spec {
-                    let schema = self.catalog().get_schema(db_spec, schema_spec, ctx.session().conn_id());
+                    let schema =
+                        self.catalog()
+                            .get_schema(db_spec, schema_spec, ctx.session().conn_id());
                     let schema_name = &schema.name.schema;
-                    if let Some(branch) = self.branch_by_schema.values().find(|b| &b.source_schema_name == schema_name) {
+                    if let Some(branch) = self
+                        .branch_by_schema
+                        .values()
+                        .find(|b| &b.source_schema_name == schema_name)
+                    {
                         let branch_name = branch.schema_name.clone();
                         coord_bail!(
                             "cannot alter schema \"{}\" while it has an active branch \"{}\"",

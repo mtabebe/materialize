@@ -148,6 +148,12 @@ pub enum AdapterNotice {
     OidcGroupSyncError {
         message: String,
     },
+    /// A materialized view in a branched schema references tables outside the
+    /// branched schema; the branch MV computes over a mix of branched and live
+    /// production data.
+    BranchMvCrossSchemaRef {
+        mv_name: String,
+    },
 }
 
 impl AdapterNotice {
@@ -218,6 +224,7 @@ impl AdapterNotice {
             AdapterNotice::OidcGroupSyncUnmatchedGroup { .. } => Severity::Notice,
             AdapterNotice::OidcGroupSyncReservedRole { .. } => Severity::Warning,
             AdapterNotice::OidcGroupSyncError { .. } => Severity::Warning,
+            AdapterNotice::BranchMvCrossSchemaRef { .. } => Severity::Notice,
         }
     }
 
@@ -269,6 +276,12 @@ impl AdapterNotice {
             AdapterNotice::DroppedInUseIndex(..) => Some("To free up the resources used by the index, recreate all the above-mentioned objects.".into()),
             AdapterNotice::IntrospectionClusterUsage => Some("Use the new name instead.".into()),
             AdapterNotice::AutoRouteIntrospectionQueriesUsage => Some("Use the new name instead.".into()),
+            AdapterNotice::BranchMvCrossSchemaRef { .. } => Some(
+                "The branch MV will read live production data for tables outside the branched \
+                 schema. If full isolation is required, move those tables into the source schema \
+                 before branching."
+                    .into(),
+            ),
             _ => None
         }
     }
@@ -330,6 +343,7 @@ impl AdapterNotice {
             AdapterNotice::OidcGroupSyncUnmatchedGroup { .. } => SqlState::SUCCESSFUL_COMPLETION,
             AdapterNotice::OidcGroupSyncReservedRole { .. } => SqlState::WARNING,
             AdapterNotice::OidcGroupSyncError { .. } => SqlState::WARNING,
+            AdapterNotice::BranchMvCrossSchemaRef { .. } => SqlState::SUCCESSFUL_COMPLETION,
         }
     }
 }
@@ -534,6 +548,14 @@ impl fmt::Display for AdapterNotice {
             }
             AdapterNotice::OidcGroupSyncError { message } => {
                 write!(f, "OIDC group-to-role sync failed: {}", message)
+            }
+            AdapterNotice::BranchMvCrossSchemaRef { mv_name } => {
+                write!(
+                    f,
+                    "materialized view {} references tables outside the branched schema; \
+                     it will compute over a mix of branched and live production data",
+                    mv_name.quoted()
+                )
             }
         }
     }

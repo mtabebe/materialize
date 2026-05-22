@@ -149,3 +149,211 @@ DROP BRANCH nonexistent_branch
 
 statement error unknown branch "no_such_branch"
 SHOW BRANCH STATUS no_such_branch
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2: materialized views are replicated into the branch
+# ══════════════════════════════════════════════════════════════════════════════
+
+statement ok
+CREATE SCHEMA mv_src
+
+statement ok
+CREATE TABLE mv_src.items (id INT, val INT)
+
+statement ok
+INSERT INTO mv_src.items VALUES (1, 10), (2, 20), (3, 30)
+
+statement ok
+CREATE MATERIALIZED VIEW mv_src.total AS SELECT SUM(val) AS s FROM mv_src.items
+
+# Source MV shows the initial sum.
+query I
+SELECT s FROM mv_src.total
+----
+60
+
+# Create a branch — the MV is replicated into the branch.
+statement ok
+CREATE BRANCH mv_branch FROM mv_src
+
+# Branch MV exists and shows the sum as of branch time.
+query I
+SELECT s FROM mv_branch.total
+----
+60
+
+# Write to the source after branching — should NOT be visible in the branch MV.
+statement ok
+INSERT INTO mv_src.items VALUES (4, 40)
+
+# Source MV sees the new row.
+query I
+SELECT s FROM mv_src.total
+----
+100
+
+# Branch MV is isolated; it still reflects the state at branch time plus any
+# branch-local writes (none so far).
+query I
+SELECT s FROM mv_branch.total
+----
+60
+
+# Write into the branch table — branch MV should reflect this.
+statement ok
+INSERT INTO mv_branch.items VALUES (5, 50)
+
+query I
+SELECT s FROM mv_branch.total
+----
+110
+
+# Source MV is unaffected by branch writes.
+query I
+SELECT s FROM mv_src.total
+----
+100
+
+# DROP BRANCH drops the replicated MV along with the forked table.
+statement ok
+DROP BRANCH mv_branch
+
+# Source MV is still intact.
+query I
+SELECT s FROM mv_src.total
+----
+100
+
+# Cleanup.
+statement ok
+DROP SCHEMA mv_src CASCADE
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2b: indexes are replicated into the branch
+# ══════════════════════════════════════════════════════════════════════════════
+
+statement ok
+CREATE SCHEMA idx_src
+
+statement ok
+CREATE TABLE idx_src.data (k INT, v TEXT)
+
+statement ok
+INSERT INTO idx_src.data VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+CREATE INDEX idx_src_data_k ON idx_src.data (k)
+
+# Create a branch — the index is replicated into the branch schema.
+statement ok
+CREATE BRANCH idx_branch FROM idx_src
+
+# The forked table is readable via the branch index.
+query IT rowsort
+SELECT k, v FROM idx_branch.data
+----
+1  a
+2  b
+3  c
+
+# Writes to the branch table are reflected in the branch index.
+statement ok
+INSERT INTO idx_branch.data VALUES (4, 'd')
+
+query IT rowsort
+SELECT k, v FROM idx_branch.data
+----
+1  a
+2  b
+3  c
+4  d
+
+# Source is unaffected.
+query IT rowsort
+SELECT k, v FROM idx_src.data
+----
+1  a
+2  b
+3  c
+
+# DROP BRANCH removes the branch index along with the forked table.
+statement ok
+DROP BRANCH idx_branch
+
+# Source index and table are intact.
+query IT rowsort
+SELECT k, v FROM idx_src.data
+----
+1  a
+2  b
+3  c
+
+statement ok
+DROP SCHEMA idx_src CASCADE
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2c: cross-schema MV NOTICE
+# ══════════════════════════════════════════════════════════════════════════════
+
+statement ok
+CREATE SCHEMA ref_data
+
+statement ok
+CREATE TABLE ref_data.multipliers (id INT, factor INT)
+
+statement ok
+INSERT INTO ref_data.multipliers VALUES (1, 100), (2, 200)
+
+statement ok
+CREATE SCHEMA cross_src
+
+statement ok
+CREATE TABLE cross_src.events (id INT, amount INT)
+
+statement ok
+INSERT INTO cross_src.events VALUES (1, 5), (2, 3)
+
+# This MV joins cross_src.events (in-schema) with ref_data.multipliers (out-of-schema).
+statement ok
+CREATE MATERIALIZED VIEW cross_src.enriched AS
+SELECT e.id, e.amount * m.factor AS result
+FROM cross_src.events e
+JOIN ref_data.multipliers m ON e.id = m.id
+
+query II rowsort
+SELECT id, result FROM cross_src.enriched
+----
+1  500
+2  600
+
+# CREATE BRANCH should emit a NOTICE for the cross-schema MV.
+statement ok
+CREATE BRANCH cross_branch FROM cross_src
+
+# Branch MV is present and reflects state at branch time.
+query II rowsort
+SELECT id, result FROM cross_branch.enriched
+----
+1  500
+2  600
+
+# The branch MV reads live ref_data — inserting there is visible in the branch MV.
+statement ok
+INSERT INTO ref_data.multipliers VALUES (3, 300)
+
+# Branch items table only has events 1 and 2 (forked at branch time), so the
+# new multiplier row has no matching event and does not change the MV output.
+query II rowsort
+SELECT id, result FROM cross_branch.enriched
+----
+1  500
+2  600
+
+statement ok
+DROP BRANCH cross_branch
+
+statement ok
+DROP SCHEMA cross_src CASCADE
+
+statement ok
+DROP SCHEMA ref_data CASCADE
