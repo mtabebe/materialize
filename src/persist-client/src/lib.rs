@@ -963,6 +963,7 @@ impl PersistClient {
         })
     }
 
+    /// Returns a serializable snapshot of the shard's current state for debugging.
     pub async fn inspect_shard<T: Timestamp + Lattice + Codec64>(
         &self,
         shard_id: &ShardId,
