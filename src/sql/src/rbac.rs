@@ -1623,6 +1623,7 @@ fn generate_rbac_requirements(
         | Plan::Raise(plan::RaisePlan { severity: _ }) => Default::default(),
         Plan::CreateBranch(_)
         | Plan::DropBranch(_)
+        | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
         | Plan::ShowBranchStatus(_) => Default::default(),
     }

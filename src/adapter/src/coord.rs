@@ -419,6 +419,15 @@ pub enum Message {
     /// A cluster will be On if and only if there is at least one On decision for it.
     /// Scheduling decisions for clusters that have `SCHEDULE = MANUAL` are ignored.
     SchedulingDecisions(Vec<(&'static str, Vec<(ClusterId, SchedulingDecision)>)>),
+
+    /// Result of async delta-shard reads for MERGE BRANCH.
+    MergeBranchReady {
+        ctx: ExecuteContext,
+        branch_name: String,
+        /// On success: (source_global_id, Vec<(row, diff)>) per table.
+        /// On error: the error message (branch status will be reset to Active).
+        result: Result<Vec<(GlobalId, Vec<(mz_repr::Row, Diff)>)>, String>,
+    },
 }
 
 impl Message {
@@ -515,6 +524,7 @@ impl Message {
             Message::CheckSchedulingPolicies => "check_scheduling_policies",
             Message::SchedulingDecisions { .. } => "scheduling_decision",
             Message::DeferredStatementReady => "deferred_statement_ready",
+            Message::MergeBranchReady { .. } => "merge_branch_ready",
         }
     }
 }
@@ -1826,9 +1836,13 @@ impl ClusterReplicaStatuses {
 }
 
 /// Status of a schema branch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BranchStatus {
     Active,
+    /// A MERGE BRANCH is currently in progress. Prevents concurrent merges.
+    Merging,
+    /// The branch has been successfully merged into the source schema.
+    Merged,
 }
 
 /// In-memory metadata for a single forked table in a branch (Phase 1b).

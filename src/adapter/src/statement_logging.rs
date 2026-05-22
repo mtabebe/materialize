@@ -223,6 +223,7 @@ impl From<&ExecuteResponse> for StatementEndedExecutionReason {
             | ExecuteResponse::CreatedSchema
             | ExecuteResponse::CreatedBranch
             | ExecuteResponse::DroppedBranch
+            | ExecuteResponse::MergedBranch
             | ExecuteResponse::CreatedRole
             | ExecuteResponse::CreatedCluster
             | ExecuteResponse::CreatedClusterReplica

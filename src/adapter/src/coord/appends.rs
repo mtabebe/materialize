@@ -1035,6 +1035,7 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::SideEffectingFunc(_)
         | Plan::CreateBranch(_)
         | Plan::DropBranch(_)
+        | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
         | Plan::ShowBranchStatus(_) => BTreeSet::default(),
     };

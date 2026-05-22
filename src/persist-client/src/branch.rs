@@ -32,9 +32,7 @@ mod tests {
     // Helpers
 
     fn key_set_from_diff(diff: &[((String, String), u64, i64)]) -> BTreeSet<String> {
-        diff.iter()
-            .map(|((k, _v), _t, _d)| k.clone())
-            .collect()
+        diff.iter().map(|((k, _v), _t, _d)| k.clone()).collect()
     }
 
     fn current_state(
@@ -100,7 +98,11 @@ mod tests {
                 &[
                     (("k3".to_owned(), "local_v3".to_owned()), 12u64, 1i64),
                     (("k1".to_owned(), "source_v1".to_owned()), 12u64, -1i64),
-                    (("k1".to_owned(), "local_v1_updated".to_owned()), 12u64, 1i64),
+                    (
+                        ("k1".to_owned(), "local_v1_updated".to_owned()),
+                        12u64,
+                        1i64,
+                    ),
                 ],
                 vec![0u64],
                 vec![read_ts + 1],
@@ -242,10 +244,8 @@ mod tests {
         // Conflict detection: intersect on primary key.
         let upstream_keys = key_set_from_diff(&upstream_diff);
         let local_keys = key_set_from_diff(&local_diff);
-        let conflicts: BTreeSet<String> = upstream_keys
-            .intersection(&local_keys)
-            .cloned()
-            .collect();
+        let conflicts: BTreeSet<String> =
+            upstream_keys.intersection(&local_keys).cloned().collect();
 
         // k1 and k5 both changed in both local and upstream → conflict.
         // k2, k3 only changed locally → no conflict.
@@ -255,9 +255,18 @@ mod tests {
             conflicts.contains("k5"),
             "k5 must conflict (deleted upstream, inserted locally)"
         );
-        assert!(!conflicts.contains("k2"), "k2 must not conflict (local only)");
-        assert!(!conflicts.contains("k3"), "k3 must not conflict (local only)");
-        assert!(!conflicts.contains("k4"), "k4 must not conflict (upstream only)");
+        assert!(
+            !conflicts.contains("k2"),
+            "k2 must not conflict (local only)"
+        );
+        assert!(
+            !conflicts.contains("k3"),
+            "k3 must not conflict (local only)"
+        );
+        assert!(
+            !conflicts.contains("k4"),
+            "k4 must not conflict (upstream only)"
+        );
         assert_eq!(conflicts.len(), 2, "exactly 2 conflicts expected");
     }
 
@@ -430,10 +439,8 @@ mod tests {
 
         let upstream_keys = key_set_from_diff(&upstream_diff);
         let local_keys = key_set_from_diff(&local_diff);
-        let conflicts: BTreeSet<String> = upstream_keys
-            .intersection(&local_keys)
-            .cloned()
-            .collect();
+        let conflicts: BTreeSet<String> =
+            upstream_keys.intersection(&local_keys).cloned().collect();
 
         assert!(
             conflicts.is_empty(),

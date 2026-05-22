@@ -192,8 +192,10 @@ where
     // an identity plan, so render.rs's post-call assertion is satisfied.
     if let Some(fork) = metadata.source_for_fork.clone() {
         // Clone the plan for the source shard before consuming it from the caller.
-        let mut mfp_for_source: Option<MfpPlan> =
-            map_filter_project.as_deref().cloned().filter(|m| !m.is_identity());
+        let mut mfp_for_source: Option<MfpPlan> = map_filter_project
+            .as_deref()
+            .cloned()
+            .filter(|m| !m.is_identity());
         // Take (consume) from the caller's slot, leaving identity there.
         let mut mfp_for_delta: Option<MfpPlan> = map_filter_project
             .as_mut()

@@ -828,20 +828,19 @@ impl crate::coord::Coordinator {
                         .clone();
                     // Patch metadata for forked tables: add source_for_fork so
                     // clusterd can perform the two-shard merge.
-                    let metadata =
-                        if let Some((source_shard, branch_ts)) =
-                            self.forked_table_by_delta_id.get(&coll_id)
-                        {
-                            CollectionMetadata {
-                                source_for_fork: Some(ForkSource {
-                                    source_shard: *source_shard,
-                                    branch_ts: *branch_ts,
-                                }),
-                                ..metadata
-                            }
-                        } else {
-                            metadata
-                        };
+                    let metadata = if let Some((source_shard, branch_ts)) =
+                        self.forked_table_by_delta_id.get(&coll_id)
+                    {
+                        CollectionMetadata {
+                            source_for_fork: Some(ForkSource {
+                                source_shard: *source_shard,
+                                branch_ts: *branch_ts,
+                            }),
+                            ..metadata
+                        }
+                    } else {
+                        metadata
+                    };
                     let read_hold = self
                         .controller
                         .storage_collections

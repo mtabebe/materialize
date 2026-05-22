@@ -167,6 +167,7 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::SideEffectingFunc(_)
         | Plan::CreateBranch(_)
         | Plan::DropBranch(_)
+        | Plan::MergeBranch(_)
         | Plan::ShowBranches(_)
         | Plan::ShowBranchStatus(_) => return TargetCluster::Active,
     };

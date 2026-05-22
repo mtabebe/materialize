@@ -55,12 +55,11 @@ use mz_sql_parser::ast::{
     ClusterAlterOptionValue, ClusterAlterUntilReadyOption, ClusterAlterUntilReadyOptionName,
     ClusterFeature, ClusterFeatureName, ClusterOption, ClusterOptionName,
     ClusterScheduleOptionValue, ColumnDef, ColumnOption, CommentObjectType, CommentStatement,
-    ConnectionOption, ConnectionOptionName, CreateClusterReplicaStatement, CreateClusterStatement,
-    CreateConnectionOption, CreateConnectionOptionName, CreateConnectionStatement,
-    CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
+    ConnectionOption, ConnectionOptionName, CreateBranchStatement, CreateClusterReplicaStatement,
+    CreateClusterStatement, CreateConnectionOption, CreateConnectionOptionName,
+    CreateConnectionStatement, CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
     CreateMaterializedViewStatement, CreateNetworkPolicyStatement, CreateRoleStatement,
-    CreateBranchStatement, CreateSchemaStatement, CreateSecretStatement,
-    CreateSinkConnection, CreateSinkOption, DropBranchStatement,
+    CreateSchemaStatement, CreateSecretStatement, CreateSinkConnection, CreateSinkOption,
     CreateSinkOptionName, CreateSinkStatement, CreateSourceConnection, CreateSourceOption,
     CreateSourceOptionName, CreateSourceStatement, CreateSubsourceOption,
     CreateSubsourceOptionName, CreateSubsourceStatement, CreateTableFromSourceStatement,
@@ -68,19 +67,20 @@ use mz_sql_parser::ast::{
     CreateTypeMapOption, CreateTypeMapOptionName, CreateTypeStatement, CreateViewStatement,
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
-    DocOnIdentifier, DocOnSchema, DropObjectsStatement, DropOwnedStatement, Expr, Format,
-    FormatSpecifier, IcebergSinkConfigOption, Ident, IfExistsBehavior, IndexOption,
+    DocOnIdentifier, DocOnSchema, DropBranchStatement, DropObjectsStatement, DropOwnedStatement,
+    Expr, Format, FormatSpecifier, IcebergSinkConfigOption, Ident, IfExistsBehavior, IndexOption,
     IndexOptionName, KafkaSinkConfigOption, KeyConstraint, LoadGeneratorOption,
-    LoadGeneratorOptionName, MaterializedViewOption, MaterializedViewOptionName, MySqlConfigOption,
-    MySqlConfigOptionName, NetworkPolicyOption, NetworkPolicyOptionName,
-    NetworkPolicyRuleDefinition, NetworkPolicyRuleOption, NetworkPolicyRuleOptionName,
-    PgConfigOption, PgConfigOptionName, ProtobufSchema, QualifiedReplica, RefreshAtOptionValue,
-    RefreshEveryOptionValue, RefreshOptionValue, ReplicaDefinition, ReplicaOption,
-    ReplicaOptionName, RoleAttribute, SetRoleVar, SourceErrorPolicy, SourceIncludeMetadata,
-    SqlServerConfigOption, SqlServerConfigOptionName, Statement, TableConstraint,
-    TableFromSourceColumns, TableFromSourceOption, TableFromSourceOptionName, TableOption,
-    TableOptionName, UnresolvedDatabaseName, UnresolvedItemName, UnresolvedObjectName,
-    UnresolvedSchemaName, Value, ViewDefinition, WithOptionValue,
+    LoadGeneratorOptionName, MaterializedViewOption, MaterializedViewOptionName,
+    MergeBranchStatement, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption,
+    NetworkPolicyOptionName, NetworkPolicyRuleDefinition, NetworkPolicyRuleOption,
+    NetworkPolicyRuleOptionName, PgConfigOption, PgConfigOptionName, ProtobufSchema,
+    QualifiedReplica, RefreshAtOptionValue, RefreshEveryOptionValue, RefreshOptionValue,
+    ReplicaDefinition, ReplicaOption, ReplicaOptionName, RoleAttribute, SetRoleVar,
+    SourceErrorPolicy, SourceIncludeMetadata, SqlServerConfigOption, SqlServerConfigOptionName,
+    Statement, TableConstraint, TableFromSourceColumns, TableFromSourceOption,
+    TableFromSourceOptionName, TableOption, TableOptionName, UnresolvedDatabaseName,
+    UnresolvedItemName, UnresolvedObjectName, UnresolvedSchemaName, Value, ViewDefinition,
+    WithOptionValue,
 };
 use mz_sql_parser::ident;
 use mz_sql_parser::parser::StatementParseResult;
@@ -152,13 +152,13 @@ use crate::plan::{
     AlterSchemaSwapPlan, AlterSecretPlan, AlterSetClusterPlan, AlterSinkPlan,
     AlterSourceTimestampIntervalPlan, AlterSystemResetAllPlan, AlterSystemResetPlan,
     AlterSystemSetPlan, AlterTablePlan, ClusterSchedule, CommentPlan, ComputeReplicaConfig,
-    ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateClusterManagedPlan,
-    CreateClusterPlan, CreateClusterReplicaPlan, CreateClusterUnmanagedPlan, CreateClusterVariant,
-    CreateConnectionPlan, CreateDatabasePlan, CreateIndexPlan, CreateMaterializedViewPlan,
-    CreateNetworkPolicyPlan, CreateRolePlan, CreateBranchPlan, CreateSchemaPlan,
-    CreateSecretPlan, CreateSinkPlan, DropBranchPlan,
-    CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc,
-    DropObjectsPlan, DropOwnedPlan, HirRelationExpr, Index, MaterializedView, NetworkPolicyRule,
+    ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateBranchPlan,
+    CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
+    CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
+    CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
+    CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan,
+    CreateTypePlan, CreateViewPlan, DataSourceDesc, DropBranchPlan, DropObjectsPlan, DropOwnedPlan,
+    HirRelationExpr, Index, MaterializedView, MergeBranchPlan, NetworkPolicyRule,
     NetworkPolicyRuleAction, NetworkPolicyRuleDirection, Plan, PlanClusterOption, PlanNotice,
     PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink, Source, Table, TableDataSource, Type,
     VariableValue, View, WebhookBodyFormat, WebhookHeaderFilters, WebhookHeaders,
@@ -317,6 +317,33 @@ pub fn plan_drop_branch(
         schema_name: normalize::ident(name),
         if_exists,
         cascade,
+    }))
+}
+
+pub fn describe_merge_branch(
+    _: &StatementContext,
+    _: MergeBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("table_name", SqlScalarType::String.nullable(false))
+            .with_column("conflict_key", SqlScalarType::String.nullable(false))
+            .with_column("local_value", SqlScalarType::String.nullable(false))
+            .with_column("upstream_value", SqlScalarType::String.nullable(false))
+            .finish(),
+    )))
+}
+
+pub fn plan_merge_branch(
+    _scx: &StatementContext,
+    MergeBranchStatement { name, into_schema }: MergeBranchStatement,
+) -> Result<Plan, PlanError> {
+    let branch_name = normalize::ident(name);
+    let partial = normalize::unresolved_schema_name(into_schema)?;
+    let into_schema_name = partial.schema;
+    Ok(Plan::MergeBranch(MergeBranchPlan {
+        branch_name,
+        into_schema_name,
     }))
 }
 

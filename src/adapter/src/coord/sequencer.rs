@@ -246,16 +246,16 @@ impl Coordinator {
                     ctx.retire(result);
                 }
                 Plan::CreateBranch(plan) => {
-                    let result = self
-                        .sequence_create_branch(ctx.session_mut(), plan)
-                        .await;
+                    let result = self.sequence_create_branch(ctx.session_mut(), plan).await;
                     ctx.retire(result);
                 }
                 Plan::DropBranch(plan) => {
-                    let result = self
-                        .sequence_drop_branch(ctx.session_mut(), plan)
-                        .await;
+                    let result = self.sequence_drop_branch(ctx.session_mut(), plan).await;
                     ctx.retire(result);
+                }
+                Plan::MergeBranch(plan) => {
+                    // sequence_merge_branch takes ownership of ctx and handles retiring it.
+                    self.sequence_merge_branch(ctx, plan).await;
                 }
                 Plan::ShowBranches(_) => {
                     let result = self.sequence_show_branches();

@@ -1679,6 +1679,234 @@ impl Coordinator {
         Ok(ExecuteResponse::DroppedBranch)
     }
 
+    pub(super) async fn sequence_merge_branch(
+        &mut self,
+        ctx: ExecuteContext,
+        plan: plan::MergeBranchPlan,
+    ) {
+        // 5a. Validate branch state (sync, fast).
+        let branch_status = self
+            .branch_by_schema
+            .get(&plan.branch_name)
+            .map(|b| b.status.clone());
+        match branch_status {
+            None => {
+                ctx.retire(Err(AdapterError::Unstructured(anyhow::anyhow!(
+                    "branch \"{}\" does not exist",
+                    plan.branch_name
+                ))));
+                return;
+            }
+            Some(crate::coord::BranchStatus::Merging) => {
+                ctx.retire(Err(AdapterError::Unstructured(anyhow::anyhow!(
+                    "merge already in progress for branch \"{}\"",
+                    plan.branch_name
+                ))));
+                return;
+            }
+            Some(crate::coord::BranchStatus::Merged) => {
+                ctx.retire(Err(AdapterError::Unstructured(anyhow::anyhow!(
+                    "branch \"{}\" is already merged",
+                    plan.branch_name
+                ))));
+                return;
+            }
+            Some(crate::coord::BranchStatus::Active) => {}
+        }
+        let branch_state = self
+            .branch_by_schema
+            .get_mut(&plan.branch_name)
+            .expect("checked above");
+        if branch_state.source_schema_name != plan.into_schema_name {
+            let source = branch_state.source_schema_name.clone();
+            ctx.retire(Err(AdapterError::Unstructured(anyhow::anyhow!(
+                "branch \"{}\" was created from schema \"{}\", not \"{}\"",
+                plan.branch_name,
+                source,
+                plan.into_schema_name
+            ))));
+            return;
+        }
+        branch_state.status = crate::coord::BranchStatus::Merging;
+
+        // Collect forked table entries.
+        let forked_tables: Vec<(String, crate::coord::ForkedTableEntry)> = self
+            .branch_by_schema
+            .get(&plan.branch_name)
+            .expect("checked above")
+            .forked_tables
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        if forked_tables.is_empty() {
+            let branch_state = self
+                .branch_by_schema
+                .get_mut(&plan.branch_name)
+                .expect("checked above");
+            branch_state.status = crate::coord::BranchStatus::Merged;
+            ctx.retire(Ok(ExecuteResponse::MergedBranch));
+            return;
+        }
+
+        // Build per-table info for the spawned task.
+        // For each forked table we need: source_gid, delta_shard, delta_rel_desc.
+        let mut table_task_infos: Vec<(
+            GlobalId,
+            mz_persist_types::ShardId,
+            mz_repr::RelationDesc,
+        )> = Vec::new();
+        for (_table_name, entry) in &forked_tables {
+            let source_gid = self
+                .catalog()
+                .get_entry(&entry.source_catalog_id)
+                .latest_global_id();
+            let delta_meta = match self
+                .controller
+                .storage
+                .collection_metadata(entry.delta_global_id)
+            {
+                Ok(m) => m,
+                Err(_) => {
+                    let branch_state = self
+                        .branch_by_schema
+                        .get_mut(&plan.branch_name)
+                        .expect("checked above");
+                    branch_state.status = crate::coord::BranchStatus::Active;
+                    ctx.retire(Err(AdapterError::Internal(format!(
+                        "delta table {:?} not found in storage",
+                        entry.delta_global_id
+                    ))));
+                    return;
+                }
+            };
+            table_task_infos.push((
+                source_gid,
+                delta_meta.data_shard,
+                delta_meta.relation_desc.clone(),
+            ));
+        }
+
+        // 5b. Spawn a task for the async persist reads so the coordinator's message loop
+        //     can continue running (needed for txns WAL application that drives shard uppers).
+        let persist_client = self.persist_client.clone();
+        let internal_cmd_tx = self.internal_cmd_tx.clone();
+        let branch_name = plan.branch_name.clone();
+
+        task::spawn(|| "sequence_merge_branch_reads", async move {
+            use mz_persist_client::Diagnostics as PersistDiagnostics;
+            use mz_storage_types::sources::SourceData;
+
+            let mut row_commands: Vec<(GlobalId, Vec<(mz_repr::Row, Diff)>)> = Vec::new();
+
+            for (source_gid, delta_shard, delta_rel_desc) in table_task_infos {
+                // Get the delta shard's current upper so we know what to read.
+                let delta_upper = {
+                    let mut wh = match persist_client
+                        .open_writer::<
+                            SourceData,
+                            (),
+                            mz_repr::Timestamp,
+                            mz_storage_types::StorageDiff,
+                        >(
+                            delta_shard,
+                            Arc::new(delta_rel_desc.clone()),
+                            Arc::new(mz_persist_types::codec_impls::UnitSchema),
+                            PersistDiagnostics::from_purpose("merge branch delta upper"),
+                        )
+                        .await
+                    {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let _ = internal_cmd_tx.send(
+                                crate::coord::Message::MergeBranchReady {
+                                    ctx,
+                                    branch_name,
+                                    result: Err(format!("failed to open delta writer: {e}")),
+                                },
+                            );
+                            return;
+                        }
+                    };
+                    let upper = wh.fetch_recent_upper().await.as_option().copied();
+                    drop(wh);
+                    upper
+                };
+
+                let Some(delta_upper) = delta_upper else {
+                    // Empty shard (antichain is the empty set) - no changes to apply.
+                    continue;
+                };
+
+                let Some(read_ts) = delta_upper.checked_sub(1) else {
+                    // delta_upper is 0: nothing committed yet.
+                    continue;
+                };
+
+                // Read all data from the delta shard as of read_ts.
+                let mut rh = match persist_client
+                    .open_leased_reader::<
+                        SourceData,
+                        (),
+                        mz_repr::Timestamp,
+                        mz_storage_types::StorageDiff,
+                    >(
+                        delta_shard,
+                        Arc::new(delta_rel_desc),
+                        Arc::new(mz_persist_types::codec_impls::UnitSchema),
+                        PersistDiagnostics::from_purpose("merge branch delta read"),
+                        false,
+                    )
+                    .await
+                {
+                    Ok(h) => h,
+                    Err(e) => {
+                        let _ = internal_cmd_tx.send(
+                            crate::coord::Message::MergeBranchReady {
+                                ctx,
+                                branch_name,
+                                result: Err(format!("failed to open delta reader: {e}")),
+                            },
+                        );
+                        return;
+                    }
+                };
+
+                let updates = match rh
+                    .snapshot_and_fetch(timely::progress::Antichain::from_elem(read_ts))
+                    .await
+                {
+                    Ok(u) => u,
+                    Err(e) => {
+                        let _ = internal_cmd_tx.send(crate::coord::Message::MergeBranchReady {
+                            ctx,
+                            branch_name,
+                            result: Err(format!("snapshot_and_fetch failed: {e:?}")),
+                        });
+                        return;
+                    }
+                };
+
+                let rows: Vec<(mz_repr::Row, Diff)> = updates
+                    .into_iter()
+                    .filter_map(|((source_data, _), _, diff)| {
+                        source_data.0.ok().map(|row| (row, Diff::from(diff)))
+                    })
+                    .collect();
+
+                if !rows.is_empty() {
+                    row_commands.push((source_gid, rows));
+                }
+            }
+
+            let _ = internal_cmd_tx.send(crate::coord::Message::MergeBranchReady {
+                ctx,
+                branch_name,
+                result: Ok(row_commands),
+            });
+        });
+    }
+
     pub(super) fn sequence_show_branches(&self) -> Result<ExecuteResponse, AdapterError> {
         let rows: Vec<Row> = self
             .branch_by_schema
@@ -1689,6 +1917,8 @@ impl Coordinator {
                     Datum::String(&b.source_schema_name),
                     Datum::String(match b.status {
                         crate::coord::BranchStatus::Active => "active",
+                        crate::coord::BranchStatus::Merging => "merging",
+                        crate::coord::BranchStatus::Merged => "merged",
                     }),
                 ])
             })
@@ -1707,6 +1937,8 @@ impl Coordinator {
                     Datum::String(&b.source_schema_name),
                     Datum::String(match b.status {
                         crate::coord::BranchStatus::Active => "active",
+                        crate::coord::BranchStatus::Merging => "merging",
+                        crate::coord::BranchStatus::Merged => "merged",
                     }),
                 ]);
                 Ok(Self::send_immediate_rows(vec![row]))

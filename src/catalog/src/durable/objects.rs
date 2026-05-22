@@ -1219,8 +1219,7 @@ pub struct Snapshot {
         BTreeMap<proto::StorageCollectionMetadataKey, proto::StorageCollectionMetadataValue>,
     pub unfinalized_shards: BTreeMap<proto::UnfinalizedShardKey, ()>,
     pub txn_wal_shard: BTreeMap<(), proto::TxnWalShardValue>,
-    pub branch_descriptors:
-        BTreeMap<proto::BranchDescriptorKey, proto::BranchDescriptorValue>,
+    pub branch_descriptors: BTreeMap<proto::BranchDescriptorKey, proto::BranchDescriptorValue>,
 }
 
 impl Snapshot {

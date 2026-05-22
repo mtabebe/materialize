@@ -45,8 +45,8 @@ use crate::plan::scope::Scope;
 use crate::plan::statement::ddl::unplan_create_cluster;
 use crate::plan::statement::{StatementContext, StatementDesc, dml};
 use crate::plan::{
-    HirRelationExpr, Params, Plan, PlanError, ShowBranchStatusPlan, ShowColumnsPlan, ShowCreatePlan,
-    query, transform_ast,
+    HirRelationExpr, Params, Plan, PlanError, ShowBranchStatusPlan, ShowColumnsPlan,
+    ShowCreatePlan, query, transform_ast,
 };
 
 pub fn describe_show_create_view(
@@ -437,8 +437,9 @@ pub fn show_objects<'a>(
         ShowObjectType::Branch => {
             ensure_no_from(from)?;
             Err(PlanError::Unsupported {
-                feature: "SHOW BRANCHES (branch state not persisted in Phase 1 — use adapter layer)"
-                    .to_string(),
+                feature:
+                    "SHOW BRANCHES (branch state not persisted in Phase 1 — use adapter layer)"
+                        .to_string(),
                 discussion_no: None,
             })
         }

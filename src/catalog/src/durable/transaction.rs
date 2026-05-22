@@ -257,9 +257,7 @@ impl<'a> Transaction<'a> {
         schema_id: mz_sql::names::SchemaId,
     ) -> Result<Option<BranchDescriptor>, CatalogError> {
         let key = BranchDescriptorKey { schema_id };
-        let prev = self
-            .branch_descriptors
-            .set(key.clone(), None, self.op_id)?;
+        let prev = self.branch_descriptors.set(key.clone(), None, self.op_id)?;
         Ok(prev.map(|v| DurableType::from_key_value(key, v)))
     }
 
@@ -2838,8 +2836,11 @@ pub struct TransactionBatch {
     )>,
     pub(crate) unfinalized_shards: Vec<(proto::UnfinalizedShardKey, (), Diff)>,
     pub(crate) txn_wal_shard: Vec<((), proto::TxnWalShardValue, Diff)>,
-    pub(crate) branch_descriptors:
-        Vec<(proto::BranchDescriptorKey, proto::BranchDescriptorValue, Diff)>,
+    pub(crate) branch_descriptors: Vec<(
+        proto::BranchDescriptorKey,
+        proto::BranchDescriptorValue,
+        Diff,
+    )>,
     pub(crate) audit_log_updates: Vec<(proto::AuditLogKey, (), Diff)>,
     /// The upper of the catalog when the transaction started.
     pub(crate) upper: mz_repr::Timestamp,

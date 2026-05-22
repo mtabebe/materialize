@@ -2290,6 +2290,7 @@ where
             | ExecuteResponse::CreatedNetworkPolicy
             | ExecuteResponse::CreatedBranch
             | ExecuteResponse::DroppedBranch
+            | ExecuteResponse::MergedBranch
             | ExecuteResponse::Comment
             | ExecuteResponse::Deallocate { .. }
             | ExecuteResponse::Deleted(..)

@@ -15,10 +15,10 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 use crate::durable::objects::state_update::StateUpdateKindJson;
 use crate::durable::objects::{
     AuditLogKey, BranchDescriptorKey, BranchDescriptorValue, BranchForkedTableEntry,
-    ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue,
-    ClusterKey, ClusterReplicaKey, ClusterReplicaValue, ClusterValue, CommentKey, CommentValue,
-    ConfigKey, ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey,
-    DefaultPrivilegesValue, GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
+    ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue, ClusterKey,
+    ClusterReplicaKey, ClusterReplicaValue, ClusterValue, CommentKey, CommentValue, ConfigKey,
+    ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey, DefaultPrivilegesValue,
+    GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
     IntrospectionSourceIndexCatalogItemId, IntrospectionSourceIndexGlobalId, ItemKey, ItemValue,
     NetworkPolicyKey, NetworkPolicyValue, RoleKey, RoleValue, SchemaKey, SchemaValue,
     ServerConfigurationKey, ServerConfigurationValue, SettingKey, SettingValue, SourceReference,
@@ -958,12 +958,14 @@ impl RustType<proto::BranchDescriptorValue> for BranchDescriptorValue {
             .forked_tables
             .into_iter()
             .map(|ft| {
-                let source_shard = ft.source_shard.parse().map_err(|_| {
-                    TryFromProtoError::InvalidShardId(ft.source_shard.clone())
-                })?;
-                let hold_reader_id = ft.hold_reader_id.parse().map_err(|_| {
-                    TryFromProtoError::InvalidShardId(ft.hold_reader_id.clone())
-                })?;
+                let source_shard = ft
+                    .source_shard
+                    .parse()
+                    .map_err(|_| TryFromProtoError::InvalidShardId(ft.source_shard.clone()))?;
+                let hold_reader_id = ft
+                    .hold_reader_id
+                    .parse()
+                    .map_err(|_| TryFromProtoError::InvalidShardId(ft.hold_reader_id.clone()))?;
                 Ok(BranchForkedTableEntry {
                     table_name: ft.table_name,
                     source_catalog_id: ft.source_catalog_id.into_rust()?,

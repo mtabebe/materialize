@@ -357,3 +357,78 @@ DROP SCHEMA cross_src CASCADE
 
 statement ok
 DROP SCHEMA ref_data CASCADE
+
+# =============================================================================
+# Phase 3: MERGE BRANCH
+# =============================================================================
+
+# --- Clean merge: branch adds new rows, no upstream changes ---
+
+statement ok
+CREATE SCHEMA merge_src
+
+statement ok
+CREATE TABLE merge_src.t (k INT, v TEXT)
+
+statement ok
+INSERT INTO merge_src.t VALUES (1, 'a'), (2, 'b')
+
+statement ok
+CREATE BRANCH merge_b FROM merge_src
+
+# Write a new row only in the branch.
+statement ok
+INSERT INTO merge_b.t VALUES (3, 'c')
+
+# MERGE BRANCH returns 0 conflict rows (result set is empty on success).
+query TTTT
+MERGE BRANCH merge_b INTO merge_src
+----
+
+# Source schema should now have all three rows.
+query IT rowsort
+SELECT k, v FROM merge_src.t
+----
+1  a
+2  b
+3  c
+
+# Branch is now in Merged state.
+query TTT
+SHOW BRANCH STATUS merge_b
+----
+merge_b  merge_src  merged
+
+statement ok
+DROP BRANCH merge_b
+
+statement ok
+DROP SCHEMA merge_src CASCADE
+
+# --- Error: merging a branch that does not exist ---
+
+statement error branch "nonexistent" does not exist
+MERGE BRANCH nonexistent INTO src
+
+# --- Error: mismatched INTO schema ---
+
+statement ok
+CREATE SCHEMA mismatch_src
+
+statement ok
+CREATE SCHEMA wrong_schema
+
+statement ok
+CREATE BRANCH mismatch_b FROM mismatch_src
+
+statement error branch "mismatch_b" was created from schema "mismatch_src", not "wrong_schema"
+MERGE BRANCH mismatch_b INTO wrong_schema
+
+statement ok
+DROP BRANCH mismatch_b
+
+statement ok
+DROP SCHEMA wrong_schema CASCADE
+
+statement ok
+DROP SCHEMA mismatch_src CASCADE

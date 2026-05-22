@@ -20,8 +20,8 @@ use mz_repr::{
     CatalogItemId, ColumnIndex, RelationDesc, RelationVersionSelector, SqlColumnType, SqlScalarType,
 };
 use mz_sql_parser::ast::{
-    ColumnDef, ColumnName, CreateMaterializedViewStatement, RawItemName, ShowStatement, StatementKind,
-    TableConstraint, UnresolvedDatabaseName, UnresolvedSchemaName,
+    ColumnDef, ColumnName, CreateMaterializedViewStatement, RawItemName, ShowStatement,
+    StatementKind, TableConstraint, UnresolvedDatabaseName, UnresolvedSchemaName,
 };
 use mz_storage_types::connections::Connection;
 
@@ -152,7 +152,7 @@ pub fn describe(
         Statement::CreateSchema(stmt) => ddl::describe_create_schema(&scx, stmt)?,
         Statement::CreateBranch(stmt) => ddl::describe_create_branch(&scx, stmt)?,
         Statement::DropBranch(stmt) => ddl::describe_drop_branch(&scx, stmt)?,
-        Statement::MergeBranch(_) => StatementDesc::new(None),
+        Statement::MergeBranch(stmt) => ddl::describe_merge_branch(&scx, stmt)?,
         Statement::CreateSecret(stmt) => ddl::describe_create_secret(&scx, stmt)?,
         Statement::CreateSink(stmt) => ddl::describe_create_sink(&scx, stmt)?,
         Statement::CreateWebhookSource(stmt) => ddl::describe_create_webhook_source(&scx, stmt)?,
@@ -374,10 +374,7 @@ pub fn plan(
         Statement::CreateSchema(stmt) => ddl::plan_create_schema(scx, stmt),
         Statement::CreateBranch(stmt) => ddl::plan_create_branch(scx, stmt),
         Statement::DropBranch(stmt) => ddl::plan_drop_branch(scx, stmt),
-        Statement::MergeBranch(_) => Err(PlanError::Unsupported {
-            feature: "MERGE BRANCH".to_string(),
-            discussion_no: None,
-        }),
+        Statement::MergeBranch(stmt) => ddl::plan_merge_branch(scx, stmt),
         Statement::CreateSecret(stmt) => ddl::plan_create_secret(scx, stmt),
         Statement::CreateSink(stmt) => ddl::plan_create_sink(scx, stmt),
         Statement::CreateWebhookSource(stmt) => ddl::plan_create_webhook_source(scx, stmt),

@@ -214,6 +214,15 @@ impl Coordinator {
             Message::DeferredStatementReady => {
                 self.handle_deferred_statement().boxed_local().await;
             }
+            Message::MergeBranchReady {
+                ctx,
+                branch_name,
+                result,
+            } => {
+                self.handle_merge_branch_ready(ctx, branch_name, result)
+                    .boxed_local()
+                    .await;
+            }
         }
     }
 
@@ -1117,5 +1126,74 @@ impl Coordinator {
                 }
             });
         }
+    }
+
+    /// Applies the result of the async delta-shard reads from MERGE BRANCH.
+    async fn handle_merge_branch_ready(
+        &mut self,
+        ctx: crate::coord::ExecuteContext,
+        branch_name: String,
+        result: Result<Vec<(mz_repr::GlobalId, Vec<(Row, Diff)>)>, String>,
+    ) {
+        use mz_storage_client::client::TableData;
+
+        let row_commands = match result {
+            Err(err) => {
+                if let Some(b) = self.branch_by_schema.get_mut(&branch_name) {
+                    b.status = crate::coord::BranchStatus::Active;
+                }
+                ctx.retire(Err(crate::AdapterError::Internal(err)));
+                return;
+            }
+            Ok(cmds) => cmds,
+        };
+
+        if row_commands.is_empty() {
+            if let Some(b) = self.branch_by_schema.get_mut(&branch_name) {
+                b.status = crate::coord::BranchStatus::Merged;
+            }
+            ctx.retire(Ok(crate::command::ExecuteResponse::MergedBranch));
+            return;
+        }
+
+        let write_ts_info = self.get_local_write_ts().await;
+        let write_ts = write_ts_info.timestamp;
+        let advance_to = write_ts_info.advance_to;
+
+        let commands: Vec<(mz_repr::GlobalId, Vec<TableData>)> = row_commands
+            .into_iter()
+            .map(|(gid, rows)| (gid, vec![TableData::Rows(rows)]))
+            .collect();
+
+        let rx = match self
+            .controller
+            .storage
+            .append_table(write_ts, advance_to, commands)
+        {
+            Ok(rx) => rx,
+            Err(e) => {
+                if let Some(b) = self.branch_by_schema.get_mut(&branch_name) {
+                    b.status = crate::coord::BranchStatus::Active;
+                }
+                ctx.retire(Err(crate::AdapterError::Internal(format!(
+                    "append_table failed: {e}"
+                ))));
+                return;
+            }
+        };
+
+        let apply_fut = self.apply_local_write(write_ts);
+
+        if let Some(b) = self.branch_by_schema.get_mut(&branch_name) {
+            b.status = crate::coord::BranchStatus::Merged;
+        }
+
+        task::spawn(|| "merge_branch_apply", async move {
+            rx.await
+                .expect("storage controller dropped sender")
+                .expect("append_table write error");
+            apply_fut.await;
+            ctx.retire(Ok(crate::command::ExecuteResponse::MergedBranch));
+        });
     }
 }

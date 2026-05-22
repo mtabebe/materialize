@@ -559,6 +559,8 @@ pub enum ExecuteResponse {
     CreatedBranch,
     /// The requested branch schema was dropped.
     DroppedBranch,
+    /// The requested branch was merged into its source schema.
+    MergedBranch,
     /// The requested role was created.
     CreatedRole,
     /// The requested cluster was created.
@@ -739,6 +741,7 @@ impl TryInto<ExecuteResponse> for ExecuteResponseKind {
             ExecuteResponseKind::CreatedSchema => Ok(ExecuteResponse::CreatedSchema),
             ExecuteResponseKind::CreatedBranch => Ok(ExecuteResponse::CreatedBranch),
             ExecuteResponseKind::DroppedBranch => Ok(ExecuteResponse::DroppedBranch),
+            ExecuteResponseKind::MergedBranch => Ok(ExecuteResponse::MergedBranch),
             ExecuteResponseKind::CreatedRole => Ok(ExecuteResponse::CreatedRole),
             ExecuteResponseKind::CreatedCluster => Ok(ExecuteResponse::CreatedCluster),
             ExecuteResponseKind::CreatedClusterReplica => {
@@ -807,6 +810,7 @@ impl ExecuteResponse {
             CreatedSchema { .. } => Some("CREATE SCHEMA".into()),
             CreatedBranch => Some("CREATE BRANCH".into()),
             DroppedBranch => Some("DROP BRANCH".into()),
+            MergedBranch => Some("MERGE BRANCH".into()),
             CreatedRole => Some("CREATE ROLE".into()),
             CreatedCluster { .. } => Some("CREATE CLUSTER".into()),
             CreatedClusterReplica { .. } => Some("CREATE CLUSTER REPLICA".into()),
@@ -902,6 +906,7 @@ impl ExecuteResponse {
             CreateSchema => &[CreatedSchema],
             CreateBranch => &[CreatedBranch],
             DropBranch => &[DroppedBranch],
+            MergeBranch => &[MergedBranch, SendingRowsImmediate],
             ShowBranches => &[SendingRowsImmediate],
             ShowBranchStatus => &[SendingRowsImmediate],
             CreateRole => &[CreatedRole],

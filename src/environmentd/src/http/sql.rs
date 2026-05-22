@@ -1506,6 +1506,7 @@ async fn execute_stmt<S: ResultSender>(
         | ExecuteResponse::CreatedNetworkPolicy
         | ExecuteResponse::CreatedBranch
         | ExecuteResponse::DroppedBranch
+        | ExecuteResponse::MergedBranch
         | ExecuteResponse::Comment
         | ExecuteResponse::Deleted(_)
         | ExecuteResponse::DiscardedTemp

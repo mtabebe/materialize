@@ -135,6 +135,7 @@ pub enum Plan {
     CreateSchema(CreateSchemaPlan),
     CreateBranch(CreateBranchPlan),
     DropBranch(DropBranchPlan),
+    MergeBranch(MergeBranchPlan),
     ShowBranches(ShowBranchesPlan),
     ShowBranchStatus(ShowBranchStatusPlan),
     CreateRole(CreateRolePlan),
@@ -282,7 +283,7 @@ impl Plan {
             StatementKind::CreateSchema => &[PlanKind::CreateSchema],
             StatementKind::CreateBranch => &[PlanKind::CreateBranch],
             StatementKind::DropBranch => &[PlanKind::DropBranch],
-            StatementKind::MergeBranch => &[],
+            StatementKind::MergeBranch => &[PlanKind::MergeBranch],
             StatementKind::CreateSecret => &[PlanKind::CreateSecret],
             StatementKind::CreateSink => &[PlanKind::CreateSink],
             StatementKind::CreateSource | StatementKind::CreateSubsource => {
@@ -347,6 +348,7 @@ impl Plan {
             Plan::CreateSchema(_) => "create schema",
             Plan::CreateBranch(_) => "create branch",
             Plan::DropBranch(_) => "drop branch",
+            Plan::MergeBranch(_) => "merge branch",
             Plan::ShowBranches(_) => "show branches",
             Plan::ShowBranchStatus(_) => "show branch status",
             Plan::CreateRole(_) => "create role",
@@ -581,6 +583,12 @@ pub struct DropBranchPlan {
     pub schema_name: String,
     pub if_exists: bool,
     pub cascade: bool,
+}
+
+#[derive(Debug)]
+pub struct MergeBranchPlan {
+    pub branch_name: String,
+    pub into_schema_name: String,
 }
 
 #[derive(Debug)]
