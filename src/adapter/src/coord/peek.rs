@@ -48,6 +48,7 @@ use mz_repr::{
     Diff, GlobalId, IntoRowIterator, RelationDesc, Row, RowIterator, SqlRelationType,
     preserves_order,
 };
+use mz_storage_types::controller::{CollectionMetadata, ForkSource};
 use mz_storage_types::sources::SourceData;
 use serde::{Deserialize, Serialize};
 use timely::progress::Antichain;
@@ -825,6 +826,22 @@ impl crate::coord::Coordinator {
                         .collection_metadata(coll_id)
                         .expect("storage collection for fast-path peek")
                         .clone();
+                    // Patch metadata for forked tables: add source_for_fork so
+                    // clusterd can perform the two-shard merge.
+                    let metadata =
+                        if let Some((source_shard, branch_ts)) =
+                            self.forked_table_by_delta_id.get(&coll_id)
+                        {
+                            CollectionMetadata {
+                                source_for_fork: Some(ForkSource {
+                                    source_shard: *source_shard,
+                                    branch_ts: *branch_ts,
+                                }),
+                                ..metadata
+                            }
+                        } else {
+                            metadata
+                        };
                     let read_hold = self
                         .controller
                         .storage_collections

@@ -1032,7 +1032,11 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::AlterDefaultPrivileges(_)
         | Plan::ReassignOwned(_)
         | Plan::ValidateConnection(_)
-        | Plan::SideEffectingFunc(_) => BTreeSet::default(),
+        | Plan::SideEffectingFunc(_)
+        | Plan::CreateBranch(_)
+        | Plan::DropBranch(_)
+        | Plan::ShowBranches(_)
+        | Plan::ShowBranchStatus(_) => BTreeSet::default(),
     };
     let depends_on_required_id = REQUIRED_BUILTIN_TABLES
         .iter()

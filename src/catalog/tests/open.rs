@@ -100,6 +100,7 @@ impl Debug for StableSnapshot<'_> {
             storage_collection_metadata,
             unfinalized_shards,
             txn_wal_shard,
+            branch_descriptors,
         } = self.0;
         let mut configs: BTreeMap<proto::ConfigKey, proto::ConfigValue> = configs.clone();
         configs.remove(&Self::user_version_key());
@@ -129,6 +130,7 @@ impl Debug for StableSnapshot<'_> {
             .field("storage_collection_metadata", storage_collection_metadata)
             .field("unfinalized_shards", unfinalized_shards)
             .field("txn_wal_shard", txn_wal_shard)
+            .field("branch_descriptors", branch_descriptors)
             .finish()
     }
 }

@@ -229,6 +229,7 @@ impl<T: Timestamp + TimestampManipulation + Lattice + Codec64 + Display + Sync>
                                 data_shard,
                                 relation_desc,
                                 txns_shard,
+                                source_for_fork: _,
                             } = &export.storage_metadata;
                             assert_eq!(
                                 txns_shard, &None,

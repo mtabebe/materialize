@@ -1,0 +1,151 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for CREATE BRANCH / DROP BRANCH / SHOW BRANCHES / SHOW BRANCH STATUS.
+# Phase 1: branch metadata is in-memory only; branched tables start empty.
+
+mode cockroach
+
+# Setup: create a source schema with some objects.
+statement ok
+CREATE SCHEMA src
+
+statement ok
+CREATE TABLE src.t1 (a INT, b TEXT)
+
+statement ok
+INSERT INTO src.t1 VALUES (1, 'hello'), (2, 'world')
+
+# --- Basic lifecycle ---
+
+statement ok
+CREATE BRANCH my_branch FROM src
+
+# SHOW BRANCHES returns (name, source_schema, status).
+query TTT
+SHOW BRANCHES
+----
+my_branch  src  active
+
+# SHOW BRANCH STATUS returns (name, source_schema, status).
+query TTT
+SHOW BRANCH STATUS my_branch
+----
+my_branch  src  active
+
+# --- Idempotency / duplicate protection ---
+
+statement error schema 'my_branch' already exists
+CREATE BRANCH my_branch FROM src
+
+# --- DDL freeze on the source schema ---
+
+statement error cannot alter schema "src" while it has an active branch "my_branch"
+DROP SCHEMA src CASCADE
+
+# --- Phase 1b: forked tables reflect source data at branch time ---
+
+# my_branch.t1 was created as a forked table; source data is visible.
+query IT rowsort
+SELECT a, b FROM my_branch.t1
+----
+1  hello
+2  world
+
+# Writes to the branch table are visible in the branch.
+statement ok
+INSERT INTO my_branch.t1 VALUES (3, 'branch-only')
+
+query IT rowsort
+SELECT a, b FROM my_branch.t1
+----
+1  hello
+2  world
+3  branch-only
+
+# Source table is unaffected by branch writes.
+query IT rowsort
+SELECT a, b FROM src.t1
+----
+1  hello
+2  world
+
+# Deletes in the branch do not affect the source.
+statement ok
+DELETE FROM my_branch.t1 WHERE a = 1
+
+query IT rowsort
+SELECT a, b FROM my_branch.t1
+----
+2  world
+3  branch-only
+
+query IT rowsort
+SELECT a, b FROM src.t1
+----
+1  hello
+2  world
+
+# --- Additional tables in branch schema ---
+
+statement ok
+CREATE TABLE my_branch.t2 (x INT)
+
+statement ok
+INSERT INTO my_branch.t2 VALUES (42)
+
+query I
+SELECT x FROM my_branch.t2
+----
+42
+
+# --- Multiple branches ---
+
+statement ok
+CREATE BRANCH branch2 FROM src
+
+query TTT rowsort
+SHOW BRANCHES
+----
+branch2    src  active
+my_branch  src  active
+
+# --- DROP BRANCH ---
+
+statement ok
+DROP BRANCH my_branch
+
+query TTT
+SHOW BRANCHES
+----
+branch2  src  active
+
+# src is still frozen by branch2.
+statement error cannot alter schema "src" while it has an active branch "branch2"
+DROP SCHEMA src CASCADE
+
+statement ok
+DROP BRANCH branch2
+
+# Now src is free.
+statement ok
+DROP SCHEMA src CASCADE
+
+# --- IF EXISTS ---
+
+statement ok
+DROP BRANCH IF EXISTS nonexistent_branch
+
+statement error branch "nonexistent_branch" does not exist
+DROP BRANCH nonexistent_branch
+
+# --- SHOW BRANCH STATUS for unknown branch ---
+
+statement error unknown branch "no_such_branch"
+SHOW BRANCH STATUS no_such_branch

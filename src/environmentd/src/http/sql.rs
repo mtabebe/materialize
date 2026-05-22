@@ -1504,6 +1504,8 @@ async fn execute_stmt<S: ResultSender>(
         | ExecuteResponse::CreatedMaterializedView { .. }
         | ExecuteResponse::CreatedType
         | ExecuteResponse::CreatedNetworkPolicy
+        | ExecuteResponse::CreatedBranch
+        | ExecuteResponse::DroppedBranch
         | ExecuteResponse::Comment
         | ExecuteResponse::Deleted(_)
         | ExecuteResponse::DiscardedTemp

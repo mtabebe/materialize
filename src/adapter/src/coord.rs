@@ -134,6 +134,7 @@ use mz_ore::{
 };
 use mz_persist_client::PersistClient;
 use mz_persist_client::batch::ProtoBatch;
+use mz_persist_client::critical::CriticalReaderId;
 use mz_persist_client::usage::{ShardsUsageReferenced, StorageUsageClient};
 use mz_repr::adt::numeric::Numeric;
 use mz_repr::explain::{ExplainConfig, ExplainFormat};
@@ -1824,6 +1825,40 @@ impl ClusterReplicaStatuses {
     }
 }
 
+/// Status of a schema branch.
+#[derive(Debug, Clone)]
+pub enum BranchStatus {
+    Active,
+}
+
+/// In-memory metadata for a single forked table in a branch (Phase 1b).
+#[derive(Debug, Clone)]
+pub struct ForkedTableEntry {
+    /// `CatalogItemId` of the source (upstream) table.
+    pub source_catalog_id: CatalogItemId,
+    /// Persist shard id of the source table (held frozen at `branch_ts`).
+    pub source_shard: mz_persist_types::ShardId,
+    /// The timestamp at which the source shard is frozen for this branch.
+    pub branch_ts: Timestamp,
+    /// `CatalogItemId` of the delta (branch) table that receives local writes.
+    pub delta_catalog_id: CatalogItemId,
+    /// The `GlobalId` of the delta table (used to patch peek metadata).
+    pub delta_global_id: GlobalId,
+    /// The critical reader ID used to hold the GC fence on the source shard.
+    pub hold_reader_id: CriticalReaderId,
+}
+
+/// In-memory state for a schema branch.
+#[derive(Debug, Clone)]
+pub struct BranchState {
+    pub schema_id: mz_sql::names::SchemaId,
+    pub schema_name: String,
+    pub source_schema_name: String,
+    pub status: BranchStatus,
+    /// Forked tables in this branch: table name → entry.
+    pub forked_tables: BTreeMap<String, ForkedTableEntry>,
+}
+
 /// Glues the external world to the Timely workers.
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -2000,6 +2035,15 @@ pub struct Coordinator {
 
     /// Pre-allocated pool of user IDs to amortize persist writes across DDL operations.
     user_id_pool: IdPool,
+
+    /// In-memory branch state. Not persisted across restarts (Phase 1 limitation).
+    branch_by_schema: BTreeMap<String, BranchState>,
+
+    /// Fast lookup: delta-table `GlobalId` → `(source_shard, branch_ts)`.
+    ///
+    /// Used in the peek path to patch `CollectionMetadata.source_for_fork` so
+    /// that clusterd performs the two-shard merge.  Not persisted (Phase 1b).
+    forked_table_by_delta_id: BTreeMap<GlobalId, (mz_persist_types::ShardId, Timestamp)>,
 }
 
 impl Coordinator {
@@ -2135,6 +2179,8 @@ impl Coordinator {
             "startup: coordinator init: bootstrap: storage collections init complete in {:?}",
             init_storage_collections_start.elapsed()
         );
+
+        self.bootstrap_branch_state().await;
 
         // The storage controller knows about the introspection collections now, so we can start
         // sinking introspection updates in the compute controller. It makes sense to do that as
@@ -3135,6 +3181,94 @@ impl Coordinator {
 
         if !self.controller.read_only() {
             self.apply_local_write(register_ts).await;
+        }
+    }
+
+    /// Re-establishes in-memory [`BranchState`] from persisted [`BranchDescriptor`]s and
+    /// re-opens critical-since GC holds for each forked table.
+    ///
+    /// Called during coordinator startup after `bootstrap_storage_collections`.
+    #[instrument]
+    async fn bootstrap_branch_state(&mut self) {
+        use mz_persist_client::Diagnostics as PersistDiagnostics;
+        use mz_persist_client::critical::Opaque;
+        use mz_storage_types::sources::SourceData;
+
+        let descriptors: Vec<_> = self
+            .catalog()
+            .state()
+            .branch_descriptors
+            .values()
+            .cloned()
+            .collect();
+
+        for descriptor in descriptors {
+            let mut forked_tables: BTreeMap<String, ForkedTableEntry> = BTreeMap::new();
+
+            for ft in &descriptor.forked_tables {
+                // Re-open the critical since handle to keep the GC hold alive.
+                let source_shard = ft.source_shard;
+                let hold_reader_id = ft.hold_reader_id.clone();
+                let initial_opaque = Opaque::encode(&1u64);
+
+                match self
+                    .persist_client
+                    .open_critical_since::<SourceData, (), mz_repr::Timestamp, i64>(
+                        source_shard,
+                        hold_reader_id.clone(),
+                        initial_opaque,
+                        PersistDiagnostics::from_purpose("branch bootstrap hold"),
+                    )
+                    .await
+                {
+                    Ok(_since_handle) => {
+                        // Hold re-established; the handle keeps the since fence alive
+                        // for the duration of this coordinator's lifetime.
+                    }
+                    Err(e) => {
+                        warn!(
+                            "could not re-open branch GC hold on shard {source_shard} \
+                             during bootstrap: {e:?}"
+                        );
+                    }
+                }
+
+                // Register in fast-lookup table for the fast-path peek.
+                self.forked_table_by_delta_id
+                    .insert(ft.delta_global_id, (source_shard, ft.branch_ts));
+
+                // Patch the runtime collection metadata so slow-path dataflows
+                // also perform the two-shard merge.
+                let _ = self.controller.storage_collections.set_source_for_fork(
+                    ft.delta_global_id,
+                    mz_storage_types::controller::ForkSource {
+                        source_shard,
+                        branch_ts: ft.branch_ts,
+                    },
+                );
+
+                forked_tables.insert(
+                    ft.table_name.clone(),
+                    ForkedTableEntry {
+                        source_catalog_id: ft.source_catalog_id,
+                        source_shard,
+                        branch_ts: ft.branch_ts,
+                        delta_catalog_id: ft.delta_catalog_id,
+                        delta_global_id: ft.delta_global_id,
+                        hold_reader_id,
+                    },
+                );
+            }
+
+            let branch_state = BranchState {
+                schema_id: descriptor.schema_id,
+                schema_name: descriptor.schema_name.clone(),
+                source_schema_name: descriptor.source_schema_name.clone(),
+                status: BranchStatus::Active,
+                forked_tables,
+            };
+            self.branch_by_schema
+                .insert(descriptor.schema_name.clone(), branch_state);
         }
     }
 
@@ -4738,6 +4872,8 @@ pub fn serve(
                     license_key,
                     user_id_pool: IdPool::empty(),
                     persist_client,
+                    branch_by_schema: BTreeMap::new(),
+                    forked_table_by_delta_id: BTreeMap::new(),
                 };
                 let bootstrap = handle.block_on(async {
                     coord

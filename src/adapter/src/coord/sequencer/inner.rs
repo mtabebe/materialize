@@ -843,6 +843,386 @@ impl Coordinator {
         }
     }
 
+    /// Returns an error if the given schema name is a branch schema, preventing DDL.
+
+    pub(super) async fn sequence_create_branch(
+        &mut self,
+        session: &Session,
+        plan: plan::CreateBranchPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        use mz_persist_client::Diagnostics as PersistDiagnostics;
+        use mz_persist_client::critical::{CriticalReaderId, Opaque};
+        use mz_storage_types::sources::SourceData;
+        use timely::progress::Antichain;
+
+        // Step 1: Create the branch schema via the catalog.
+        let create_schema_op = catalog::Op::CreateSchema {
+            database_id: plan.source_database_spec.clone(),
+            schema_name: plan.branch_name.clone(),
+            owner_id: *session.current_role_id(),
+        };
+        self.catalog_transact(Some(session), vec![create_schema_op]).await?;
+
+        // Step 2: Collect info about tables in the source schema.
+        // Do this after schema creation (so we can look up the branch schema spec),
+        // but before any mutable borrow on self.
+        let branch_ts = {
+            let ts = self.now();
+            mz_repr::Timestamp::from(ts)
+        };
+
+        // Collect (table_name, source_catalog_id, source_global_id, source_desc) for source tables.
+        struct SourceTableInfo {
+            name: String,
+            catalog_id: CatalogItemId,
+            global_id: GlobalId,
+            desc: mz_repr::VersionedRelationDesc,
+            resolved_ids: ResolvedIds,
+            custom_logical_compaction_window: Option<mz_adapter_types::compaction::CompactionWindow>,
+            data_source: mz_catalog::memory::objects::TableDataSource,
+            /// The source table's create_sql; used to generate the delta table's create_sql.
+            source_create_sql: Option<String>,
+        }
+
+        let (source_tables, branch_schema_spec, database_name): (Vec<SourceTableInfo>, SchemaSpecifier, String) = {
+            let catalog = self.catalog();
+            // Resolve source schema
+            let source_schema = catalog
+                .resolve_schema_in_database(
+                    &plan.source_database_spec,
+                    &plan.source_schema_name,
+                    session.conn_id(),
+                )
+                .map_err(|e| AdapterError::Catalog(mz_catalog::memory::error::Error {
+                    kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                }))?;
+
+            // Resolve branch schema (just created above)
+            let branch_schema = catalog
+                .resolve_schema_in_database(
+                    &plan.source_database_spec,
+                    &plan.branch_name,
+                    session.conn_id(),
+                )
+                .map_err(|e| AdapterError::Catalog(mz_catalog::memory::error::Error {
+                    kind: mz_catalog::memory::error::ErrorKind::Sql(e),
+                }))?;
+            let branch_schema_spec = branch_schema.id.clone();
+
+            let database_name = match &plan.source_database_spec {
+                mz_sql::names::ResolvedDatabaseSpecifier::Id(id) => {
+                    catalog.get_database(id).name.clone()
+                }
+                mz_sql::names::ResolvedDatabaseSpecifier::Ambient => String::new(),
+            };
+
+            let mut tables = Vec::new();
+            for (item_name, item_id) in &source_schema.items {
+                let entry = catalog.get_entry(item_id);
+                if let CatalogItem::Table(t) = entry.item() {
+                    // Only replicate writable tables (not ingestion-backed).
+                    if matches!(&t.data_source, TableDataSource::TableWrites { .. }) {
+                        tables.push(SourceTableInfo {
+                            name: item_name.clone(),
+                            catalog_id: *item_id,
+                            global_id: t.global_id_writes(),
+                            desc: t.desc.clone(),
+                            resolved_ids: t.resolved_ids.clone(),
+                            custom_logical_compaction_window: t.custom_logical_compaction_window,
+                            data_source: t.data_source.clone(),
+                            source_create_sql: t.create_sql.clone(),
+                        });
+                    }
+                }
+            }
+            (tables, branch_schema_spec, database_name)
+        };
+
+        // Step 3: For each source table, allocate a delta table and register it.
+        let mut forked_tables: BTreeMap<String, crate::coord::ForkedTableEntry> = BTreeMap::new();
+
+        for info in source_tables {
+            // Obtain the source shard from the storage controller.
+            let source_shard = self
+                .controller
+                .storage
+                .collection_metadata(info.global_id)
+                .map_err(|_| AdapterError::Internal(
+                    format!("source table {:?} not found in storage", info.global_id)
+                ))?
+                .data_shard;
+
+            // Allocate IDs for the delta table.
+            let (delta_catalog_id, delta_global_id) = self.allocate_user_id().await?;
+            let delta_collections = [(mz_repr::RelationVersion::root(), delta_global_id)]
+                .into_iter()
+                .collect();
+
+            // Generate create_sql for the delta table by renaming the source
+            // schema to the branch schema in the source table's create_sql.
+            let delta_create_sql = info.source_create_sql.as_deref().map(|src_sql| {
+                let mut stmt = mz_sql::parse::parse(src_sql)
+                    .expect("source table has invalid create sql")
+                    .into_element()
+                    .ast;
+                let _ = mz_sql::ast::transform::create_stmt_rename_schema_refs(
+                    &mut stmt,
+                    &database_name,
+                    &plan.source_schema_name,
+                    &plan.branch_name,
+                );
+                stmt.to_ast_string_stable()
+            });
+
+            let delta_table = Table {
+                create_sql: delta_create_sql,
+                desc: info.desc.clone(),
+                collections: delta_collections,
+                conn_id: None,
+                resolved_ids: info.resolved_ids.clone(),
+                custom_logical_compaction_window: info.custom_logical_compaction_window,
+                is_retained_metrics_object: false,
+                data_source: info.data_source.clone(),
+            };
+
+            let delta_item_name = QualifiedItemName {
+                qualifiers: mz_sql::names::ItemQualifiers {
+                    database_spec: plan.source_database_spec.clone(),
+                    schema_spec: branch_schema_spec.clone(),
+                },
+                item: info.name.clone(),
+            };
+
+            let create_item_op = catalog::Op::CreateItem {
+                id: delta_catalog_id,
+                name: delta_item_name,
+                item: CatalogItem::Table(delta_table),
+                owner_id: *session.current_role_id(),
+            };
+            self.catalog_transact(Some(session), vec![create_item_op]).await?;
+
+            // Place a critical since hold on the source shard at branch_ts to prevent GC.
+            let hold_reader_id = CriticalReaderId::new();
+            let initial_opaque = Opaque::encode(&0u64);
+            let hold_opaque = Opaque::encode(&1u64);
+
+            match self
+                .persist_client
+                .open_critical_since::<SourceData, (), mz_repr::Timestamp, i64>(
+                    source_shard,
+                    hold_reader_id.clone(),
+                    initial_opaque.clone(),
+                    PersistDiagnostics::from_purpose("branch read hold"),
+                )
+                .await
+            {
+                Ok(mut since_handle) => {
+                    // Advance the hold to branch_ts; ignore compare-and-downgrade errors
+                    // (another holder at the same or greater since is fine).
+                    let _ = since_handle
+                        .compare_and_downgrade_since(
+                            &initial_opaque,
+                            (&hold_opaque, &Antichain::from_elem(branch_ts)),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    warn!(
+                        "could not place branch read hold on source shard {source_shard}: {e:?}; \
+                         GC may compact past branch_ts"
+                    );
+                }
+            }
+
+            // Register in fast-lookup table for the fast-path peek.
+            self.forked_table_by_delta_id
+                .insert(delta_global_id, (source_shard, branch_ts));
+
+            // Also patch the storage collection's runtime metadata so slow-path
+            // dataflows pick up the two-shard merge (source_for_fork is never
+            // stored durably; it is reconstructed on restart from the branch descriptor
+            // via bootstrap_branch_state).
+            let _ = self.controller.storage_collections.set_source_for_fork(
+                delta_global_id,
+                mz_storage_types::controller::ForkSource { source_shard, branch_ts },
+            );
+
+            forked_tables.insert(
+                info.name.clone(),
+                crate::coord::ForkedTableEntry {
+                    source_catalog_id: info.catalog_id,
+                    source_shard,
+                    branch_ts,
+                    delta_catalog_id,
+                    delta_global_id,
+                    hold_reader_id: hold_reader_id.clone(),
+                },
+            );
+        }
+
+        // Step 4: Persist the branch descriptor to the durable catalog.
+        let branch_schema_id = mz_sql::names::SchemaId::from(branch_schema_spec.clone());
+        let durable_descriptor = mz_catalog::durable::objects::BranchDescriptor {
+            schema_id: branch_schema_id,
+            schema_name: plan.branch_name.clone(),
+            source_schema_name: plan.source_schema_name.clone(),
+            status: "active".to_string(),
+            forked_tables: forked_tables
+                .iter()
+                .map(|(table_name, entry)| {
+                    mz_catalog::durable::objects::BranchForkedTableEntry {
+                        table_name: table_name.clone(),
+                        source_catalog_id: entry.source_catalog_id,
+                        source_shard: entry.source_shard,
+                        branch_ts: entry.branch_ts,
+                        delta_catalog_id: entry.delta_catalog_id,
+                        delta_global_id: entry.delta_global_id,
+                        hold_reader_id: entry.hold_reader_id.clone(),
+                    }
+                })
+                .collect(),
+        };
+        self.catalog_transact(
+            Some(session),
+            vec![catalog::Op::WriteBranchDescriptor {
+                descriptor: durable_descriptor,
+            }],
+        )
+        .await?;
+
+        // Step 5: Record branch state in memory.
+        let branch_state = crate::coord::BranchState {
+            schema_id: branch_schema_id,
+            schema_name: plan.branch_name.clone(),
+            source_schema_name: plan.source_schema_name.clone(),
+            status: crate::coord::BranchStatus::Active,
+            forked_tables,
+        };
+        self.branch_by_schema.insert(plan.branch_name.clone(), branch_state);
+
+        Ok(ExecuteResponse::CreatedBranch)
+    }
+
+    pub(super) async fn sequence_drop_branch(
+        &mut self,
+        session: &Session,
+        plan: plan::DropBranchPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+
+        let Some(branch_state) = self.branch_by_schema.remove(&plan.schema_name) else {
+            if !plan.if_exists {
+                coord_bail!("branch \"{}\" does not exist", plan.schema_name);
+            }
+            return Ok(ExecuteResponse::DroppedBranch);
+        };
+
+        // Release read holds and drop delta tables for each forked table.
+        for (_, entry) in &branch_state.forked_tables {
+            use mz_persist_client::Diagnostics as PersistDiagnostics;
+            use mz_persist_client::critical::Opaque;
+            use mz_storage_types::sources::SourceData;
+
+            // Remove from fast-lookup.
+            self.forked_table_by_delta_id.remove(&entry.delta_global_id);
+
+            // Release the critical since hold by re-opening with the original reader_id
+            // and downgrading to the empty antichain (releasing the hold).
+            let source_shard = entry.source_shard;
+            let hold_reader_id = entry.hold_reader_id.clone();
+            let initial_opaque = Opaque::encode(&1u64); // matches hold_opaque from creation
+            match self
+                .persist_client
+                .open_critical_since::<SourceData, (), mz_repr::Timestamp, i64>(
+                    source_shard,
+                    hold_reader_id,
+                    initial_opaque.clone(),
+                    PersistDiagnostics::from_purpose("branch read hold release"),
+                )
+                .await
+            {
+                Ok(mut since_handle) => {
+                    let release_opaque = Opaque::encode(&2u64);
+                    let _ = since_handle
+                        .compare_and_downgrade_since(
+                            &initial_opaque,
+                            (&release_opaque, &timely::progress::Antichain::new()),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    warn!(
+                        "could not re-open critical since handle for source shard {source_shard}: {e:?}; \
+                         GC hold may not be released"
+                    );
+                }
+            }
+
+            // Drop the delta table from the catalog.
+            let drop_op = catalog::Op::DropObjects(vec![
+                catalog::DropObjectInfo::Item(entry.delta_catalog_id),
+            ]);
+            // Best-effort drop; log on failure but don't block DROP BRANCH.
+            if let Err(e) = self.catalog_transact(Some(session), vec![drop_op]).await {
+                warn!(
+                    "could not drop delta table {:?} for branch {}: {e:?}",
+                    entry.delta_catalog_id, plan.schema_name
+                );
+            }
+        }
+
+        // Remove the branch descriptor from the durable catalog.
+        let delete_op = catalog::Op::DeleteBranchDescriptor {
+            schema_id: branch_state.schema_id,
+        };
+        if let Err(e) = self.catalog_transact(Some(session), vec![delete_op]).await {
+            warn!(
+                "could not delete branch descriptor for branch {}: {e:?}",
+                plan.schema_name
+            );
+        }
+
+        Ok(ExecuteResponse::DroppedBranch)
+    }
+
+    pub(super) fn sequence_show_branches(&self) -> Result<ExecuteResponse, AdapterError> {
+        let rows: Vec<Row> = self
+            .branch_by_schema
+            .values()
+            .map(|b| {
+                Row::pack_slice(&[
+                    Datum::String(&b.schema_name),
+                    Datum::String(&b.source_schema_name),
+                    Datum::String(match b.status {
+                        crate::coord::BranchStatus::Active => "active",
+                    }),
+                ])
+            })
+            .collect();
+        Ok(Self::send_immediate_rows(rows))
+    }
+
+    pub(super) fn sequence_show_branch_status(
+        &self,
+        plan: plan::ShowBranchStatusPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        match self.branch_by_schema.get(&plan.branch_name) {
+            Some(b) => {
+                let row = Row::pack_slice(&[
+                    Datum::String(&b.schema_name),
+                    Datum::String(&b.source_schema_name),
+                    Datum::String(match b.status {
+                        crate::coord::BranchStatus::Active => "active",
+                    }),
+                ]);
+                Ok(Self::send_immediate_rows(vec![row]))
+            }
+            None => coord_bail!(
+                "unknown branch \"{}\"",
+                plan.branch_name
+            ),
+        }
+    }
+
     /// Validates the role attributes for a `CREATE ROLE` statement.
     fn validate_role_attributes(&self, attributes: &RoleAttributesRaw) -> Result<(), AdapterError> {
         if !ENABLE_PASSWORD_AUTH.get(self.catalog().system_config().dyncfgs()) {
@@ -1196,6 +1576,23 @@ impl Coordinator {
             referenced_ids,
         }: plan::DropObjectsPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
+        // Prevent dropping a schema that has active branches.
+        for obj_id in &drop_ids {
+            if let mz_sql::names::ObjectId::Schema((db_spec, schema_spec)) = obj_id {
+                if let mz_sql::names::SchemaSpecifier::Id(_) = schema_spec {
+                    let schema = self.catalog().get_schema(db_spec, schema_spec, ctx.session().conn_id());
+                    let schema_name = &schema.name.schema;
+                    if let Some(branch) = self.branch_by_schema.values().find(|b| &b.source_schema_name == schema_name) {
+                        let branch_name = branch.schema_name.clone();
+                        coord_bail!(
+                            "cannot alter schema \"{}\" while it has an active branch \"{}\"",
+                            schema_name,
+                            branch_name
+                        );
+                    }
+                }
+            }
+        }
         let referenced_ids_hashset = referenced_ids.iter().collect::<HashSet<_>>();
         let mut objects = Vec::new();
         for obj_id in &drop_ids {

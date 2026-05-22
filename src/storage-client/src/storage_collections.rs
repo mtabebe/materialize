@@ -101,6 +101,14 @@ pub trait StorageCollections: Debug + Sync {
     /// Returns the [CollectionMetadata] of the collection identified by `id`.
     fn collection_metadata(&self, id: GlobalId) -> Result<CollectionMetadata, CollectionMissing>;
 
+    /// Sets `source_for_fork` on the in-memory metadata for a forked-table
+    /// delta collection so that slow-path dataflows pick up the two-shard merge.
+    fn set_source_for_fork(
+        &self,
+        id: GlobalId,
+        fork: mz_storage_types::controller::ForkSource,
+    ) -> Result<(), CollectionMissing>;
+
     /// Acquire an iterator over [CollectionMetadata] for all active
     /// collections.
     ///
@@ -1366,6 +1374,21 @@ impl StorageCollections for StorageCollectionsImpl {
             .collect()
     }
 
+    fn set_source_for_fork(
+        &self,
+        id: GlobalId,
+        fork: mz_storage_types::controller::ForkSource,
+    ) -> Result<(), CollectionMissing> {
+        let mut collections = self.collections.lock().expect("lock poisoned");
+        match collections.get_mut(&id) {
+            Some(c) => {
+                c.collection_metadata.source_for_fork = Some(fork);
+                Ok(())
+            }
+            None => Err(CollectionMissing(id)),
+        }
+    }
+
     fn collections_frontiers(
         &self,
         ids: Vec<GlobalId>,
@@ -1727,6 +1750,7 @@ impl StorageCollections for StorageCollectionsImpl {
                     data_shard,
                     relation_desc: description.desc.clone(),
                     txns_shard,
+                    source_for_fork: None,
                 };
 
                 Ok((id, description, metadata))
@@ -2149,6 +2173,7 @@ impl StorageCollections for StorageCollectionsImpl {
                 relation_desc: new_desc.clone(),
                 data_shard,
                 txns_shard: Some(self.txns_read.txns_id().clone()),
+                source_for_fork: None,
             };
             let collection_state = CollectionState::new(
                 None,

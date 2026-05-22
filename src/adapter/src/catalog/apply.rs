@@ -364,6 +364,9 @@ impl CatalogState {
             StateUpdateKind::UnfinalizedShard(unfinalized_shard) => {
                 self.apply_unfinalized_shard_update(unfinalized_shard, diff, retractions);
             }
+            StateUpdateKind::BranchDescriptor(branch_descriptor) => {
+                self.apply_branch_descriptor_update(branch_descriptor, diff, retractions);
+            }
         }
 
         Ok(())
@@ -1359,6 +1362,24 @@ impl CatalogState {
         }
     }
 
+    #[instrument(level = "debug")]
+    fn apply_branch_descriptor_update(
+        &mut self,
+        branch_descriptor: mz_catalog::durable::objects::BranchDescriptor,
+        diff: StateDiff,
+        _retractions: &mut InProgressRetractions,
+    ) {
+        match diff {
+            StateDiff::Addition => {
+                self.branch_descriptors
+                    .insert(branch_descriptor.schema_id, branch_descriptor);
+            }
+            StateDiff::Retraction => {
+                self.branch_descriptors.remove(&branch_descriptor.schema_id);
+            }
+        }
+    }
+
     /// Generate a list of `BuiltinTableUpdate`s that correspond to a list of updates made to the
     /// durable catalog.
     #[instrument]
@@ -1441,7 +1462,8 @@ impl CatalogState {
             | StateUpdateKind::Schema(_)
             | StateUpdateKind::NetworkPolicy(_)
             | StateUpdateKind::StorageCollectionMetadata(_)
-            | StateUpdateKind::UnfinalizedShard(_) => Vec::new(),
+            | StateUpdateKind::UnfinalizedShard(_)
+            | StateUpdateKind::BranchDescriptor(_) => Vec::new(),
         }
     }
 
@@ -2224,7 +2246,8 @@ fn sort_updates(updates: Vec<StateUpdate>) -> Vec<StateUpdate> {
             | StateUpdateKind::SourceReferences(_)
             | StateUpdateKind::AuditLog(_)
             | StateUpdateKind::StorageCollectionMetadata(_)
-            | StateUpdateKind::UnfinalizedShard(_) => push_update(
+            | StateUpdateKind::UnfinalizedShard(_)
+            | StateUpdateKind::BranchDescriptor(_) => push_update(
                 update,
                 diff,
                 &mut post_item_retractions,
@@ -2552,7 +2575,8 @@ impl ApplyState {
             | Comment(_)
             | AuditLog(_)
             | StorageCollectionMetadata(_)
-            | UnfinalizedShard(_) => Self::Updates(vec![update]),
+            | UnfinalizedShard(_)
+            | BranchDescriptor(_) => Self::Updates(vec![update]),
         }
     }
 

@@ -147,6 +147,11 @@ pub struct CatalogState {
     pub(super) source_references: imbl::OrdMap<CatalogItemId, SourceReferences>,
     pub(super) storage_metadata: Arc<StorageMetadata>,
     pub(super) mock_authentication_nonce: Option<String>,
+    /// Durable branch descriptors indexed by branch schema ID.
+    /// Re-loaded from the durable catalog at startup, so we skip serialization.
+    #[serde(skip)]
+    pub(crate) branch_descriptors:
+        BTreeMap<SchemaId, mz_catalog::durable::objects::BranchDescriptor>,
 
     // Mutable state not derived from the durable catalog. Populated
     // during dataflow bootstrapping (`bootstrap_dataflow_plans`), which
@@ -331,6 +336,7 @@ impl CatalogState {
             storage_metadata: Arc::new(StorageMetadata::default()),
             license_key: ValidatedLicenseKey::for_tests(),
             mock_authentication_nonce: Default::default(),
+            branch_descriptors: Default::default(),
         }
     }
 

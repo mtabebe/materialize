@@ -152,6 +152,7 @@ impl Catalog {
             storage_metadata: Arc::new(StorageMetadata::default()),
             temporary_schemas: imbl::OrdMap::new(),
             mock_authentication_nonce: Default::default(),
+            branch_descriptors: BTreeMap::new(),
             config: mz_sql::catalog::CatalogConfig {
                 start_time: to_datetime((config.now)()),
                 start_instant: Instant::now(),
@@ -291,7 +292,8 @@ impl Catalog {
                 BootstrapStateUpdateKind::Comment(_)
                 | BootstrapStateUpdateKind::StorageCollectionMetadata(_)
                 | BootstrapStateUpdateKind::SourceReferences(_)
-                | BootstrapStateUpdateKind::UnfinalizedShard(_) => {
+                | BootstrapStateUpdateKind::UnfinalizedShard(_)
+                | BootstrapStateUpdateKind::BranchDescriptor(_) => {
                     post_item_updates.push((kind, ts, diff));
                 }
                 BootstrapStateUpdateKind::AuditLog(_) => {

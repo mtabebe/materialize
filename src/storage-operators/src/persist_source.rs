@@ -53,7 +53,7 @@ use timely::container::CapacityContainerBuilder;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::operators::generic::{OutputBuilder, OutputBuilderSession};
-use timely::dataflow::operators::{Capability, Leave, OkErr};
+use timely::dataflow::operators::{Capability, Concat, Leave, OkErr};
 use timely::dataflow::operators::{CapabilitySet, ConnectLoop, Feedback};
 use timely::dataflow::{Scope, Stream, StreamVec};
 use timely::order::TotalOrder;
@@ -168,7 +168,7 @@ pub fn persist_source<'scope, E>(
     as_of: Option<Antichain<Timestamp>>,
     snapshot_mode: SnapshotMode,
     until: Antichain<Timestamp>,
-    map_filter_project: Option<&mut MfpPlan>,
+    mut map_filter_project: Option<&mut MfpPlan>,
     max_inflight_bytes: Option<usize>,
     start_signal: impl Future<Output = ()> + Send + 'static,
     error_handler: ErrorHandler,
@@ -180,6 +180,87 @@ pub fn persist_source<'scope, E>(
 where
     E: timely::ExchangeData + Ord + Clone + Debug + From<DataflowError> + From<EvalError>,
 {
+    // Two-shard read for forked tables: merge source@branch_ts with delta@as_of.
+    //
+    // We do this by recursively calling `persist_source` once for each shard:
+    //   - source shard: snapshot at branch_ts using same txns-wal, closes at branch_ts+1
+    //   - delta shard:  normal read path with the full MFP applied
+    // The two StreamVecs are then extended together and returned as a single logical stream.
+    //
+    // MFP handling: we clone the plan for the source sub-call, and take (consume) it from
+    // the caller's slot for the delta sub-call.  After both calls the caller's slot holds
+    // an identity plan, so render.rs's post-call assertion is satisfied.
+    if let Some(fork) = metadata.source_for_fork.clone() {
+        // Clone the plan for the source shard before consuming it from the caller.
+        let mut mfp_for_source: Option<MfpPlan> =
+            map_filter_project.as_deref().cloned().filter(|m| !m.is_identity());
+        // Take (consume) from the caller's slot, leaving identity there.
+        let mut mfp_for_delta: Option<MfpPlan> = map_filter_project
+            .as_mut()
+            .map(|m| m.take())
+            .filter(|m| !m.is_identity());
+
+        let source_metadata = CollectionMetadata {
+            data_shard: fork.source_shard,
+            // The source shard is a regular user table backed by txns-wal.
+            // We must pass the txns_shard so the PersistSource can observe the
+            // shard's upper via txns-wal; without it, the physical data-shard upper
+            // may be stuck at the last physical write (before branch_ts) and the
+            // source stream will never advance past branch_ts, hanging the merged frontier.
+            txns_shard: metadata.txns_shard,
+            // Clear fork flag to avoid infinite recursion.
+            source_for_fork: None,
+            ..metadata.clone()
+        };
+        // until = branch_ts + 1 so the source stream closes right after emitting the snapshot.
+        let source_until = Antichain::from_elem(fork.branch_ts.saturating_add(1));
+
+        let (ok_streams, err_streams, mut tokens) = persist_source(
+            scope.clone(),
+            source_id,
+            Arc::clone(&persist_clients),
+            txns_ctx,
+            source_metadata,
+            read_schema.clone(),
+            // Read source frozen at branch_ts.
+            Some(Antichain::from_elem(fork.branch_ts)),
+            SnapshotMode::Include,
+            source_until,
+            mfp_for_source.as_mut(),
+            // No flow control for the source shard (snapshot only).
+            None,
+            // Source shard starts immediately; no need to wait.
+            std::future::ready(()),
+            error_handler.clone(),
+        );
+
+        let delta_metadata = CollectionMetadata {
+            source_for_fork: None,
+            ..metadata
+        };
+        let (delta_ok, delta_err, delta_tokens) = persist_source(
+            scope,
+            source_id,
+            persist_clients,
+            txns_ctx,
+            delta_metadata,
+            read_schema,
+            as_of,
+            snapshot_mode,
+            until,
+            mfp_for_delta.as_mut(),
+            max_inflight_bytes,
+            start_signal,
+            error_handler,
+        );
+
+        // Merge the two StreamVec streams using timely's concat operator.
+        let merged_ok = ok_streams.concat(delta_ok);
+        let merged_err = err_streams.concat(delta_err);
+        tokens.extend(delta_tokens);
+        return (merged_ok, merged_err, tokens);
+    }
+
     let shard_metrics = persist_clients.shard_metrics(&metadata.data_shard, &source_id.to_string());
 
     let mut tokens = vec![];

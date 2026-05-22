@@ -3730,6 +3730,8 @@ pub enum StateUpdateKind {
     // Storage updates.
     StorageCollectionMetadata(durable::objects::StorageCollectionMetadata),
     UnfinalizedShard(durable::objects::UnfinalizedShard),
+    // Branch updates.
+    BranchDescriptor(durable::objects::BranchDescriptor),
 }
 
 /// Valid diffs for catalog state updates.
@@ -3822,6 +3824,8 @@ pub enum BootstrapStateUpdateKind {
     // Storage updates.
     StorageCollectionMetadata(durable::objects::StorageCollectionMetadata),
     UnfinalizedShard(durable::objects::UnfinalizedShard),
+    // Branch updates.
+    BranchDescriptor(durable::objects::BranchDescriptor),
 }
 
 impl From<BootstrapStateUpdateKind> for StateUpdateKind {
@@ -3860,6 +3864,9 @@ impl From<BootstrapStateUpdateKind> for StateUpdateKind {
             }
             BootstrapStateUpdateKind::UnfinalizedShard(kind) => {
                 StateUpdateKind::UnfinalizedShard(kind)
+            }
+            BootstrapStateUpdateKind::BranchDescriptor(kind) => {
+                StateUpdateKind::BranchDescriptor(kind)
             }
         }
     }
@@ -3908,6 +3915,9 @@ impl TryFrom<StateUpdateKind> for BootstrapStateUpdateKind {
             }
             StateUpdateKind::UnfinalizedShard(kind) => {
                 Ok(BootstrapStateUpdateKind::UnfinalizedShard(kind))
+            }
+            StateUpdateKind::BranchDescriptor(kind) => {
+                Ok(BootstrapStateUpdateKind::BranchDescriptor(kind))
             }
         }
     }

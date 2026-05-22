@@ -1288,7 +1288,9 @@ impl Coordinator {
                 | Op::ResetAllSystemConfiguration { .. }
                 | Op::Comment { .. }
                 | Op::WeirdStorageUsageUpdates { .. }
-                | Op::InjectAuditEvents { .. } => {}
+                | Op::InjectAuditEvents { .. }
+                | Op::WriteBranchDescriptor { .. }
+                | Op::DeleteBranchDescriptor { .. } => {}
             }
         }
 

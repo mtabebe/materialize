@@ -1051,6 +1051,14 @@ mod tests {
             unimplemented!()
         }
 
+        fn set_source_for_fork(
+            &self,
+            _id: GlobalId,
+            _fork: mz_storage_types::controller::ForkSource,
+        ) -> Result<(), CollectionMissing> {
+            unimplemented!()
+        }
+
         fn dump(&self) -> Result<serde_json::Value, anyhow::Error> {
             unimplemented!()
         }

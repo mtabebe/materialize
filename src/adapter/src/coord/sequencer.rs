@@ -245,6 +245,26 @@ impl Coordinator {
                     let result = self.sequence_create_schema(ctx.session_mut(), plan).await;
                     ctx.retire(result);
                 }
+                Plan::CreateBranch(plan) => {
+                    let result = self
+                        .sequence_create_branch(ctx.session_mut(), plan)
+                        .await;
+                    ctx.retire(result);
+                }
+                Plan::DropBranch(plan) => {
+                    let result = self
+                        .sequence_drop_branch(ctx.session_mut(), plan)
+                        .await;
+                    ctx.retire(result);
+                }
+                Plan::ShowBranches(_) => {
+                    let result = self.sequence_show_branches();
+                    ctx.retire(result);
+                }
+                Plan::ShowBranchStatus(plan) => {
+                    let result = self.sequence_show_branch_status(plan);
+                    ctx.retire(result);
+                }
                 Plan::CreateRole(plan) => {
                     let result = self
                         .sequence_create_role(Some(ctx.session().conn_id()), plan)

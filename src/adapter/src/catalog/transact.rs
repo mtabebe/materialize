@@ -264,6 +264,14 @@ pub enum Op {
     InjectAuditEvents {
         events: Vec<InjectedAuditEvent>,
     },
+    /// Writes or replaces a branch descriptor in the catalog.
+    WriteBranchDescriptor {
+        descriptor: mz_catalog::durable::objects::BranchDescriptor,
+    },
+    /// Deletes a branch descriptor from the catalog.
+    DeleteBranchDescriptor {
+        schema_id: SchemaId,
+    },
 }
 
 /// Almost the same as `ObjectId`, but the `ClusterReplica` case has an extra
@@ -2700,6 +2708,12 @@ impl Catalog {
                     audit_events.push(ev.clone());
                     tx.insert_audit_log_event(ev);
                 }
+            }
+            Op::WriteBranchDescriptor { descriptor } => {
+                tx.set_branch_descriptor(descriptor)?;
+            }
+            Op::DeleteBranchDescriptor { schema_id } => {
+                tx.delete_branch_descriptor(schema_id)?;
             }
         };
         Ok((weird_builtin_table_update, temporary_item_updates))

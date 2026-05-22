@@ -555,6 +555,10 @@ pub enum ExecuteResponse {
     CreatedDatabase,
     /// The requested schema was created.
     CreatedSchema,
+    /// The requested branch schema was created.
+    CreatedBranch,
+    /// The requested branch schema was dropped.
+    DroppedBranch,
     /// The requested role was created.
     CreatedRole,
     /// The requested cluster was created.
@@ -733,6 +737,8 @@ impl TryInto<ExecuteResponse> for ExecuteResponseKind {
             ExecuteResponseKind::CreatedConnection => Ok(ExecuteResponse::CreatedConnection),
             ExecuteResponseKind::CreatedDatabase => Ok(ExecuteResponse::CreatedDatabase),
             ExecuteResponseKind::CreatedSchema => Ok(ExecuteResponse::CreatedSchema),
+            ExecuteResponseKind::CreatedBranch => Ok(ExecuteResponse::CreatedBranch),
+            ExecuteResponseKind::DroppedBranch => Ok(ExecuteResponse::DroppedBranch),
             ExecuteResponseKind::CreatedRole => Ok(ExecuteResponse::CreatedRole),
             ExecuteResponseKind::CreatedCluster => Ok(ExecuteResponse::CreatedCluster),
             ExecuteResponseKind::CreatedClusterReplica => {
@@ -799,6 +805,8 @@ impl ExecuteResponse {
             CreatedConnection { .. } => Some("CREATE CONNECTION".into()),
             CreatedDatabase { .. } => Some("CREATE DATABASE".into()),
             CreatedSchema { .. } => Some("CREATE SCHEMA".into()),
+            CreatedBranch => Some("CREATE BRANCH".into()),
+            DroppedBranch => Some("DROP BRANCH".into()),
             CreatedRole => Some("CREATE ROLE".into()),
             CreatedCluster { .. } => Some("CREATE CLUSTER".into()),
             CreatedClusterReplica { .. } => Some("CREATE CLUSTER REPLICA".into()),
@@ -892,6 +900,10 @@ impl ExecuteResponse {
             CreateConnection => &[CreatedConnection],
             CreateDatabase => &[CreatedDatabase],
             CreateSchema => &[CreatedSchema],
+            CreateBranch => &[CreatedBranch],
+            DropBranch => &[DroppedBranch],
+            ShowBranches => &[SendingRowsImmediate],
+            ShowBranchStatus => &[SendingRowsImmediate],
             CreateRole => &[CreatedRole],
             CreateCluster => &[CreatedCluster],
             CreateClusterReplica => &[CreatedClusterReplica],

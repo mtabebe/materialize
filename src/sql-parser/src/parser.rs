@@ -475,6 +475,9 @@ impl<'a> Parser<'a> {
                 Token::Keyword(COMMENT) => Ok(self
                     .parse_comment()
                     .map_parser_err(StatementKind::Comment)?),
+                Token::Keyword(MERGE) => Ok(self
+                    .parse_merge()
+                    .map_parser_err(StatementKind::MergeBranch)?),
                 Token::Keyword(k) if QUERY_START_KEYWORDS.contains(&k) => {
                     self.prev_token();
                     Ok(Statement::Select(
@@ -1945,6 +1948,9 @@ impl<'a> Parser<'a> {
         if self.peek_keyword(DATABASE) {
             self.parse_create_database()
                 .map_parser_err(StatementKind::CreateDatabase)
+        } else if self.peek_keyword(BRANCH) {
+            self.parse_create_branch()
+                .map_parser_err(StatementKind::CreateBranch)
         } else if self.peek_keyword(SCHEMA) {
             self.parse_create_schema()
                 .map_parser_err(StatementKind::CreateSchema)
@@ -2056,6 +2062,19 @@ impl<'a> Parser<'a> {
         let name = self.parse_schema_name()?;
         Ok(Statement::CreateSchema(CreateSchemaStatement {
             name,
+            if_not_exists,
+        }))
+    }
+
+    fn parse_create_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let if_not_exists = self.parse_if_not_exists()?;
+        let name = self.parse_identifier()?;
+        self.expect_keyword(FROM)?;
+        let from_schema = self.parse_schema_name()?;
+        Ok(Statement::CreateBranch(CreateBranchStatement {
+            name,
+            from_schema,
             if_not_exists,
         }))
     }
@@ -4691,10 +4710,39 @@ impl<'a> Parser<'a> {
         if self.parse_keyword(OWNED) {
             self.parse_drop_owned()
                 .map_parser_err(StatementKind::DropOwned)
+        } else if self.peek_keyword(BRANCH) {
+            self.parse_drop_branch()
+                .map_parser_err(StatementKind::DropBranch)
         } else {
             self.parse_drop_objects()
                 .map_parser_err(StatementKind::DropObjects)
         }
+    }
+
+    fn parse_drop_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let if_exists = self.parse_if_exists()?;
+        let name = self.parse_identifier()?;
+        let cascade = matches!(
+            self.parse_at_most_one_keyword(&[CASCADE, RESTRICT], "DROP BRANCH")?,
+            Some(CASCADE),
+        );
+        Ok(Statement::DropBranch(DropBranchStatement {
+            name,
+            if_exists,
+            cascade,
+        }))
+    }
+
+    fn parse_merge(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let name = self.parse_identifier()?;
+        self.expect_keyword(INTO)?;
+        let into_schema = self.parse_schema_name()?;
+        Ok(Statement::MergeBranch(MergeBranchStatement {
+            name,
+            into_schema,
+        }))
     }
 
     fn parse_drop_objects(&mut self) -> Result<Statement<Raw>, ParserError> {
@@ -7898,6 +7946,17 @@ impl<'a> Parser<'a> {
             Ok(ShowStatement::ShowObjects(ShowObjectsStatement {
                 object_type: ShowObjectType::Object,
                 from,
+                filter: self.parse_show_statement_filter()?,
+            }))
+        } else if self.parse_keywords(&[BRANCH, STATUS]) {
+            let name = self.parse_identifier()?;
+            Ok(ShowStatement::ShowBranchStatus(ShowBranchStatusStatement {
+                name,
+            }))
+        } else if self.parse_keyword(BRANCHES) {
+            Ok(ShowStatement::ShowObjects(ShowObjectsStatement {
+                object_type: ShowObjectType::Branch,
+                from: None,
                 filter: self.parse_show_statement_filter()?,
             }))
         } else if let Some(object_type) = self.parse_plural_object_type() {

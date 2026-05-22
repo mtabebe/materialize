@@ -49,6 +49,9 @@ pub enum Statement<T: AstInfo> {
     CreateConnection(CreateConnectionStatement<T>),
     CreateDatabase(CreateDatabaseStatement),
     CreateSchema(CreateSchemaStatement),
+    CreateBranch(CreateBranchStatement),
+    DropBranch(DropBranchStatement),
+    MergeBranch(MergeBranchStatement),
     CreateWebhookSource(CreateWebhookSourceStatement<T>),
     CreateSource(CreateSourceStatement<T>),
     CreateSubsource(CreateSubsourceStatement<T>),
@@ -128,6 +131,9 @@ impl<T: AstInfo> AstDisplay for Statement<T> {
             Statement::CreateConnection(stmt) => f.write_node(stmt),
             Statement::CreateDatabase(stmt) => f.write_node(stmt),
             Statement::CreateSchema(stmt) => f.write_node(stmt),
+            Statement::CreateBranch(stmt) => f.write_node(stmt),
+            Statement::DropBranch(stmt) => f.write_node(stmt),
+            Statement::MergeBranch(stmt) => f.write_node(stmt),
             Statement::CreateWebhookSource(stmt) => f.write_node(stmt),
             Statement::CreateSource(stmt) => f.write_node(stmt),
             Statement::CreateSubsource(stmt) => f.write_node(stmt),
@@ -210,6 +216,9 @@ pub fn statement_kind_label_value(kind: StatementKind) -> &'static str {
         StatementKind::CreateConnection => "create_connection",
         StatementKind::CreateDatabase => "create_database",
         StatementKind::CreateSchema => "create_schema",
+        StatementKind::CreateBranch => "create_branch",
+        StatementKind::DropBranch => "drop_branch",
+        StatementKind::MergeBranch => "merge_branch",
         StatementKind::CreateWebhookSource => "create_webhook",
         StatementKind::CreateSource => "create_source",
         StatementKind::CreateSubsource => "create_subsource",
@@ -583,6 +592,80 @@ impl AstDisplay for CreateSchemaStatement {
     }
 }
 impl_display!(CreateSchemaStatement);
+
+/// `CREATE BRANCH`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CreateBranchStatement {
+    pub name: Ident,
+    pub from_schema: UnresolvedSchemaName,
+    pub if_not_exists: bool,
+}
+
+impl AstDisplay for CreateBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("CREATE BRANCH ");
+        if self.if_not_exists {
+            f.write_str("IF NOT EXISTS ");
+        }
+        f.write_node(&self.name);
+        f.write_str(" FROM ");
+        f.write_node(&self.from_schema);
+    }
+}
+impl_display!(CreateBranchStatement);
+
+/// `DROP BRANCH`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DropBranchStatement {
+    pub name: Ident,
+    pub if_exists: bool,
+    pub cascade: bool,
+}
+
+impl AstDisplay for DropBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("DROP BRANCH ");
+        if self.if_exists {
+            f.write_str("IF EXISTS ");
+        }
+        f.write_node(&self.name);
+        if self.cascade {
+            f.write_str(" CASCADE");
+        }
+    }
+}
+impl_display!(DropBranchStatement);
+
+/// `MERGE BRANCH`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MergeBranchStatement {
+    pub name: Ident,
+    pub into_schema: UnresolvedSchemaName,
+}
+
+impl AstDisplay for MergeBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("MERGE BRANCH ");
+        f.write_node(&self.name);
+        f.write_str(" INTO ");
+        f.write_node(&self.into_schema);
+    }
+}
+impl_display!(MergeBranchStatement);
+
+/// `SHOW BRANCH STATUS`
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShowBranchStatusStatement {
+    pub name: Ident,
+}
+
+impl AstDisplay for ShowBranchStatusStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("SHOW BRANCH STATUS ");
+        f.write_node(&self.name);
+    }
+}
+impl_display!(ShowBranchStatusStatement);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionDefaultAwsPrivatelink<T: AstInfo> {
@@ -3451,6 +3534,7 @@ pub enum ShowObjectType<T: AstInfo> {
         role: Option<T::RoleName>,
     },
     NetworkPolicy,
+    Branch,
 }
 /// `SHOW <object>S`
 ///
@@ -3493,6 +3577,7 @@ impl<T: AstInfo> AstDisplay for ShowObjectsStatement<T> {
             ShowObjectType::DefaultPrivileges { .. } => "DEFAULT PRIVILEGES",
             ShowObjectType::RoleMembership { .. } => "ROLE MEMBERSHIP",
             ShowObjectType::NetworkPolicy => "NETWORK POLICIES",
+            ShowObjectType::Branch => "BRANCHES",
         });
 
         if let ShowObjectType::Index { on_object, .. } = &self.object_type {
@@ -5250,6 +5335,7 @@ pub enum ShowStatement<T: AstInfo> {
     ShowCreateType(ShowCreateTypeStatement<T>),
     ShowVariable(ShowVariableStatement),
     InspectShard(InspectShardStatement),
+    ShowBranchStatus(ShowBranchStatusStatement),
 }
 
 impl<T: AstInfo> AstDisplay for ShowStatement<T> {
@@ -5268,6 +5354,7 @@ impl<T: AstInfo> AstDisplay for ShowStatement<T> {
             ShowStatement::ShowCreateType(stmt) => f.write_node(stmt),
             ShowStatement::ShowVariable(stmt) => f.write_node(stmt),
             ShowStatement::InspectShard(stmt) => f.write_node(stmt),
+            ShowStatement::ShowBranchStatus(stmt) => f.write_node(stmt),
         }
     }
 }

@@ -59,7 +59,8 @@ use mz_sql_parser::ast::{
     CreateConnectionOption, CreateConnectionOptionName, CreateConnectionStatement,
     CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
     CreateMaterializedViewStatement, CreateNetworkPolicyStatement, CreateRoleStatement,
-    CreateSchemaStatement, CreateSecretStatement, CreateSinkConnection, CreateSinkOption,
+    CreateBranchStatement, CreateSchemaStatement, CreateSecretStatement,
+    CreateSinkConnection, CreateSinkOption, DropBranchStatement,
     CreateSinkOptionName, CreateSinkStatement, CreateSourceConnection, CreateSourceOption,
     CreateSourceOptionName, CreateSourceStatement, CreateSubsourceOption,
     CreateSubsourceOptionName, CreateSubsourceStatement, CreateTableFromSourceStatement,
@@ -154,7 +155,8 @@ use crate::plan::{
     ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateClusterManagedPlan,
     CreateClusterPlan, CreateClusterReplicaPlan, CreateClusterUnmanagedPlan, CreateClusterVariant,
     CreateConnectionPlan, CreateDatabasePlan, CreateIndexPlan, CreateMaterializedViewPlan,
-    CreateNetworkPolicyPlan, CreateRolePlan, CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan,
+    CreateNetworkPolicyPlan, CreateRolePlan, CreateBranchPlan, CreateSchemaPlan,
+    CreateSecretPlan, CreateSinkPlan, DropBranchPlan,
     CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc,
     DropObjectsPlan, DropOwnedPlan, HirRelationExpr, Index, MaterializedView, NetworkPolicyRule,
     NetworkPolicyRuleAction, NetworkPolicyRuleDirection, Plan, PlanClusterOption, PlanNotice,
@@ -266,6 +268,55 @@ pub fn plan_create_schema(
         database_spec,
         schema_name,
         if_not_exists,
+    }))
+}
+
+pub fn describe_create_branch(
+    _: &StatementContext,
+    _: CreateBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn plan_create_branch(
+    scx: &StatementContext,
+    CreateBranchStatement {
+        name,
+        from_schema,
+        if_not_exists,
+    }: CreateBranchStatement,
+) -> Result<Plan, PlanError> {
+    let branch_name = normalize::ident(name);
+    let source_schema = scx.resolve_schema(from_schema)?;
+    let source_database_spec = source_schema.database().clone();
+    let source_schema_name = source_schema.name().schema.clone();
+    Ok(Plan::CreateBranch(CreateBranchPlan {
+        branch_name,
+        source_database_spec,
+        source_schema_name,
+        if_not_exists,
+    }))
+}
+
+pub fn describe_drop_branch(
+    _: &StatementContext,
+    _: DropBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn plan_drop_branch(
+    _scx: &StatementContext,
+    DropBranchStatement {
+        name,
+        if_exists,
+        cascade,
+    }: DropBranchStatement,
+) -> Result<Plan, PlanError> {
+    Ok(Plan::DropBranch(DropBranchPlan {
+        schema_name: normalize::ident(name),
+        if_exists,
+        cascade,
     }))
 }
 

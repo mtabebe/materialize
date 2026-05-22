@@ -133,6 +133,10 @@ pub enum Plan {
     CreateConnection(CreateConnectionPlan),
     CreateDatabase(CreateDatabasePlan),
     CreateSchema(CreateSchemaPlan),
+    CreateBranch(CreateBranchPlan),
+    DropBranch(DropBranchPlan),
+    ShowBranches(ShowBranchesPlan),
+    ShowBranchStatus(ShowBranchStatusPlan),
     CreateRole(CreateRolePlan),
     CreateCluster(CreateClusterPlan),
     CreateClusterReplica(CreateClusterReplicaPlan),
@@ -276,6 +280,9 @@ impl Plan {
             StatementKind::CreateMaterializedView => &[PlanKind::CreateMaterializedView],
             StatementKind::CreateRole => &[PlanKind::CreateRole],
             StatementKind::CreateSchema => &[PlanKind::CreateSchema],
+            StatementKind::CreateBranch => &[PlanKind::CreateBranch],
+            StatementKind::DropBranch => &[PlanKind::DropBranch],
+            StatementKind::MergeBranch => &[],
             StatementKind::CreateSecret => &[PlanKind::CreateSecret],
             StatementKind::CreateSink => &[PlanKind::CreateSink],
             StatementKind::CreateSource | StatementKind::CreateSubsource => {
@@ -320,6 +327,8 @@ impl Plan {
                 PlanKind::ShowColumns,
                 PlanKind::ShowAllVariables,
                 PlanKind::InspectShard,
+                PlanKind::ShowBranches,
+                PlanKind::ShowBranchStatus,
             ],
             StatementKind::StartTransaction => &[PlanKind::StartTransaction],
             StatementKind::Subscribe => &[PlanKind::Subscribe],
@@ -336,6 +345,10 @@ impl Plan {
             Plan::CreateConnection(_) => "create connection",
             Plan::CreateDatabase(_) => "create database",
             Plan::CreateSchema(_) => "create schema",
+            Plan::CreateBranch(_) => "create branch",
+            Plan::DropBranch(_) => "drop branch",
+            Plan::ShowBranches(_) => "show branches",
+            Plan::ShowBranchStatus(_) => "show branch status",
             Plan::CreateRole(_) => "create role",
             Plan::CreateCluster(_) => "create cluster",
             Plan::CreateClusterReplica(_) => "create cluster replica",
@@ -496,6 +509,8 @@ impl Plan {
             Plan::ShowColumns(_) => true,
             Plan::ShowVariable(_) => true,
             Plan::InspectShard(_) => true,
+            Plan::ShowBranches(_) => true,
+            Plan::ShowBranchStatus(_) => true,
             Plan::Subscribe(_) => true,
             Plan::CopyTo(_) => true,
             Plan::ExplainPlan(_) => true,
@@ -551,6 +566,29 @@ pub struct CreateSchemaPlan {
     pub database_spec: ResolvedDatabaseSpecifier,
     pub schema_name: String,
     pub if_not_exists: bool,
+}
+
+#[derive(Debug)]
+pub struct CreateBranchPlan {
+    pub branch_name: String,
+    pub source_database_spec: ResolvedDatabaseSpecifier,
+    pub source_schema_name: String,
+    pub if_not_exists: bool,
+}
+
+#[derive(Debug)]
+pub struct DropBranchPlan {
+    pub schema_name: String,
+    pub if_exists: bool,
+    pub cascade: bool,
+}
+
+#[derive(Debug)]
+pub struct ShowBranchesPlan;
+
+#[derive(Debug)]
+pub struct ShowBranchStatusPlan {
+    pub branch_name: String,
 }
 
 #[derive(Debug)]

@@ -134,12 +134,22 @@ impl PeekClient {
                 Statement::Select(_)
                 | Statement::ExplainAnalyzeObject(_)
                 | Statement::ExplainAnalyzeCluster(_)
-                | Statement::Show(ShowStatement::ShowObjects(_))
                 | Statement::Show(ShowStatement::ShowColumns(_)) => {
                     // These are always fine, just continue.
                     // Note: EXPLAIN ANALYZE will `plan` to `Plan::Select`.
-                    // Note: ShowObjects plans to `Plan::Select`, ShowColumns plans to `Plan::ShowColumns`.
+                    // Note: ShowColumns plans to `Plan::ShowColumns`.
                     // We handle `Plan::ShowColumns` specially in `try_frontend_peek_inner`.
+                }
+                Statement::Show(ShowStatement::ShowObjects(s)) => {
+                    // SHOW BRANCHES plans to Plan::ShowBranches (not Plan::Select), so bail out
+                    // to the regular coordinator sequencer path.
+                    if s.object_type == mz_sql_parser::ast::ShowObjectType::Branch {
+                        debug!(
+                            "Bailing out from try_frontend_peek, because SHOW BRANCHES is not a SELECT"
+                        );
+                        return Ok(None);
+                    }
+                    // All other ShowObjects plan to Plan::Select; continue.
                 }
                 Statement::ExplainPlan(explain_stmt) => {
                     // Only handle ExplainPlan for SELECT statements.

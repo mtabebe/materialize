@@ -1312,6 +1312,135 @@ impl PersistPeek {
 
         let metrics = client.metrics();
 
+        // Two-shard read for forked tables: merge source@branch_ts with delta@as_of.
+        if let Some(fork) = metadata.source_for_fork.clone() {
+            // Open a leased reader on the source (upstream) shard.
+            let mut source_reader: ReadHandle<SourceData, (), Timestamp, StorageDiff> = client
+                .open_leased_reader(
+                    fork.source_shard,
+                    Arc::new(metadata.relation_desc.clone()),
+                    Arc::new(UnitSchema),
+                    Diagnostics::from_purpose("persist::peek::fork_source"),
+                    USE_CRITICAL_SINCE_SNAPSHOT.get(client.dyncfgs()),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // Snapshot the source shard at branch_ts (frozen upstream state).
+            let source_snapshot = source_reader
+                .snapshot_and_fetch(Antichain::from_elem(fork.branch_ts))
+                .await
+                .map_err(|since| {
+                    format!(
+                        "fork source since advanced past branch_ts {}: {since:?}",
+                        fork.branch_ts
+                    )
+                })?;
+
+            // Use StatsCursor on the delta shard (handles txns-wal correctly).
+            let mut cursor = StatsCursor::new(
+                &mut reader,
+                txns_read.as_mut(),
+                metrics,
+                &mfp_plan,
+                &metadata.relation_desc,
+                Antichain::from_elem(as_of),
+            )
+            .await
+            .map_err(|since| {
+                format!("attempted to peek at {as_of}, but the since has advanced to {since:?}")
+            })?;
+
+            // Merge: source rows + delta rows, then consolidate.
+            let mut merged_rows: Vec<(Row, Timestamp, StorageDiff)> = Vec::new();
+
+            // Decode source snapshot rows.
+            for ((source_data, ()), t, d) in source_snapshot {
+                match source_data.0 {
+                    Ok(row) => merged_rows.push((row, t, d)),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+
+            // Collect delta rows via StatsCursor.
+            while let Some(batch) = cursor.next().await {
+                for (row_result, t, d) in batch {
+                    match row_result {
+                        Ok(row) => merged_rows.push((row, t, d)),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+            }
+
+            // Consolidate to a canonical form (cancels insertions + retractions).
+            differential_dataflow::consolidation::consolidate_updates(&mut merged_rows);
+
+            // Apply MFP and build the result, honouring limit and max_result_size.
+            let mut result = vec![];
+            let mut datum_vec = DatumVec::new();
+            let mut row_builder = Row::default();
+            let arena = RowArena::new();
+            let mut total_size = 0usize;
+
+            let literal_len = match &literal_constraint {
+                None => 0,
+                Some(row) => row.iter().count(),
+            };
+
+            'fork_collect: for (row, _, d) in merged_rows {
+                if limit_remaining == 0 {
+                    break;
+                }
+                if let Some(literal) = &literal_constraint {
+                    match row.iter().take(literal_len).cmp(literal.iter()) {
+                        Ordering::Less => continue,
+                        Ordering::Equal => {}
+                        Ordering::Greater => break 'fork_collect,
+                    }
+                }
+
+                let count: usize = d.try_into().map_err(|_| {
+                    error!(
+                        shard = %fork.source_shard,
+                        diff = d,
+                        ?row,
+                        "persist fork peek encountered negative multiplicities",
+                    );
+                    format!(
+                        "Invalid data in fork source, \
+                         saw retractions ({}) for row that does not exist: {:?}",
+                        -d, row,
+                    )
+                })?;
+                let Some(count) = NonZeroUsize::new(count) else {
+                    continue;
+                };
+                let mut datum_local = datum_vec.borrow_with(&row);
+                let eval_result = mfp_plan
+                    .evaluate_into(&mut datum_local, &arena, &mut row_builder)
+                    .map(|row| row.cloned())
+                    .map_err(|e| e.to_string())?;
+                if let Some(row) = eval_result {
+                    total_size = total_size
+                        .saturating_add(row.byte_len())
+                        .saturating_add(std::mem::size_of::<NonZeroUsize>());
+                    if total_size > max_result_size {
+                        return Err(format!(
+                            "result exceeds max size of {}",
+                            ByteSize::b(u64::cast_from(max_result_size))
+                        ));
+                    }
+                    result.push((row, count));
+                    limit_remaining = limit_remaining.saturating_sub(count.get());
+                    if limit_remaining == 0 {
+                        break;
+                    }
+                }
+            }
+
+            return Ok(result);
+        }
+
         let mut cursor = StatsCursor::new(
             &mut reader,
             txns_read.as_mut(),

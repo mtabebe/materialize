@@ -154,6 +154,7 @@ impl StateUpdate {
             unfinalized_shards,
             txn_wal_shard,
             audit_log_updates,
+            branch_descriptors,
             upper: _,
         } = txn_batch;
         let databases = from_batch(databases, StateUpdateKind::Database);
@@ -186,6 +187,8 @@ impl StateUpdate {
         let unfinalized_shards = from_batch(unfinalized_shards, StateUpdateKind::UnfinalizedShard);
         let txn_wal_shard = from_batch(txn_wal_shard, StateUpdateKind::TxnWalShard);
         let audit_logs = from_batch(audit_log_updates, StateUpdateKind::AuditLog);
+        let branch_descriptors_iter =
+            from_batch(branch_descriptors, StateUpdateKind::BranchDescriptor);
 
         databases
             .chain(schemas)
@@ -209,6 +212,7 @@ impl StateUpdate {
             .chain(unfinalized_shards)
             .chain(txn_wal_shard)
             .chain(audit_logs)
+            .chain(branch_descriptors_iter)
     }
 }
 
@@ -219,6 +223,7 @@ impl StateUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Arbitrary)]
 pub enum StateUpdateKind {
     AuditLog(proto::AuditLogKey, ()),
+    BranchDescriptor(proto::BranchDescriptorKey, proto::BranchDescriptorValue),
     Cluster(proto::ClusterKey, proto::ClusterValue),
     ClusterReplica(proto::ClusterReplicaKey, proto::ClusterReplicaValue),
     Comment(proto::CommentKey, proto::CommentValue),
@@ -256,6 +261,7 @@ impl StateUpdateKind {
     pub(crate) fn collection_type(&self) -> Option<CollectionType> {
         match self {
             StateUpdateKind::AuditLog(_, _) => Some(CollectionType::AuditLog),
+            StateUpdateKind::BranchDescriptor(_, _) => Some(CollectionType::BranchDescriptor),
             StateUpdateKind::Cluster(_, _) => Some(CollectionType::ComputeInstance),
             StateUpdateKind::ClusterReplica(_, _) => Some(CollectionType::ComputeReplicas),
             StateUpdateKind::Comment(_, _) => Some(CollectionType::Comments),
@@ -458,6 +464,12 @@ impl TryFrom<&StateUpdateKind> for Option<memory::objects::StateUpdateKind> {
                 let audit_log = into_durable(key, value)?;
                 Some(memory::objects::StateUpdateKind::AuditLog(audit_log))
             }
+            StateUpdateKind::BranchDescriptor(key, value) => {
+                let branch_descriptor = into_durable(key, value)?;
+                Some(memory::objects::StateUpdateKind::BranchDescriptor(
+                    branch_descriptor,
+                ))
+            }
             StateUpdateKind::Cluster(key, value) => {
                 let cluster = into_durable(key, value)?;
                 Some(memory::objects::StateUpdateKind::Cluster(cluster))
@@ -605,6 +617,9 @@ impl RustType<proto::StateUpdateKind> for StateUpdateKind {
             StateUpdateKind::AuditLog(key, ()) => {
                 proto::StateUpdateKind::AuditLog(proto::AuditLog { key })
             }
+            StateUpdateKind::BranchDescriptor(key, value) => {
+                proto::StateUpdateKind::BranchDescriptor(proto::BranchDescriptor { key, value })
+            }
             StateUpdateKind::Cluster(key, value) => {
                 proto::StateUpdateKind::Cluster(proto::Cluster { key, value })
             }
@@ -688,6 +703,9 @@ impl RustType<proto::StateUpdateKind> for StateUpdateKind {
         Ok(match proto {
             proto::StateUpdateKind::AuditLog(proto::AuditLog { key }) => {
                 StateUpdateKind::AuditLog(key, ())
+            }
+            proto::StateUpdateKind::BranchDescriptor(proto::BranchDescriptor { key, value }) => {
+                StateUpdateKind::BranchDescriptor(key, value)
             }
             proto::StateUpdateKind::Cluster(proto::Cluster { key, value }) => {
                 StateUpdateKind::Cluster(key, value)

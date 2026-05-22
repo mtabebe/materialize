@@ -91,6 +91,7 @@ pub mod operators {
         operator before yielding.",
     );
 }
+pub mod branch;
 pub mod read;
 pub mod rpc;
 pub mod schema;

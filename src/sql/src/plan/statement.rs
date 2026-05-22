@@ -20,8 +20,8 @@ use mz_repr::{
     CatalogItemId, ColumnIndex, RelationDesc, RelationVersionSelector, SqlColumnType, SqlScalarType,
 };
 use mz_sql_parser::ast::{
-    ColumnDef, ColumnName, CreateMaterializedViewStatement, RawItemName, ShowStatement,
-    StatementKind, TableConstraint, UnresolvedDatabaseName, UnresolvedSchemaName,
+    ColumnDef, ColumnName, CreateMaterializedViewStatement, RawItemName, ShowStatement, StatementKind,
+    TableConstraint, UnresolvedDatabaseName, UnresolvedSchemaName,
 };
 use mz_storage_types::connections::Connection;
 
@@ -150,6 +150,9 @@ pub fn describe(
         Statement::CreateIndex(stmt) => ddl::describe_create_index(&scx, stmt)?,
         Statement::CreateRole(stmt) => ddl::describe_create_role(&scx, stmt)?,
         Statement::CreateSchema(stmt) => ddl::describe_create_schema(&scx, stmt)?,
+        Statement::CreateBranch(stmt) => ddl::describe_create_branch(&scx, stmt)?,
+        Statement::DropBranch(stmt) => ddl::describe_drop_branch(&scx, stmt)?,
+        Statement::MergeBranch(_) => StatementDesc::new(None),
         Statement::CreateSecret(stmt) => ddl::describe_create_secret(&scx, stmt)?,
         Statement::CreateSink(stmt) => ddl::describe_create_sink(&scx, stmt)?,
         Statement::CreateWebhookSource(stmt) => ddl::describe_create_webhook_source(&scx, stmt)?,
@@ -210,8 +213,22 @@ pub fn describe(
         Statement::Show(ShowStatement::ShowCreateType(stmt)) => {
             show::describe_show_create_type(&scx, stmt)?
         }
+        Statement::Show(ShowStatement::ShowObjects(stmt))
+            if matches!(stmt.object_type, mz_sql_parser::ast::ShowObjectType::Branch) =>
+        {
+            StatementDesc::new(Some(
+                RelationDesc::builder()
+                    .with_column("name", SqlScalarType::String.nullable(false))
+                    .with_column("source_schema", SqlScalarType::String.nullable(false))
+                    .with_column("status", SqlScalarType::String.nullable(false))
+                    .finish(),
+            ))
+        }
         Statement::Show(ShowStatement::ShowObjects(stmt)) => {
             show::show_objects(&scx, stmt)?.describe()?
+        }
+        Statement::Show(ShowStatement::ShowBranchStatus(stmt)) => {
+            show::describe_show_branch_status(&scx, stmt)?
         }
 
         // SCL statements.
@@ -355,6 +372,12 @@ pub fn plan(
         Statement::CreateIndex(stmt) => ddl::plan_create_index(scx, stmt),
         Statement::CreateRole(stmt) => ddl::plan_create_role(scx, stmt),
         Statement::CreateSchema(stmt) => ddl::plan_create_schema(scx, stmt),
+        Statement::CreateBranch(stmt) => ddl::plan_create_branch(scx, stmt),
+        Statement::DropBranch(stmt) => ddl::plan_drop_branch(scx, stmt),
+        Statement::MergeBranch(_) => Err(PlanError::Unsupported {
+            feature: "MERGE BRANCH".to_string(),
+            discussion_no: None,
+        }),
         Statement::CreateSecret(stmt) => ddl::plan_create_secret(scx, stmt),
         Statement::CreateSink(stmt) => ddl::plan_create_sink(scx, stmt),
         Statement::CreateWebhookSource(stmt) => ddl::plan_create_webhook_source(scx, stmt),
@@ -425,7 +448,15 @@ pub fn plan(
         Statement::Show(ShowStatement::ShowCreateType(stmt)) => {
             show::plan_show_create_type(scx, stmt).map(Plan::ShowCreate)
         }
+        Statement::Show(ShowStatement::ShowObjects(stmt))
+            if matches!(stmt.object_type, mz_sql_parser::ast::ShowObjectType::Branch) =>
+        {
+            Ok(Plan::ShowBranches(crate::plan::ShowBranchesPlan))
+        }
         Statement::Show(ShowStatement::ShowObjects(stmt)) => show::show_objects(scx, stmt)?.plan(),
+        Statement::Show(ShowStatement::ShowBranchStatus(stmt)) => {
+            show::plan_show_branch_status(scx, stmt)
+        }
 
         // SCL statements.
         Statement::Close(stmt) => scl::plan_close(scx, stmt),
@@ -1078,6 +1109,9 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::CreateIndex(_) => DDL,
             Statement::CreateRole(_) => DDL,
             Statement::CreateSchema(_) => DDL,
+            Statement::CreateBranch(_) => DDL,
+            Statement::DropBranch(_) => DDL,
+            Statement::MergeBranch(_) => DDL,
             Statement::CreateSecret(_) => DDL,
             Statement::CreateSink(_) => DDL,
             Statement::CreateWebhookSource(_) => DDL,
@@ -1127,6 +1161,7 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::Show(ShowStatement::ShowCreateMaterializedView(_)) => Show,
             Statement::Show(ShowStatement::ShowCreateType(_)) => Show,
             Statement::Show(ShowStatement::ShowObjects(_)) => Show,
+            Statement::Show(ShowStatement::ShowBranchStatus(_)) => Show,
 
             // SCL statements.
             Statement::Close(_) => SCL,

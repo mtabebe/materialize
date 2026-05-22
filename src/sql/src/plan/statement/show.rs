@@ -21,9 +21,9 @@ use mz_repr::{CatalogItemId, Datum, RelationDesc, Row, SqlScalarType};
 use mz_sql_parser::ast::display::{AstDisplay, FormatMode};
 use mz_sql_parser::ast::{
     CreateSubsourceOptionName, ExternalReferenceExport, ExternalReferences, ObjectType,
-    ShowCreateClusterStatement, ShowCreateConnectionStatement, ShowCreateMaterializedViewStatement,
-    ShowCreateTypeStatement, ShowObjectType, SqlServerConfigOptionName, SystemObjectType,
-    UnresolvedItemName, WithOptionValue,
+    ShowBranchStatusStatement, ShowCreateClusterStatement, ShowCreateConnectionStatement,
+    ShowCreateMaterializedViewStatement, ShowCreateTypeStatement, ShowObjectType,
+    SqlServerConfigOptionName, SystemObjectType, UnresolvedItemName, WithOptionValue,
 };
 use mz_sql_pretty::PrettyConfig;
 use query::QueryContext;
@@ -39,12 +39,14 @@ use crate::names::{
     self, Aug, NameSimplifier, ObjectId, ResolvedClusterName, ResolvedDataType,
     ResolvedDatabaseName, ResolvedIds, ResolvedItemName, ResolvedRoleName, ResolvedSchemaName,
 };
+use crate::normalize;
 use crate::parse;
 use crate::plan::scope::Scope;
 use crate::plan::statement::ddl::unplan_create_cluster;
 use crate::plan::statement::{StatementContext, StatementDesc, dml};
 use crate::plan::{
-    HirRelationExpr, Params, Plan, PlanError, ShowColumnsPlan, ShowCreatePlan, query, transform_ast,
+    HirRelationExpr, Params, Plan, PlanError, ShowBranchStatusPlan, ShowColumnsPlan, ShowCreatePlan,
+    query, transform_ast,
 };
 
 pub fn describe_show_create_view(
@@ -431,6 +433,14 @@ pub fn show_objects<'a>(
         ShowObjectType::NetworkPolicy => {
             ensure_no_from(from)?;
             show_network_policies(scx, filter)
+        }
+        ShowObjectType::Branch => {
+            ensure_no_from(from)?;
+            Err(PlanError::Unsupported {
+                feature: "SHOW BRANCHES (branch state not persisted in Phase 1 — use adapter layer)"
+                    .to_string(),
+                discussion_no: None,
+            })
         }
     }
 }
@@ -1269,4 +1279,26 @@ fn humanize_sql_for_show_create(
             },
         },
     ))
+}
+
+pub fn describe_show_branch_status(
+    _: &StatementContext,
+    _: ShowBranchStatusStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("name", SqlScalarType::String.nullable(false))
+            .with_column("source_schema", SqlScalarType::String.nullable(false))
+            .with_column("status", SqlScalarType::String.nullable(false))
+            .finish(),
+    )))
+}
+
+pub fn plan_show_branch_status(
+    _scx: &StatementContext,
+    ShowBranchStatusStatement { name }: ShowBranchStatusStatement,
+) -> Result<Plan, PlanError> {
+    Ok(Plan::ShowBranchStatus(ShowBranchStatusPlan {
+        branch_name: normalize::ident(name),
+    }))
 }

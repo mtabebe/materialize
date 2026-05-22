@@ -67,6 +67,8 @@ Body
 Boolean
 Both
 Bpchar
+Branch
+Branches
 Broken
 Broker
 Brokers
@@ -285,6 +287,7 @@ Max
 Mechanisms
 Membership
 Memory
+Merge
 Message
 Metadata
 Minute
@@ -449,6 +452,7 @@ Sql
 Ssh
 Ssl
 Start
+Status
 Stdin
 Stdout
 Storage

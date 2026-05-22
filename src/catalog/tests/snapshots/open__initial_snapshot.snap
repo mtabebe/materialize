@@ -1,6 +1,5 @@
 ---
 source: src/catalog/tests/open.rs
-assertion_line: 518
 expression: test_snapshot
 ---
 Snapshot {
@@ -852,4 +851,5 @@ Snapshot {
     storage_collection_metadata: {},
     unfinalized_shards: {},
     txn_wal_shard: {},
+    branch_descriptors: {},
 }
