@@ -1432,13 +1432,38 @@ impl<T: Timestamp> PartDeletes<T> {
     // inserted.
     pub fn add(&mut self, part: &RunPart<T>) -> bool {
         match part {
-            RunPart::Many(r) => self.hollow_runs.insert(r.key.clone(), r.clone()).is_none(),
-            RunPart::Single(BatchPart::Hollow(x)) => self.blob_keys.insert(x.key.clone()),
+            RunPart::Many(r) => {
+                // Absolute keys are source-shard blobs owned by another org's
+                // persist instance; this shard must never delete them.
+                if r.key.is_absolute() {
+                    return false;
+                }
+                self.hollow_runs.insert(r.key.clone(), r.clone()).is_none()
+            }
+            RunPart::Single(BatchPart::Hollow(x)) => {
+                // Absolute keys are source-shard blobs — skip.
+                if x.key.is_absolute() {
+                    return false;
+                }
+                self.blob_keys.insert(x.key.clone())
+            }
             RunPart::Single(BatchPart::Inline { .. }) => {
                 // Nothing to delete.
                 true
             }
         }
+    }
+
+    /// Removes any blob keys that `is_protected` returns true for, so that
+    /// GC skips deleting them.  Used to protect source blobs referenced by
+    /// live forks.
+    pub(crate) fn retain_unprotected(
+        &mut self,
+        shard_id: ShardId,
+        is_protected: impl Fn(&crate::internal::paths::BlobKey) -> bool,
+    ) {
+        self.blob_keys
+            .retain(|key| !is_protected(&key.complete(&shard_id)));
     }
 
     pub fn contains(&self, part: &RunPart<T>) -> bool {

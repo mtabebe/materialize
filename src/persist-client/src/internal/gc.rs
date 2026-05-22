@@ -43,6 +43,30 @@ use crate::internal::paths::{BlobKey, PartialBlobKey, PartialRollupKey};
 use crate::internal::state::{GC_USE_ACTIVE_GC, HollowBlobRef};
 use crate::internal::state_versions::{InspectDiff, StateVersionsIter, UntypedStateVersionsIter};
 
+/// Checks whether a blob key is referenced by a live environment fork.
+///
+/// Implementations return `true` if the blob must be kept alive (i.e. a live
+/// fork depends on it). `false` means it is safe for GC to delete.
+///
+/// The default no-op implementation always returns `false`. The real
+/// CRDB-backed implementation (Phase F2) queries the `fork_blob_refs` table.
+pub trait ForkBlobRefChecker: Send + Sync + 'static {
+    /// Returns `true` if `key` is referenced by at least one live fork and
+    /// must not be physically deleted.
+    fn is_referenced(&self, key: &BlobKey) -> bool;
+}
+
+/// No-op checker that never protects any blob. Used in environments that do
+/// not support environment fork.
+#[derive(Debug, Clone)]
+pub struct NoOpForkRefChecker;
+
+impl ForkBlobRefChecker for NoOpForkRefChecker {
+    fn is_referenced(&self, _key: &BlobKey) -> bool {
+        false
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GcReq {
     pub shard_id: ShardId,
@@ -120,6 +144,20 @@ where
     D: Monoid + Codec64,
 {
     pub fn new(machine: Machine<K, V, T, D>, isolated_runtime: Arc<IsolatedRuntime>) -> Self {
+        Self::new_with_fork_checker(
+            machine,
+            isolated_runtime,
+            Arc::new(NoOpForkRefChecker),
+        )
+    }
+
+    /// Like [Self::new], but wires in a [ForkBlobRefChecker] that prevents GC
+    /// from physically deleting blobs that live forks depend on.
+    pub fn new_with_fork_checker(
+        machine: Machine<K, V, T, D>,
+        isolated_runtime: Arc<IsolatedRuntime>,
+        fork_ref_checker: Arc<dyn ForkBlobRefChecker>,
+    ) -> Self {
         let (gc_req_sender, mut gc_req_recv) =
             mpsc::unbounded_channel::<(GcReq, oneshot::Sender<RoutineMaintenance>)>();
 
@@ -161,9 +199,10 @@ where
                 let (mut maintenance, _stats) = {
                     let name = format!("gc_and_truncate ({})", &consolidated_req.shard_id);
                     let machine = machine.clone();
+                    let checker = Arc::clone(&fork_ref_checker);
                     isolated_runtime
                         .spawn_named(|| name, async move {
-                            Self::gc_and_truncate(&machine, consolidated_req)
+                            Self::gc_and_truncate(&machine, consolidated_req, &*checker)
                                 .instrument(gc_span)
                                 .await
                         })
@@ -221,6 +260,7 @@ where
     pub(crate) async fn gc_and_truncate(
         machine: &Machine<K, V, T, D>,
         req: GcReq,
+        fork_ref_checker: &dyn ForkBlobRefChecker,
     ) -> (RoutineMaintenance, GcResults) {
         let mut step_start = Instant::now();
         let mut report_step_timing = |counter: &Counter| {
@@ -353,6 +393,7 @@ where
             machine,
             &mut report_step_timing,
             &mut gc_results,
+            fork_ref_checker,
         )
         .await;
 
@@ -446,6 +487,7 @@ where
         machine: &Machine<K, V, T, D>,
         timer: &mut F,
         gc_results: &mut GcResults,
+        fork_ref_checker: &dyn ForkBlobRefChecker,
     ) where
         F: FnMut(&Counter),
     {
@@ -538,6 +580,7 @@ where
                 &mut rollups_to_delete,
                 machine,
                 timer,
+                fork_ref_checker,
             )
             .await;
         }
@@ -588,12 +631,16 @@ where
         rollups: &mut BTreeSet<PartialRollupKey>,
         machine: &Machine<K, V, T, D>,
         timer: &mut F,
+        fork_ref_checker: &dyn ForkBlobRefChecker,
     ) where
         F: FnMut(&Counter),
     {
         let shard_id = machine.shard_id();
         let concurrency_limit = GC_BLOB_DELETE_CONCURRENCY_LIMIT.get(&machine.applier.cfg);
         let delete_semaphore = Semaphore::new(concurrency_limit);
+
+        // Remove blob keys that are protected by live forks.
+        batch_parts.retain_unprotected(shard_id, |key| fork_ref_checker.is_referenced(key));
 
         let batch_parts = std::mem::take(batch_parts);
         batch_parts
