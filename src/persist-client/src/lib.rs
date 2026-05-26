@@ -900,9 +900,13 @@ impl PersistClient {
 
         // Rewrite each part key to an absolute cross-shard key and collect the
         // full blob keys so callers can populate fork_blob_refs.
+        // Skip batches where lower == upper: these are empty sentinel batches that
+        // can exist in the source trace (e.g., after compaction) but cannot be
+        // inserted into a new Spine (Spine::insert asserts lower != upper).
         let mut referenced_blob_keys = Vec::new();
         let fork_batches = source_batches
             .into_iter()
+            .filter(|batch| batch.desc.lower() != batch.desc.upper())
             .map(|mut batch| {
                 let new_parts = batch
                     .parts
@@ -941,6 +945,10 @@ impl PersistClient {
             })
             .collect();
 
+        // Collect source shard schemas so forked shard can resolve SchemaId
+        // references in the copied hollow batch parts.
+        let source_schemas = machine.applier.schemas(|_, s| s.clone());
+
         // Allocate the fork shard id and initialize it.
         let fork_shard_id = ShardId::new();
         let state_versions = StateVersions::new(
@@ -954,7 +962,7 @@ impl PersistClient {
             .shards
             .shard(&fork_shard_id, &diagnostics.shard_name);
         state_versions
-            .init_forked_shard::<K, V, T, D>(&fork_shard_metrics, fork_batches)
+            .init_forked_shard::<K, V, T, D>(&fork_shard_metrics, fork_batches, source_schemas)
             .await?;
 
         Ok(ForkShardResult {

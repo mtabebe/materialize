@@ -778,6 +778,10 @@ impl StateVersions {
         &self,
         shard_metrics: &ShardMetrics,
         batches: Vec<crate::internal::state::HollowBatch<T>>,
+        schemas: std::collections::BTreeMap<
+            mz_persist_types::schema::SchemaId,
+            crate::internal::state::EncodedSchemas,
+        >,
     ) -> Result<TypedState<K, V, T, D>, anyhow::Error>
     where
         K: Debug + Codec,
@@ -823,6 +827,8 @@ impl StateVersions {
             trace,
         );
         let mut initial_state = empty_state.clone_for_rollup();
+        // Copy source shard schemas so batch parts can resolve their SchemaId references.
+        initial_state.state.collections.schemas = schemas;
         let rollup_seqno = initial_state.seqno();
         let rollup = HollowRollup {
             key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),

@@ -1953,33 +1953,38 @@ impl Coordinator {
         plan: plan::PrepareForkPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
         use mz_persist_client::Diagnostics as PersistDiagnostics;
+        use mz_persist_client::critical::Opaque;
+        use mz_storage_client::controller::PersistEpoch;
         use mz_storage_types::sources::SourceData;
 
         let fork_name = plan.fork_name.clone();
         let fork_org_id = uuid::Uuid::new_v4();
 
-        // Collect (global_id, data_shard) for all user tables.
-        let source_shards: Vec<(GlobalId, mz_persist_client::ShardId)> = self
+        // Collect (global_id, data_shard, is_table) for ALL storage collections.
+        // We fork ALL shards so the fork catalog is a fully isolated copy:
+        // - Table shards: forked so fork writes don't affect production.
+        // - MV shards: forked so the fork coordinator writes MV results independently.
+        //   If MV shards were dropped from the fork catalog and the fork coordinator
+        //   allocated fresh shards, both fork and production would share the same
+        //   storage export, causing data corruption.
+        let source_shards: Vec<(GlobalId, mz_persist_client::ShardId, bool)> = self
             .catalog
             .entries()
             .filter_map(|entry| {
-                if let CatalogItem::Table(_) = entry.item() {
-                    let global_id = entry.latest_global_id();
-                    let meta = self
-                        .controller
-                        .storage
-                        .collection_metadata(global_id)
-                        .ok()?;
-                    Some((global_id, meta.data_shard))
-                } else {
-                    None
-                }
+                let global_id = entry.latest_global_id();
+                let meta = self
+                    .controller
+                    .storage
+                    .collection_metadata(global_id)
+                    .ok()?;
+                let is_table = matches!(entry.item(), CatalogItem::Table(_));
+                Some((global_id, meta.data_shard, is_table))
             })
             .collect();
 
         // Fork each shard and accumulate blob refs for GC protection.
         let mut fork_results = Vec::new();
-        for (global_id, shard_id) in source_shards {
+        for (global_id, shard_id, is_table) in source_shards {
             let result = self
                 .persist_client
                 .fork_shard::<SourceData, (), mz_repr::Timestamp, i64>(
@@ -1993,13 +1998,46 @@ impl Coordinator {
                         global_id
                     ))
                 })?;
-            fork_results.push((global_id, shard_id, result));
+            fork_results.push((global_id, shard_id, result, is_table));
+        }
+
+        // For TABLE shards, advance the forked shard's critical since from Timestamp::MIN
+        // to Timestamp::from(1u64). This prevents create_collections_for_bootstrap from
+        // detecting since == MIN and advancing it to register_ts (T_now). Without this fix,
+        // the lower bound for any MV that reads these tables becomes T_now, violating the
+        // upper bound constraint from the MV storage export (write_frontier ≈ T_fork < T_now).
+        for (_global_id, _src_shard, result, is_table) in &fork_results {
+            if !is_table {
+                continue;
+            }
+            let mut since_handle = self
+                .persist_client
+                .open_critical_since::<SourceData, (), mz_repr::Timestamp, i64>(
+                    result.fork_shard_id,
+                    mz_persist_client::PersistClient::CONTROLLER_CRITICAL_SINCE,
+                    Opaque::encode(&PersistEpoch::default()),
+                    PersistDiagnostics::from_purpose("fork table since init"),
+                )
+                .await
+                .map_err(|e| {
+                    AdapterError::Internal(format!("open_critical_since for fork table: {e:?}"))
+                })?;
+            let token = since_handle.opaque().clone();
+            let _ = since_handle
+                .compare_and_downgrade_since(
+                    &token,
+                    (
+                        &token,
+                        &Antichain::from_elem(mz_repr::Timestamp::from(1u64)),
+                    ),
+                )
+                .await;
         }
 
         // Build source→fork shard mapping for catalog copy.
-        let shard_mapping: BTreeMap<String, String> = fork_results
+        let mut shard_mapping: BTreeMap<String, String> = fork_results
             .iter()
-            .map(|(_, src_shard, result)| {
+            .map(|(_, src_shard, result, _)| {
                 (
                     src_shard.to_string(),
                     result.fork_shard_id.to_string(),
@@ -2012,6 +2050,12 @@ impl Coordinator {
         let source_org_id = self.catalog.config().environment_id.organization_id();
         let source_catalog_shard = mz_catalog::durable::shard_id(source_org_id, 1);
         let fork_catalog_shard = mz_catalog::durable::shard_id(fork_org_id, 1);
+        // The catalog shard itself also has a StorageCollectionMetadata entry
+        // (MZ_CATALOG_RAW). Remap it so the fork environmentd's assert_eq passes.
+        shard_mapping.insert(
+            source_catalog_shard.to_string(),
+            fork_catalog_shard.to_string(),
+        );
         copy_catalog_for_fork(
             &self.persist_client,
             source_catalog_shard,
@@ -6118,14 +6162,16 @@ async fn copy_catalog_for_fork(
         .map_err(|_| anyhow::anyhow!("snapshot source catalog: since advanced past as_of"))?;
     source_read.expire().await;
 
-    // Transform entries: rewrite StorageCollectionMetadata shard IDs.
+    // Transform entries: rewrite StorageCollectionMetadata shard IDs, and drop
+    // entries for shards not in the mapping (MVs + system collections get fresh shards
+    // allocated by the fork coordinator at bootstrap).
     let write_ts = mz_repr::Timestamp::from(1u64);
     let upper_ts = mz_repr::Timestamp::from(2u64);
     let updates: Vec<((SourceData, ()), mz_repr::Timestamp, StorageDiff)> = entries
         .into_iter()
-        .map(|((source_data, ()), _orig_ts, diff)| {
-            let modified = rewrite_catalog_entry_shards(source_data, shard_mapping);
-            ((modified, ()), write_ts, diff)
+        .filter_map(|((source_data, ()), _orig_ts, diff)| {
+            let modified = rewrite_catalog_entry_shards(source_data, shard_mapping)?;
+            Some(((modified, ()), write_ts, diff))
         })
         .collect();
 
@@ -6156,18 +6202,26 @@ async fn copy_catalog_for_fork(
     Ok(())
 }
 
-/// Rewrite any `StorageCollectionMetadata` entries in a raw catalog row to use
-/// fork shard IDs from `shard_mapping` (source shard id string → fork shard id string).
+/// Process a raw catalog row for the fork catalog.
+///
+/// For `StorageCollectionMetadata` entries:
+///   - If the shard is in `shard_mapping` → rewrite to the fork shard and return `Some`.
+///   - If the shard is NOT in `shard_mapping` → keep unchanged (source shard is used as-is).
+///     This is a safe fallback for system collections not enumerated via catalog.entries().
+///
+/// For `TxnWalShard` entries → drop so the fork coordinator allocates a fresh txn wal shard.
+///
+/// For all other entry kinds → return `Some` unchanged.
 fn rewrite_catalog_entry_shards(
     source_data: mz_storage_types::sources::SourceData,
     shard_mapping: &BTreeMap<String, String>,
-) -> mz_storage_types::sources::SourceData {
+) -> Option<mz_storage_types::sources::SourceData> {
     use mz_repr::adt::jsonb::{Jsonb, JsonbRef};
     use mz_storage_types::sources::SourceData;
 
     let row = match source_data.0 {
         Ok(row) => row,
-        Err(_) => return source_data,
+        Err(_) => return Some(source_data),
     };
 
     let json = {
@@ -6175,30 +6229,47 @@ fn rewrite_catalog_entry_shards(
         JsonbRef::from_datum(datum).to_serde_json()
     };
 
-    // Check if this is a StorageCollectionMetadata entry and rewrite the shard.
-    let modified_json = if let Some(scm) = json.get("StorageCollectionMetadata") {
-        if let Some(shard_str) = scm
-            .get("value")
-            .and_then(|v| v.get("shard"))
-            .and_then(|s| s.as_str())
-        {
-            if let Some(fork_shard) = shard_mapping.get(shard_str) {
-                let mut j = json.clone();
-                j["StorageCollectionMetadata"]["value"]["shard"] =
-                    serde_json::Value::String(fork_shard.clone());
-                j
-            } else {
-                json
-            }
-        } else {
-            json
-        }
-    } else {
-        json
-    };
+    // StateUpdateKind uses #[serde(tag = "kind")] so the JSON layout is:
+    // {"kind": "...", "key": {...}, "value": {...}}
+    let kind = json.get("kind").and_then(|k| k.as_str()).unwrap_or("");
 
-    let new_row = Jsonb::from_serde_json(modified_json)
-        .expect("catalog entry should produce valid json")
-        .into_row();
-    SourceData(Ok(new_row))
+    match kind {
+        "StorageCollectionMetadata" => {
+            let shard_str = json
+                .get("value")
+                .and_then(|v| v.get("shard"))
+                .and_then(|s| s.as_str());
+
+            match shard_str.and_then(|s| shard_mapping.get(s)) {
+                Some(fork_shard) => {
+                    let mut j = json.clone();
+                    j["value"]["shard"] = serde_json::Value::String(fork_shard.clone());
+                    let new_row = Jsonb::from_serde_json(j)
+                        .expect("catalog entry should produce valid json")
+                        .into_row();
+                    Some(SourceData(Ok(new_row)))
+                }
+                None => {
+                    // Shard not in mapping: keep the entry unchanged. This handles system
+                    // collections that were not enumerated by catalog.entries().
+                    let new_row = Jsonb::from_serde_json(json)
+                        .expect("catalog entry should produce valid json")
+                        .into_row();
+                    Some(SourceData(Ok(new_row)))
+                }
+            }
+        }
+        "TxnWalShard" => {
+            // Drop the source's TxnWalShard so the fork coordinator allocates a fresh one.
+            // Sharing the source's txn wal shard would cause "cannot register at X because
+            // txns is at Y" panics when the fork's registration timestamp < source's txns time.
+            None
+        }
+        _ => {
+            let new_row = Jsonb::from_serde_json(json)
+                .expect("catalog entry should produce valid json")
+                .into_row();
+            Some(SourceData(Ok(new_row)))
+        }
+    }
 }

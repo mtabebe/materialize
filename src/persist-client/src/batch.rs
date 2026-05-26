@@ -1428,22 +1428,24 @@ impl<T> Default for PartDeletes<T> {
 }
 
 impl<T: Timestamp> PartDeletes<T> {
-    // Adds the part to the set to be deleted and returns true if it was newly
-    // inserted.
+    // Adds the part to the set to be deleted. Returns true if the part was
+    // newly inserted OR intentionally skipped (absolute key or inline).
+    // Returns false only for duplicate relative keys, which indicates a logic
+    // error in GC diff processing.
     pub fn add(&mut self, part: &RunPart<T>) -> bool {
         match part {
             RunPart::Many(r) => {
                 // Absolute keys are source-shard blobs owned by another org's
                 // persist instance; this shard must never delete them.
                 if r.key.is_absolute() {
-                    return false;
+                    return true;
                 }
                 self.hollow_runs.insert(r.key.clone(), r.clone()).is_none()
             }
             RunPart::Single(BatchPart::Hollow(x)) => {
                 // Absolute keys are source-shard blobs — skip.
                 if x.key.is_absolute() {
-                    return false;
+                    return true;
                 }
                 self.blob_keys.insert(x.key.clone())
             }
