@@ -14,10 +14,11 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 
 use crate::durable::objects::state_update::StateUpdateKindJson;
 use crate::durable::objects::{
-    AuditLogKey, ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue,
-    ClusterKey, ClusterReplicaKey, ClusterReplicaValue, ClusterValue, CommentKey, CommentValue,
-    ConfigKey, ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey,
-    DefaultPrivilegesValue, GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
+    AuditLogKey, BranchDescriptorKey, BranchDescriptorValue, BranchForkedTableEntry, BranchStatus,
+    ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue, ClusterKey,
+    ClusterReplicaKey, ClusterReplicaValue, ClusterValue, CommentKey, CommentValue, ConfigKey,
+    ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey, DefaultPrivilegesValue,
+    GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
     IntrospectionSourceIndexCatalogItemId, IntrospectionSourceIndexGlobalId, ItemKey, ItemValue,
     NetworkPolicyKey, NetworkPolicyValue, RoleKey, RoleValue, SchemaKey, SchemaValue,
     ServerConfigurationKey, ServerConfigurationValue, SettingKey, SettingValue, SourceReference,
@@ -913,6 +914,97 @@ impl RustType<proto::IntrospectionSourceIndexGlobalId> for IntrospectionSourceIn
         proto: proto::IntrospectionSourceIndexGlobalId,
     ) -> Result<Self, TryFromProtoError> {
         Ok(IntrospectionSourceIndexGlobalId(proto.0))
+    }
+}
+
+impl RustType<proto::BranchDescriptorKey> for BranchDescriptorKey {
+    fn into_proto(&self) -> proto::BranchDescriptorKey {
+        proto::BranchDescriptorKey {
+            schema_id: self.schema_id.into_proto(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchDescriptorKey) -> Result<Self, TryFromProtoError> {
+        Ok(BranchDescriptorKey {
+            schema_id: proto.schema_id.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchStatus> for BranchStatus {
+    fn into_proto(&self) -> proto::BranchStatus {
+        match self {
+            BranchStatus::Active => proto::BranchStatus::Active,
+            BranchStatus::Draining => proto::BranchStatus::Draining,
+        }
+    }
+
+    fn from_proto(proto: proto::BranchStatus) -> Result<Self, TryFromProtoError> {
+        Ok(match proto {
+            proto::BranchStatus::Active => BranchStatus::Active,
+            proto::BranchStatus::Draining => BranchStatus::Draining,
+        })
+    }
+}
+
+impl RustType<proto::BranchDescriptorValue> for BranchDescriptorValue {
+    fn into_proto(&self) -> proto::BranchDescriptorValue {
+        proto::BranchDescriptorValue {
+            schema_name: self.schema_name.clone(),
+            source_schema_name: self.source_schema_name.clone(),
+            status: self.status.into_proto(),
+            forked_tables: self
+                .forked_tables
+                .iter()
+                .map(|ft| proto::BranchForkedTable {
+                    table_name: ft.table_name.clone(),
+                    source_catalog_id: ft.source_catalog_id.into_proto(),
+                    source_shard: ft.source_shard.to_string(),
+                    branch_ts: u64::from(ft.branch_ts),
+                    delta_catalog_id: ft.delta_catalog_id.into_proto(),
+                    delta_global_id: ft.delta_global_id.into_proto(),
+                    hold_reader_id: ft.hold_reader_id.to_string(),
+                    relation_desc: ft.relation_desc.clone(),
+                    entry_oid: ft.entry_oid,
+                })
+                .collect(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchDescriptorValue) -> Result<Self, TryFromProtoError> {
+        let forked_tables = proto
+            .forked_tables
+            .into_iter()
+            .map(|ft| {
+                let source_shard = ft
+                    .source_shard
+                    .parse()
+                    .map_err(|_| TryFromProtoError::InvalidShardId(ft.source_shard.clone()))?;
+                let hold_reader_id = ft.hold_reader_id.parse().map_err(|e| {
+                    TryFromProtoError::InvalidFieldError(format!(
+                        "invalid hold_reader_id {}: {}",
+                        ft.hold_reader_id, e
+                    ))
+                })?;
+                Ok(BranchForkedTableEntry {
+                    table_name: ft.table_name,
+                    source_catalog_id: ft.source_catalog_id.into_rust()?,
+                    source_shard,
+                    branch_ts: mz_repr::Timestamp::from(ft.branch_ts),
+                    delta_catalog_id: ft.delta_catalog_id.into_rust()?,
+                    delta_global_id: ft.delta_global_id.into_rust()?,
+                    hold_reader_id,
+                    relation_desc: ft.relation_desc,
+                    entry_oid: ft.entry_oid,
+                })
+            })
+            .collect::<Result<Vec<_>, TryFromProtoError>>()?;
+        Ok(BranchDescriptorValue {
+            schema_name: proto.schema_name,
+            source_schema_name: proto.source_schema_name,
+            status: proto.status.into_rust()?,
+            forked_tables,
+        })
     }
 }
 

@@ -354,6 +354,9 @@ impl CatalogState {
             StateUpdateKind::AuditLog(_audit_log) => {
                 // Audit logs are not stored in-memory.
             }
+            StateUpdateKind::BranchDescriptor(_branch_descriptor) => {
+                // Branch descriptors are not yet read by the adapter.
+            }
             StateUpdateKind::StorageCollectionMetadata(storage_collection_metadata) => {
                 self.apply_storage_collection_metadata_update(
                     storage_collection_metadata,
@@ -1440,6 +1443,7 @@ impl CatalogState {
             StateUpdateKind::Database(_)
             | StateUpdateKind::Schema(_)
             | StateUpdateKind::NetworkPolicy(_)
+            | StateUpdateKind::BranchDescriptor(_)
             | StateUpdateKind::StorageCollectionMetadata(_)
             | StateUpdateKind::UnfinalizedShard(_) => Vec::new(),
         }
@@ -2223,6 +2227,7 @@ fn sort_updates(updates: Vec<StateUpdate>) -> Vec<StateUpdate> {
             StateUpdateKind::Comment(_)
             | StateUpdateKind::SourceReferences(_)
             | StateUpdateKind::AuditLog(_)
+            | StateUpdateKind::BranchDescriptor(_)
             | StateUpdateKind::StorageCollectionMetadata(_)
             | StateUpdateKind::UnfinalizedShard(_) => push_update(
                 update,
@@ -2551,6 +2556,7 @@ impl ApplyState {
             | SourceReferences(_)
             | Comment(_)
             | AuditLog(_)
+            | BranchDescriptor(_)
             | StorageCollectionMetadata(_)
             | UnfinalizedShard(_) => Self::Updates(vec![update]),
         }

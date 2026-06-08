@@ -34,11 +34,12 @@ use std::collections::BTreeMap;
 use mz_audit_log::VersionedEvent;
 use mz_controller::clusters::ReplicaLogging;
 use mz_controller_types::{ClusterId, ReplicaId};
+use mz_persist_client::critical::CriticalReaderId;
 use mz_persist_types::ShardId;
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem};
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
-use mz_repr::{CatalogItemId, GlobalId, RelationVersion};
+use mz_repr::{CatalogItemId, GlobalId, RelationVersion, Timestamp};
 use mz_sql::catalog::{
     CatalogItemType, DefaultPrivilegeAclItem, DefaultPrivilegeObject, ObjectType, RoleAttributes,
     RoleMembership, RoleVars,
@@ -626,6 +627,79 @@ impl DurableType for SourceReferences {
     }
 }
 
+/// A single forked table entry within a branch descriptor.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq)]
+pub struct BranchForkedTableEntry {
+    pub table_name: String,
+    pub source_catalog_id: CatalogItemId,
+    pub source_shard: ShardId,
+    pub branch_ts: Timestamp,
+    pub delta_catalog_id: CatalogItemId,
+    pub delta_global_id: GlobalId,
+    pub hold_reader_id: CriticalReaderId,
+    /// Prost-encoded `mz_repr::ProtoRelationDesc` bytes capturing the source
+    /// table's shape as of `branch_ts`. Stored opaque here so the durable
+    /// shape matches the catalog proto byte-for-byte; consumers decode to
+    /// `mz_repr::RelationDesc` via prost.
+    pub relation_desc: Vec<u8>,
+    /// PostgreSQL-style OID for the branch's forked-table catalog entry.
+    /// Allocated at branch-creation time and persisted so the entry
+    /// materialized at bootstrap is stable across restarts.
+    pub entry_oid: u32,
+}
+
+/// Lifecycle status of a branch.
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, PartialEq, Eq)]
+pub enum BranchStatus {
+    Active,
+    Draining,
+}
+
+/// Durable representation of a branch descriptor.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq)]
+pub struct BranchDescriptor {
+    pub schema_id: SchemaId,
+    pub schema_name: String,
+    pub source_schema_name: String,
+    pub status: BranchStatus,
+    pub forked_tables: Vec<BranchForkedTableEntry>,
+}
+
+impl DurableType for BranchDescriptor {
+    type Key = BranchDescriptorKey;
+    type Value = BranchDescriptorValue;
+
+    fn into_key_value(self) -> (Self::Key, Self::Value) {
+        (
+            BranchDescriptorKey {
+                schema_id: self.schema_id,
+            },
+            BranchDescriptorValue {
+                schema_name: self.schema_name,
+                source_schema_name: self.source_schema_name,
+                status: self.status,
+                forked_tables: self.forked_tables,
+            },
+        )
+    }
+
+    fn from_key_value(key: Self::Key, value: Self::Value) -> Self {
+        Self {
+            schema_id: key.schema_id,
+            schema_name: value.schema_name,
+            source_schema_name: value.source_schema_name,
+            status: value.status,
+            forked_tables: value.forked_tables,
+        }
+    }
+
+    fn key(&self) -> Self::Key {
+        BranchDescriptorKey {
+            schema_id: self.schema_id,
+        }
+    }
+}
+
 /// A newtype wrapper for [`CatalogItemId`] that is only for the "system" namespace.
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, PartialEq, Eq)]
 pub struct SystemCatalogItemId(u64);
@@ -1162,6 +1236,7 @@ pub struct Snapshot {
         BTreeMap<proto::StorageCollectionMetadataKey, proto::StorageCollectionMetadataValue>,
     pub unfinalized_shards: BTreeMap<proto::UnfinalizedShardKey, ()>,
     pub txn_wal_shard: BTreeMap<(), proto::TxnWalShardValue>,
+    pub branch_descriptors: BTreeMap<proto::BranchDescriptorKey, proto::BranchDescriptorValue>,
 }
 
 impl Snapshot {
@@ -1496,6 +1571,19 @@ pub struct RoleAuthKey {
 pub struct RoleAuthValue {
     pub(crate) password_hash: Option<String>,
     pub(crate) updated_at: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialOrd, PartialEq, Eq, Ord, Hash)]
+pub struct BranchDescriptorKey {
+    pub(crate) schema_id: SchemaId,
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq, Eq, Ord)]
+pub struct BranchDescriptorValue {
+    pub(crate) schema_name: String,
+    pub(crate) source_schema_name: String,
+    pub(crate) status: BranchStatus,
+    pub(crate) forked_tables: Vec<BranchForkedTableEntry>,
 }
 
 #[cfg(test)]

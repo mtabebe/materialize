@@ -3730,6 +3730,7 @@ pub enum StateUpdateKind {
     Item(durable::objects::Item),
     Comment(durable::objects::Comment),
     AuditLog(durable::objects::AuditLog),
+    BranchDescriptor(durable::objects::BranchDescriptor),
     // Storage updates.
     StorageCollectionMetadata(durable::objects::StorageCollectionMetadata),
     UnfinalizedShard(durable::objects::UnfinalizedShard),
@@ -3822,6 +3823,7 @@ pub enum BootstrapStateUpdateKind {
     Item(durable::objects::Item),
     Comment(durable::objects::Comment),
     AuditLog(durable::objects::AuditLog),
+    BranchDescriptor(durable::objects::BranchDescriptor),
     // Storage updates.
     StorageCollectionMetadata(durable::objects::StorageCollectionMetadata),
     UnfinalizedShard(durable::objects::UnfinalizedShard),
@@ -3858,6 +3860,9 @@ impl From<BootstrapStateUpdateKind> for StateUpdateKind {
             BootstrapStateUpdateKind::Item(kind) => StateUpdateKind::Item(kind),
             BootstrapStateUpdateKind::Comment(kind) => StateUpdateKind::Comment(kind),
             BootstrapStateUpdateKind::AuditLog(kind) => StateUpdateKind::AuditLog(kind),
+            BootstrapStateUpdateKind::BranchDescriptor(kind) => {
+                StateUpdateKind::BranchDescriptor(kind)
+            }
             BootstrapStateUpdateKind::StorageCollectionMetadata(kind) => {
                 StateUpdateKind::StorageCollectionMetadata(kind)
             }
@@ -3906,6 +3911,9 @@ impl TryFrom<StateUpdateKind> for BootstrapStateUpdateKind {
             StateUpdateKind::Item(kind) => Ok(BootstrapStateUpdateKind::Item(kind)),
             StateUpdateKind::Comment(kind) => Ok(BootstrapStateUpdateKind::Comment(kind)),
             StateUpdateKind::AuditLog(kind) => Ok(BootstrapStateUpdateKind::AuditLog(kind)),
+            StateUpdateKind::BranchDescriptor(kind) => {
+                Ok(BootstrapStateUpdateKind::BranchDescriptor(kind))
+            }
             StateUpdateKind::StorageCollectionMetadata(kind) => {
                 Ok(BootstrapStateUpdateKind::StorageCollectionMetadata(kind))
             }

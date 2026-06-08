@@ -31,14 +31,14 @@ use mz_adapter_types::bootstrap_builtin_cluster_config::{
 use mz_build_info::{BuildInfo, build_info};
 use mz_catalog::config::{BuiltinItemMigrationConfig, ClusterReplicaSizeMap, StateConfig};
 use mz_catalog::durable::debug::{
-    AuditLogCollection, ClusterCollection, ClusterIntrospectionSourceIndexCollection,
-    ClusterReplicaCollection, Collection, CollectionTrace, CollectionType, CommentCollection,
-    ConfigCollection, DatabaseCollection, DebugCatalogState, DefaultPrivilegeCollection,
-    IdAllocatorCollection, ItemCollection, NetworkPolicyCollection, RoleAuthCollection,
-    RoleCollection, SchemaCollection, SettingCollection, SourceReferencesCollection,
-    StorageCollectionMetadataCollection, SystemConfigurationCollection,
-    SystemItemMappingCollection, SystemPrivilegeCollection, Trace, TxnWalShardCollection,
-    UnfinalizedShardsCollection,
+    AuditLogCollection, BranchDescriptorCollection, ClusterCollection,
+    ClusterIntrospectionSourceIndexCollection, ClusterReplicaCollection, Collection,
+    CollectionTrace, CollectionType, CommentCollection, ConfigCollection, DatabaseCollection,
+    DebugCatalogState, DefaultPrivilegeCollection, IdAllocatorCollection, ItemCollection,
+    NetworkPolicyCollection, RoleAuthCollection, RoleCollection, SchemaCollection,
+    SettingCollection, SourceReferencesCollection, StorageCollectionMetadataCollection,
+    SystemConfigurationCollection, SystemItemMappingCollection, SystemPrivilegeCollection, Trace,
+    TxnWalShardCollection, UnfinalizedShardsCollection,
 };
 use mz_catalog::durable::{
     BootstrapArgs, OpenableDurableCatalogState, persist_backed_catalog_state,
@@ -287,6 +287,9 @@ macro_rules! for_collection {
     ($collection_type:expr, $fn:ident $(, $arg:expr)*) => {
         match $collection_type {
             CollectionType::AuditLog => $fn::<AuditLogCollection>($($arg),*).await?,
+            CollectionType::BranchDescriptor => {
+                $fn::<BranchDescriptorCollection>($($arg),*).await?
+            }
             CollectionType::ComputeInstance => $fn::<ClusterCollection>($($arg),*).await?,
             CollectionType::ComputeIntrospectionSourceIndex => {
                 $fn::<ClusterIntrospectionSourceIndexCollection>($($arg),*).await?
@@ -447,6 +450,7 @@ async fn dump(
     let mut data = BTreeMap::new();
     let Trace {
         audit_log,
+        branch_descriptors,
         clusters,
         introspection_sources,
         cluster_replicas,
@@ -558,6 +562,13 @@ async fn dump(
         consolidate,
     );
     dump_col(&mut data, txn_wal_shard, &ignore, stats_only, consolidate);
+    dump_col(
+        &mut data,
+        branch_descriptors,
+        &ignore,
+        stats_only,
+        consolidate,
+    );
 
     writeln!(&mut target, "{data:#?}")?;
     Ok(())

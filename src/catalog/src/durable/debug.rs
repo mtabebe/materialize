@@ -54,6 +54,7 @@ pub trait Collection: Debug {
 #[serde(rename_all = "snake_case")]
 pub enum CollectionType {
     AuditLog,
+    BranchDescriptor,
     ComputeInstance,
     ComputeIntrospectionSourceIndex,
     ComputeReplicas,
@@ -127,6 +128,14 @@ collection_impl!({
     collection_type: CollectionType::AuditLog,
     trace_field: audit_log,
     update: StateUpdateKind::AuditLog,
+});
+collection_impl!({
+    name: BranchDescriptorCollection,
+    key: proto::BranchDescriptorKey,
+    value: proto::BranchDescriptorValue,
+    collection_type: CollectionType::BranchDescriptor,
+    trace_field: branch_descriptors,
+    update: StateUpdateKind::BranchDescriptor,
 });
 collection_impl!({
     name: ClusterCollection,
@@ -329,6 +338,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trace {
     pub audit_log: CollectionTrace<AuditLogCollection>,
+    pub branch_descriptors: CollectionTrace<BranchDescriptorCollection>,
     pub clusters: CollectionTrace<ClusterCollection>,
     pub introspection_sources: CollectionTrace<ClusterIntrospectionSourceIndexCollection>,
     pub cluster_replicas: CollectionTrace<ClusterReplicaCollection>,
@@ -356,6 +366,7 @@ impl Trace {
     pub(crate) fn new() -> Trace {
         Trace {
             audit_log: CollectionTrace::new(),
+            branch_descriptors: CollectionTrace::new(),
             clusters: CollectionTrace::new(),
             introspection_sources: CollectionTrace::new(),
             cluster_replicas: CollectionTrace::new(),
@@ -383,6 +394,7 @@ impl Trace {
     pub fn sort(&mut self) {
         let Trace {
             audit_log,
+            branch_descriptors,
             clusters,
             introspection_sources,
             cluster_replicas,
@@ -406,6 +418,7 @@ impl Trace {
             txn_wal_shard,
         } = self;
         audit_log.sort();
+        branch_descriptors.sort();
         clusters.sort();
         introspection_sources.sort();
         cluster_replicas.sort();

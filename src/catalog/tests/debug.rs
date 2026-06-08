@@ -89,6 +89,7 @@ impl Debug for StableTrace<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let Trace {
             audit_log,
+            branch_descriptors,
             clusters,
             introspection_sources,
             cluster_replicas,
@@ -133,6 +134,7 @@ impl Debug for StableTrace<'_> {
         };
         f.debug_struct("Trace")
             .field("audit_log", audit_log)
+            .field("branch_descriptors", branch_descriptors)
             .field("clusters", clusters)
             .field("introspection_sources", introspection_sources)
             .field("cluster_replicas", cluster_replicas)
