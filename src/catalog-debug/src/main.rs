@@ -713,6 +713,7 @@ async fn upgrade_check(
             CatalogItem::Table(table) => Some((table.global_id_writes(), table.desc.latest())),
             CatalogItem::Source(source) => Some((source.global_id(), source.desc.clone())),
             CatalogItem::MaterializedView(mv) => Some((mv.global_id_writes(), mv.desc.latest())),
+            CatalogItem::ForkedTable(forked) => Some((forked.global_id, forked.desc.clone())),
             CatalogItem::Log(_)
             | CatalogItem::View(_)
             | CatalogItem::Sink(_)

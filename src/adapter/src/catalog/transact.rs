@@ -606,7 +606,8 @@ impl Catalog {
                     | CatalogItem::Type(_)
                     | CatalogItem::Func(_)
                     | CatalogItem::Secret(_)
-                    | CatalogItem::Connection(_) => {}
+                    | CatalogItem::Connection(_)
+                    | CatalogItem::ForkedTable(_) => {}
                 }
             }
         }
@@ -1397,6 +1398,9 @@ impl Catalog {
                     | CatalogItem::Func(_)
                     | CatalogItem::Secret(_)
                     | CatalogItem::Connection(_) => (),
+                    CatalogItem::ForkedTable(_) => unreachable!(
+                        "forked tables are created via BranchDescriptor, not Op::CreateItem"
+                    ),
                 }
 
                 let system_user = session.map_or(false, |s| s.user().is_system_user());
@@ -1580,7 +1584,8 @@ impl Catalog {
                         | CatalogItem::Type(_)
                         | CatalogItem::Func(_)
                         | CatalogItem::Secret(_)
-                        | CatalogItem::Connection(_) => EventDetails::IdFullNameV1(IdFullNameV1 {
+                        | CatalogItem::Connection(_)
+                        | CatalogItem::ForkedTable(_) => EventDetails::IdFullNameV1(IdFullNameV1 {
                             id: id.to_string(),
                             name,
                         }),

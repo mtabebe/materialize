@@ -149,6 +149,7 @@ impl Catalog {
             system_privileges: Arc::new(PrivilegeMap::default()),
             comments: Arc::new(CommentsMap::default()),
             source_references: imbl::OrdMap::new(),
+            branches_by_schema_id: imbl::OrdMap::new(),
             storage_metadata: Arc::new(StorageMetadata::default()),
             temporary_schemas: imbl::OrdMap::new(),
             mock_authentication_nonce: Default::default(),

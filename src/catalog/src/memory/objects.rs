@@ -59,6 +59,8 @@ use mz_sql::plan::{
 };
 use mz_sql::rbac;
 use mz_sql::session::vars::OwnedVarInput;
+use mz_persist_client::critical::CriticalReaderId;
+use mz_persist_types::ShardId;
 use mz_storage_client::controller::IntrospectionType;
 use mz_storage_types::connections::inline::ReferencedConnection;
 use mz_storage_types::sinks::{SinkEnvelope, StorageSinkConnection};
@@ -841,6 +843,7 @@ pub enum CatalogItem {
     Func(Func),
     Secret(Secret),
     Connection(Connection),
+    ForkedTable(ForkedTable),
 }
 
 impl From<CatalogEntry> for durable::Item {
@@ -931,6 +934,33 @@ impl Table {
         self.desc
             .at_version(RelationVersionSelector::Specific(*version))
     }
+}
+
+/// A table whose state lives on a per-branch delta shard but whose
+/// historical data still comes from the source shard read at
+/// [`Self::branch_ts`]. Reads consolidate the two shards. The catalog
+/// entry's id is the branch's own `delta_catalog_id`; the source table's
+/// id is recorded in [`Self::source_catalog_id`] only as a back-pointer
+/// for diagnostics and tear-down. The branch never re-resolves the
+/// source's catalog entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct ForkedTable {
+    /// The source's `RelationDesc` captured at `branch_ts`, decoded from
+    /// `BranchForkedTableEntry.relation_desc`. Used for all reads from
+    /// the branch; the source's current `RelationDesc` is not consulted.
+    pub desc: RelationDesc,
+    /// `GlobalId` for the branch's delta shard.
+    pub global_id: GlobalId,
+    /// Catalog id of the source table this entry was forked from.
+    pub source_catalog_id: CatalogItemId,
+    /// Persist shard id of the source table.
+    pub source_shard: ShardId,
+    /// Fork timestamp: reads of the source shard are pinned here.
+    pub branch_ts: Timestamp,
+    /// Durable handle on the source shard's `since` hold. Used by the
+    /// coordinator to recover and later release the persist
+    /// [`mz_persist_client::critical::SinceHandle`].
+    pub hold_reader_id: CriticalReaderId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1722,6 +1752,9 @@ impl CatalogItem {
             CatalogItem::Func(_) => CatalogItemType::Func,
             CatalogItem::Secret(_) => CatalogItemType::Secret,
             CatalogItem::Connection(_) => CatalogItemType::Connection,
+            // Branched tables surface to SQL as regular tables; the
+            // discriminator only matters to commit 9's read/write paths.
+            CatalogItem::ForkedTable(_) => CatalogItemType::Table,
         }
     }
 
@@ -1743,6 +1776,7 @@ impl CatalogItem {
             CatalogItem::Table(table) => {
                 return itertools::Either::Left(table.collections.values().copied());
             }
+            CatalogItem::ForkedTable(forked) => forked.global_id,
         };
         itertools::Either::Right(std::iter::once(gid))
     }
@@ -1763,6 +1797,7 @@ impl CatalogItem {
             CatalogItem::Secret(secret) => secret.global_id,
             CatalogItem::Connection(conn) => conn.global_id,
             CatalogItem::Table(table) => table.global_id_writes(),
+            CatalogItem::ForkedTable(forked) => forked.global_id,
         }
     }
 
@@ -1825,7 +1860,8 @@ impl CatalogItem {
             CatalogItem::Table(_)
             | CatalogItem::Source(_)
             | CatalogItem::MaterializedView(_)
-            | CatalogItem::Sink(_) => true,
+            | CatalogItem::Sink(_)
+            | CatalogItem::ForkedTable(_) => true,
             CatalogItem::Log(_)
             | CatalogItem::View(_)
             | CatalogItem::Index(_)
@@ -1853,6 +1889,10 @@ impl CatalogItem {
             CatalogItem::MaterializedView(mview) => {
                 Some(Cow::Owned(mview.desc.at_version(version)))
             }
+            // The branch reads only the descriptor's snapshotted shape; the
+            // source's current `RelationDesc` is never consulted, so
+            // `version` is ignored.
+            CatalogItem::ForkedTable(forked) => Some(Cow::Borrowed(&forked.desc)),
             CatalogItem::Func(_)
             | CatalogItem::Index(_)
             | CatalogItem::Sink(_)
@@ -1925,6 +1965,9 @@ impl CatalogItem {
             CatalogItem::MaterializedView(mview) => &mview.resolved_ids,
             CatalogItem::Secret(_) => &*EMPTY,
             CatalogItem::Connection(connection) => &connection.resolved_ids,
+            // Branched tables are catalog-decoupled: the source is referenced
+            // by `source_catalog_id` on the descriptor, not via `ResolvedIds`.
+            CatalogItem::ForkedTable(_) => &*EMPTY,
         }
     }
 
@@ -1951,6 +1994,7 @@ impl CatalogItem {
             }
             CatalogItem::Secret(_) => {}
             CatalogItem::Connection(_) => {}
+            CatalogItem::ForkedTable(_) => {}
         }
         uses
     }
@@ -1969,7 +2013,8 @@ impl CatalogItem {
             | CatalogItem::Secret(_)
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
-            | CatalogItem::Connection(_) => None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => None,
         }
     }
 
@@ -1987,7 +2032,8 @@ impl CatalogItem {
             | CatalogItem::Secret(_)
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
-            | CatalogItem::Connection(_) => (),
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => (),
         }
     }
 
@@ -2067,6 +2113,9 @@ impl CatalogItem {
                 Ok(CatalogItem::Type(i))
             }
             CatalogItem::Func(i) => Ok(CatalogItem::Func(i.clone())),
+            // Forked tables have no create_sql to rewrite; cloning preserves
+            // the descriptor's snapshotted shape unchanged.
+            CatalogItem::ForkedTable(i) => Ok(CatalogItem::ForkedTable(i.clone())),
         }
     }
 
@@ -2129,7 +2178,7 @@ impl CatalogItem {
                 i.create_sql = do_rewrite(i.create_sql)?;
                 Ok(CatalogItem::Secret(i))
             }
-            CatalogItem::Func(_) | CatalogItem::Type(_) => {
+            CatalogItem::Func(_) | CatalogItem::Type(_) | CatalogItem::ForkedTable(_) => {
                 unreachable!("{}s cannot be renamed", self.typ())
             }
             CatalogItem::Connection(i) => {
@@ -2191,7 +2240,7 @@ impl CatalogItem {
                 i.create_sql = do_rewrite(i.create_sql);
                 CatalogItem::Secret(i)
             }
-            CatalogItem::Func(_) | CatalogItem::Type(_) => {
+            CatalogItem::Func(_) | CatalogItem::Type(_) | CatalogItem::ForkedTable(_) => {
                 unreachable!("references of {}s cannot be replaced", self.typ())
             }
             CatalogItem::Connection(i) => {
@@ -2377,7 +2426,7 @@ impl CatalogItem {
             | CatalogItem::Index(Index { create_sql, .. })
             | CatalogItem::Secret(Secret { create_sql, .. })
             | CatalogItem::Connection(Connection { create_sql, .. }) => Some(create_sql),
-            CatalogItem::Func(_) | CatalogItem::Log(_) => None,
+            CatalogItem::Func(_) | CatalogItem::Log(_) | CatalogItem::ForkedTable(_) => None,
         };
         let Some(create_sql) = create_sql else {
             return Err(());
@@ -2411,7 +2460,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => None,
         }
     }
 
@@ -2438,7 +2488,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => None,
         }
     }
 
@@ -2456,7 +2507,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => None,
         }
     }
 
@@ -2477,7 +2529,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => return None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => return None,
         };
         Some(cw)
     }
@@ -2501,7 +2554,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => return None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => return None,
         };
         Some(custom_logical_compaction_window.unwrap_or(CompactionWindow::Default))
     }
@@ -2521,7 +2575,8 @@ impl CatalogItem {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => false,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => false,
         }
     }
 
@@ -2578,6 +2633,9 @@ impl CatalogItem {
                 BTreeMap::new(),
             ),
             CatalogItem::Func(_) => unreachable!("cannot serialize functions yet"),
+            CatalogItem::ForkedTable(_) => {
+                unreachable!("forked tables are persisted via BranchDescriptor, not Item")
+            }
         }
     }
 
@@ -2623,6 +2681,9 @@ impl CatalogItem {
                 (connection.create_sql, connection.global_id, BTreeMap::new())
             }
             CatalogItem::Func(_) => unreachable!("cannot serialize functions yet"),
+            CatalogItem::ForkedTable(_) => {
+                unreachable!("forked tables are persisted via BranchDescriptor, not Item")
+            }
         }
     }
 
@@ -2641,6 +2702,7 @@ impl CatalogItem {
             CatalogItem::Func(func) => return Some(func.global_id),
             CatalogItem::Secret(secret) => return Some(secret.global_id),
             CatalogItem::Connection(conn) => return Some(conn.global_id),
+            CatalogItem::ForkedTable(forked) => return Some(forked.global_id),
         };
         match version {
             RelationVersionSelector::Latest => collections.values().last().copied(),
@@ -2845,7 +2907,8 @@ impl CatalogEntry {
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
             | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => None,
+            | CatalogItem::Connection(_)
+            | CatalogItem::ForkedTable(_) => None,
         }
     }
 
@@ -3586,6 +3649,7 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
             CatalogItem::Connection(Connection { create_sql, .. }) => create_sql,
             CatalogItem::Func(_) => "<builtin>",
             CatalogItem::Log(_) => "<builtin>",
+            CatalogItem::ForkedTable(_) => "<branch>",
         }
     }
 

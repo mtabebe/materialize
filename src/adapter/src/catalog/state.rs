@@ -145,6 +145,14 @@ pub struct CatalogState {
     pub(super) comments: Arc<CommentsMap>,
     #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
     pub(super) source_references: imbl::OrdMap<CatalogItemId, SourceReferences>,
+    /// Active branches, keyed on the branch schema's `SchemaId`. Built up from
+    /// `StateUpdateKind::BranchDescriptor` updates. The coordinator reads this
+    /// at bootstrap to reconstitute the per-table `SinceHandle`s; the per-table
+    /// catalog entries are also materialized as `CatalogItem::ForkedTable`
+    /// rows in `entry_by_id`.
+    #[serde(skip)]
+    pub(super) branches_by_schema_id:
+        imbl::OrdMap<SchemaId, mz_catalog::durable::BranchDescriptor>,
     pub(super) storage_metadata: Arc<StorageMetadata>,
     pub(super) mock_authentication_nonce: Option<String>,
 
@@ -328,6 +336,7 @@ impl CatalogState {
             system_privileges: Arc::new(PrivilegeMap::default()),
             comments: Arc::new(CommentsMap::default()),
             source_references: Default::default(),
+            branches_by_schema_id: Default::default(),
             storage_metadata: Arc::new(StorageMetadata::default()),
             license_key: ValidatedLicenseKey::for_tests(),
             mock_authentication_nonce: Default::default(),
@@ -452,7 +461,8 @@ impl CatalogState {
             | CatalogItem::Source(_)
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
-            | CatalogItem::Secret(_) => (),
+            | CatalogItem::Secret(_)
+            | CatalogItem::ForkedTable(_) => (),
         }
     }
 
@@ -1708,6 +1718,15 @@ impl CatalogState {
         // Keep in sync with `try_get_schema` and `get_schemas_mut`
         self.try_get_schema(database_spec, schema_spec, conn_id)
             .expect("schema must exist")
+    }
+
+    /// Returns the durable `BranchDescriptor` rows tracked by this catalog
+    /// state, keyed on the branch schema's `SchemaId`. Populated by
+    /// [`super::apply::CatalogState::apply_branch_descriptor_update`].
+    pub fn branches_by_schema_id(
+        &self,
+    ) -> &imbl::OrdMap<SchemaId, mz_catalog::durable::BranchDescriptor> {
+        &self.branches_by_schema_id
     }
 
     pub(super) fn find_non_temp_schema(&self, schema_id: &SchemaId) -> &Schema {

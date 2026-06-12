@@ -31,8 +31,8 @@ use mz_catalog::durable::objects::{
 use mz_catalog::durable::{CatalogError, SystemObjectMapping};
 use mz_catalog::memory::error::{Error, ErrorKind};
 use mz_catalog::memory::objects::{
-    CatalogEntry, CatalogItem, Cluster, ClusterReplica, Database, Func, Index, Log, NetworkPolicy,
-    Role, RoleAuth, Schema, Source, StateDiff, StateUpdate, StateUpdateKind, Table,
+    CatalogEntry, CatalogItem, Cluster, ClusterReplica, Database, ForkedTable, Func, Index, Log,
+    NetworkPolicy, Role, RoleAuth, Schema, Source, StateDiff, StateUpdate, StateUpdateKind, Table,
     TableDataSource, TemporaryItem, Type, UpdateFrom,
 };
 use mz_compute_types::config::ComputeReplicaConfig;
@@ -354,8 +354,8 @@ impl CatalogState {
             StateUpdateKind::AuditLog(_audit_log) => {
                 // Audit logs are not stored in-memory.
             }
-            StateUpdateKind::BranchDescriptor(_branch_descriptor) => {
-                // Branch descriptors are not yet read by the adapter.
+            StateUpdateKind::BranchDescriptor(branch_descriptor) => {
+                self.apply_branch_descriptor_update(branch_descriptor, diff, retractions);
             }
             StateUpdateKind::StorageCollectionMetadata(storage_collection_metadata) => {
                 self.apply_storage_collection_metadata_update(
@@ -1331,6 +1331,76 @@ impl CatalogState {
             storage_collection_metadata.shard,
             diff,
         );
+    }
+
+    #[instrument(level = "debug")]
+    fn apply_branch_descriptor_update(
+        &mut self,
+        descriptor: mz_catalog::durable::BranchDescriptor,
+        diff: StateDiff,
+        _retractions: &mut InProgressRetractions,
+    ) {
+        use mz_proto::RustType;
+        use prost::Message;
+
+        let schema = self.find_non_temp_schema(&descriptor.schema_id);
+        let database_spec = schema.name.database.clone();
+        let schema_spec = *schema.id();
+        let owner_id = schema.owner_id;
+
+        match diff {
+            StateDiff::Addition => {
+                for forked in &descriptor.forked_tables {
+                    let proto = mz_repr::ProtoRelationDesc::decode(&*forked.relation_desc)
+                        .expect("BranchDescriptor relation_desc is a valid ProtoRelationDesc");
+                    let desc = mz_repr::RelationDesc::from_proto(proto)
+                        .expect("BranchDescriptor relation_desc is a valid RelationDesc");
+
+                    let item = CatalogItem::ForkedTable(ForkedTable {
+                        desc,
+                        global_id: forked.delta_global_id,
+                        source_catalog_id: forked.source_catalog_id,
+                        source_shard: forked.source_shard,
+                        branch_ts: forked.branch_ts,
+                        hold_reader_id: forked.hold_reader_id.clone(),
+                    });
+
+                    let name = QualifiedItemName {
+                        qualifiers: ItemQualifiers {
+                            database_spec: database_spec.clone(),
+                            schema_spec,
+                        },
+                        item: forked.table_name.clone(),
+                    };
+
+                    self.insert_item(
+                        forked.delta_catalog_id,
+                        forked.entry_oid,
+                        name,
+                        item,
+                        owner_id,
+                        PrivilegeMap::default(),
+                    );
+                }
+                let prev = self
+                    .branches_by_schema_id
+                    .insert(descriptor.schema_id, descriptor);
+                assert!(
+                    prev.is_none(),
+                    "values must be explicitly retracted before inserting a new value: {prev:?}"
+                );
+            }
+            StateDiff::Retraction => {
+                for forked in &descriptor.forked_tables {
+                    self.drop_item(forked.delta_catalog_id);
+                }
+                let prev = self.branches_by_schema_id.remove(&descriptor.schema_id);
+                assert!(
+                    prev.is_some(),
+                    "retraction for a non-existent existing value: {descriptor:?}"
+                );
+            }
+        }
     }
 
     #[instrument(level = "debug")]

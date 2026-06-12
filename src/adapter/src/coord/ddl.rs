@@ -1160,6 +1160,9 @@ impl Coordinator {
                         | CatalogItem::Index(_)
                         | CatalogItem::Type(_)
                         | CatalogItem::Func(_) => {}
+                        CatalogItem::ForkedTable(_) => unreachable!(
+                            "forked tables are created via BranchDescriptor, not Op::CreateItem"
+                        ),
                     }
                 }
                 Op::DropObjects(drop_object_infos) => {
@@ -1239,6 +1242,9 @@ impl Coordinator {
                                     | CatalogItem::Index(_)
                                     | CatalogItem::Type(_)
                                     | CatalogItem::Func(_) => {}
+                                    // Forked tables come and go via
+                                    // BranchDescriptor, not Op::DropObjects.
+                                    CatalogItem::ForkedTable(_) => {}
                                 }
                             }
                         }
@@ -1268,7 +1274,8 @@ impl Coordinator {
                     | CatalogItem::View(_)
                     | CatalogItem::Index(_)
                     | CatalogItem::Type(_)
-                    | CatalogItem::Func(_) => {}
+                    | CatalogItem::Func(_)
+                    | CatalogItem::ForkedTable(_) => {}
                 },
                 Op::AlterRole { .. }
                 | Op::AlterRetainHistory { .. }

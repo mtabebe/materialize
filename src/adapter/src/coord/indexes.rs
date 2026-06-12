@@ -60,7 +60,8 @@ impl DataflowBuilder<'_> {
                     }
                     CatalogItem::Source(_)
                     | CatalogItem::Table(_)
-                    | CatalogItem::MaterializedView(_) => {
+                    | CatalogItem::MaterializedView(_)
+                    | CatalogItem::ForkedTable(_) => {
                         // Record that we are missing at least one index.
                         id_bundle.storage_ids.insert(id);
                     }

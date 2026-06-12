@@ -145,7 +145,7 @@ use mz_secrets::cache::CachingSecretsReader;
 use mz_secrets::{SecretsController, SecretsReader};
 use mz_sql::ast::{Raw, Statement};
 use mz_sql::catalog::{CatalogCluster, EnvironmentId};
-use mz_sql::names::{QualifiedItemName, ResolvedIds, SchemaSpecifier};
+use mz_sql::names::{QualifiedItemName, ResolvedIds, SchemaId, SchemaSpecifier};
 use mz_sql::optimizer_metrics::OptimizerMetrics;
 use mz_sql::plan::{
     self, AlterSinkPlan, ConnectionDetails, CreateConnectionPlan, HirRelationExpr,
@@ -2005,6 +2005,37 @@ pub struct Coordinator {
 
     /// Pre-allocated pool of user IDs to amortize persist writes across DDL operations.
     user_id_pool: IdPool,
+
+    /// In-memory state for every active schema branch, keyed by the branch
+    /// schema's `SchemaId`. Populated at bootstrap from durable
+    /// `BranchDescriptor` rows, augmenting each one with the live
+    /// `SinceHandle` recovered via [`mz_persist_client::branch::recover_read_hold`].
+    #[derivative(Debug = "ignore")]
+    branches: BTreeMap<SchemaId, BranchState>,
+}
+
+/// In-memory view of a schema branch.
+///
+/// Combines the durable [`mz_catalog::durable::BranchDescriptor`] with the
+/// runtime [`mz_persist_client::critical::SinceHandle`]s that hold back the
+/// source shards' `since` for each forked table.
+///
+/// Fields are read by the branch read/write paths wired up in a follow-up
+/// commit; for now their job is to keep the persist holds alive.
+#[allow(dead_code)]
+pub(crate) struct BranchState {
+    pub descriptor: mz_catalog::durable::BranchDescriptor,
+    /// Per-forked-table read holds, keyed by the branch's
+    /// `delta_catalog_id`.
+    pub holds: BTreeMap<
+        CatalogItemId,
+        mz_persist_client::critical::SinceHandle<
+            mz_storage_types::sources::SourceData,
+            (),
+            Timestamp,
+            mz_storage_types::StorageDiff,
+        >,
+    >,
 }
 
 impl Coordinator {
@@ -2139,6 +2170,18 @@ impl Coordinator {
         info!(
             "startup: coordinator init: bootstrap: storage collections init complete in {:?}",
             init_storage_collections_start.elapsed()
+        );
+
+        // Reconstitute branch read holds from durable `BranchDescriptor`
+        // rows. The persist primitives stay disabled (and this loop is a
+        // no-op) until `persist_enable_schema_branching` is on, but we run
+        // it after storage-collection init so the source shards exist.
+        let bootstrap_branches_start = Instant::now();
+        info!("startup: coordinator init: bootstrap: branch read-hold recovery beginning");
+        self.bootstrap_branches().await?;
+        info!(
+            "startup: coordinator init: bootstrap: branch read-hold recovery complete in {:?}",
+            bootstrap_branches_start.elapsed()
         );
 
         // The storage controller knows about the introspection collections now, so we can start
@@ -2353,6 +2396,11 @@ impl Coordinator {
                 | CatalogItem::Type(_)
                 | CatalogItem::Func(_)
                 | CatalogItem::Secret(_) => {}
+                // Forked tables are persist storage collections (their
+                // delta shard) but their compaction policy is managed via
+                // the branch's read-hold machinery, not the regular
+                // read-policy plumbing. Nothing to do here.
+                CatalogItem::ForkedTable(_) => {}
             }
         }
 
@@ -2837,6 +2885,62 @@ impl Coordinator {
     /// allows subsequent bootstrap logic to fetch metadata (such as frontiers) of arbitrary
     /// storage collections, without needing to worry about dependency order.
     ///
+    /// Reconstitute in-memory `BranchState` from durable `BranchDescriptor`
+    /// rows. For every active branch, recovers a [`SinceHandle`] per
+    /// forked-table read hold via
+    /// [`mz_persist_client::branch::recover_read_hold`].
+    ///
+    /// When the `persist_enable_schema_branching` dyncfg is off, the
+    /// recovery primitives refuse to run; we treat that as a startup error
+    /// rather than silently leaving holds unrecovered.
+    #[instrument]
+    async fn bootstrap_branches(&mut self) -> Result<(), AdapterError> {
+        // Collect descriptors first so we can release the catalog borrow
+        // before the async recover calls.
+        let descriptors: Vec<_> = self
+            .catalog()
+            .state()
+            .branches_by_schema_id()
+            .values()
+            .cloned()
+            .collect();
+        for descriptor in descriptors {
+            let mut holds = BTreeMap::new();
+            for forked in &descriptor.forked_tables {
+                let diagnostics = mz_persist_client::Diagnostics {
+                    shard_name: forked.table_name.clone(),
+                    handle_purpose: mz_persist_client::branch::BRANCH_HOLD_PURPOSE.to_string(),
+                };
+                let opaque = mz_persist_client::critical::Opaque::encode(&0u64);
+                let handle = mz_persist_client::branch::recover_read_hold::<
+                    mz_storage_types::sources::SourceData,
+                    (),
+                    Timestamp,
+                    mz_storage_types::StorageDiff,
+                >(
+                    &self.persist_client,
+                    forked.source_shard,
+                    forked.hold_reader_id.clone(),
+                    opaque,
+                    diagnostics,
+                )
+                .await
+                .map_err(|e| {
+                    AdapterError::Internal(format!(
+                        "failed to recover branch read hold for {}: {e}",
+                        forked.table_name
+                    ))
+                })?;
+                holds.insert(forked.delta_catalog_id, handle);
+            }
+            self.branches.insert(
+                descriptor.schema_id,
+                BranchState { descriptor, holds },
+            );
+        }
+        Ok(())
+    }
+
     /// `migrated_storage_collections` is a set of builtin storage collections that have been
     /// migrated and should be handled specially.
     #[instrument]
@@ -3021,6 +3125,11 @@ impl Coordinator {
                 | CatalogItem::Func(_)
                 | CatalogItem::Secret(_)
                 | CatalogItem::Connection(_) => (),
+                // TODO(branch): register the branch's delta shard as a
+                // storage collection with `source_for_fork` set on its
+                // `CollectionMetadata`. Deferred until the create path
+                // exists.
+                CatalogItem::ForkedTable(_) => (),
             }
         }
 
@@ -3411,7 +3520,8 @@ impl Coordinator {
                 | CatalogItem::Type(_)
                 | CatalogItem::Func(_)
                 | CatalogItem::Secret(_)
-                | CatalogItem::Connection(_) => (),
+                | CatalogItem::Connection(_)
+                | CatalogItem::ForkedTable(_) => (),
             }
         }
 
@@ -3443,7 +3553,8 @@ impl Coordinator {
                 | CatalogItem::Type(_)
                 | CatalogItem::Func(_)
                 | CatalogItem::Secret(_)
-                | CatalogItem::Connection(_) => continue,
+                | CatalogItem::Connection(_)
+                | CatalogItem::ForkedTable(_) => continue,
             };
             if let Some(plan) = self.catalog.try_get_physical_plan(&gid) {
                 catalog_ids.push(gid);
@@ -4743,6 +4854,7 @@ pub fn serve(
                     license_key,
                     user_id_pool: IdPool::empty(),
                     persist_client,
+                    branches: BTreeMap::new(),
                 };
                 let bootstrap = handle.block_on(async {
                     coord

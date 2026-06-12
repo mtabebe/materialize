@@ -367,6 +367,9 @@ impl<'a> DataflowBuilder<'a> {
                     CatalogItem::Log(log) => {
                         dataflow.import_source(*id, log.variant.desc().typ().clone(), monotonic);
                     }
+                    CatalogItem::ForkedTable(forked) => {
+                        dataflow.import_source(*id, forked.desc.typ().clone(), monotonic);
+                    }
                     CatalogItem::Sink(_)
                     | CatalogItem::Index(_)
                     | CatalogItem::Type(_)
@@ -552,7 +555,8 @@ impl<'a> DataflowBuilder<'a> {
                 | CatalogItem::Log(_)
                 | CatalogItem::MaterializedView(_)
                 | CatalogItem::Sink(_)
-                | CatalogItem::Func(_) => Ok(false),
+                | CatalogItem::Func(_)
+                | CatalogItem::ForkedTable(_) => Ok(false),
             }
         })?;
 

@@ -91,6 +91,9 @@ impl Catalog {
                                 .or_default()
                                 .insert(index.global_id());
                         }
+                        CatalogItem::ForkedTable(forked) => {
+                            id_bundle.storage_ids.insert(forked.global_id);
+                        }
                         CatalogItem::View(_)
                         | CatalogItem::Sink(_)
                         | CatalogItem::Type(_)
@@ -225,6 +228,13 @@ impl Catalog {
                         timelines.insert(TimelineContext::TimelineDependent(table.timeline()));
                     }
                     CatalogItem::Log(_) => {
+                        timelines.insert(TimelineContext::TimelineDependent(
+                            Timeline::EpochMilliseconds,
+                        ));
+                    }
+                    // Branched tables write to a delta shard on the realtime
+                    // timeline, like ordinary tables created via INSERT.
+                    CatalogItem::ForkedTable(_) => {
                         timelines.insert(TimelineContext::TimelineDependent(
                             Timeline::EpochMilliseconds,
                         ));

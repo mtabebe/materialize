@@ -1551,7 +1551,8 @@ impl Coordinator {
                     | CatalogItem::Index(_)
                     | CatalogItem::Type(_)
                     | CatalogItem::Func(_)
-                    | CatalogItem::Secret(_) => {
+                    | CatalogItem::Secret(_)
+                    | CatalogItem::ForkedTable(_) => {
                         // Other item types don't have connection dependencies
                         // that need updating.
                     }
@@ -1762,6 +1763,10 @@ impl CatalogImplication {
                 CatalogItem::Log(_) => {}
                 CatalogItem::Type(_) => {}
                 CatalogItem::Func(_) => {}
+                CatalogItem::ForkedTable(_) => {
+                    // Forked tables arrive through ParsedStateUpdateKind::BranchDescriptor,
+                    // not Item. Nothing to absorb here.
+                }
             },
             ParsedStateUpdateKind::TemporaryItem {
                 durable_item: _,
@@ -1801,6 +1806,9 @@ impl CatalogImplication {
                 CatalogItem::Log(_) => {}
                 CatalogItem::Type(_) => {}
                 CatalogItem::Func(_) => {}
+                CatalogItem::ForkedTable(_) => {
+                    // Forked tables cannot be temporary.
+                }
             },
             ParsedStateUpdateKind::Cluster {
                 durable_cluster: _,

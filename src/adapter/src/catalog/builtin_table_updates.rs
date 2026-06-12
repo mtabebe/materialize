@@ -605,6 +605,11 @@ impl CatalogState {
             CatalogItem::Connection(connection) => {
                 self.pack_connection_update(id, connection, diff)
             }
+            // TODO(branch): surface forked tables in `mz_tables` /
+            // `pg_class` once the catalog metadata story for branches is
+            // settled. Returning no rows keeps the bootstrap path
+            // building cleanly.
+            CatalogItem::ForkedTable(_) => vec![],
         };
 
         if !entry.item().is_temporary() {
