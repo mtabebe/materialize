@@ -262,6 +262,15 @@ pub fn describe(
                 discussion_no: None,
             });
         }
+        Statement::CreateBranch(_)
+        | Statement::DropBranch(_)
+        | Statement::Show(ShowStatement::ShowBranches(_))
+        | Statement::Show(ShowStatement::ShowBranchStatus(_)) => {
+            return Err(PlanError::Unsupported {
+                feature: "schema branching".to_string(),
+                discussion_no: None,
+            });
+        }
     };
 
     let desc = desc.with_params(scx.finalize_param_types()?);
@@ -452,6 +461,15 @@ pub fn plan(
         Statement::ExecuteUnitTest(_) => {
             return Err(PlanError::Unsupported {
                 feature: "EXECUTE UNIT TEST statement".to_string(),
+                discussion_no: None,
+            });
+        }
+        Statement::CreateBranch(_)
+        | Statement::DropBranch(_)
+        | Statement::Show(ShowStatement::ShowBranches(_))
+        | Statement::Show(ShowStatement::ShowBranchStatus(_)) => {
+            return Err(PlanError::Unsupported {
+                feature: "schema branching".to_string(),
                 discussion_no: None,
             });
         }
@@ -1091,6 +1109,8 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::CreateNetworkPolicy(_) => DDL,
             Statement::DropObjects(_) => DDL,
             Statement::DropOwned(_) => DDL,
+            Statement::CreateBranch(_) => DDL,
+            Statement::DropBranch(_) => DDL,
 
             // `ACL` statements.
             Statement::AlterOwner(_) => ACL,
@@ -1127,6 +1147,8 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::Show(ShowStatement::ShowCreateMaterializedView(_)) => Show,
             Statement::Show(ShowStatement::ShowCreateType(_)) => Show,
             Statement::Show(ShowStatement::ShowObjects(_)) => Show,
+            Statement::Show(ShowStatement::ShowBranches(_)) => Show,
+            Statement::Show(ShowStatement::ShowBranchStatus(_)) => Show,
 
             // SCL statements.
             Statement::Close(_) => SCL,

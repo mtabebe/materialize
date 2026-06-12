@@ -49,6 +49,7 @@ pub enum Statement<T: AstInfo> {
     CreateConnection(CreateConnectionStatement<T>),
     CreateDatabase(CreateDatabaseStatement),
     CreateSchema(CreateSchemaStatement),
+    CreateBranch(CreateBranchStatement),
     CreateWebhookSource(CreateWebhookSourceStatement<T>),
     CreateSource(CreateSourceStatement<T>),
     CreateSubsource(CreateSubsourceStatement<T>),
@@ -85,6 +86,7 @@ pub enum Statement<T: AstInfo> {
     Discard(DiscardStatement),
     DropObjects(DropObjectsStatement),
     DropOwned(DropOwnedStatement<T>),
+    DropBranch(DropBranchStatement),
     SetVariable(SetVariableStatement),
     ResetVariable(ResetVariableStatement),
     Show(ShowStatement<T>),
@@ -128,6 +130,7 @@ impl<T: AstInfo> AstDisplay for Statement<T> {
             Statement::CreateConnection(stmt) => f.write_node(stmt),
             Statement::CreateDatabase(stmt) => f.write_node(stmt),
             Statement::CreateSchema(stmt) => f.write_node(stmt),
+            Statement::CreateBranch(stmt) => f.write_node(stmt),
             Statement::CreateWebhookSource(stmt) => f.write_node(stmt),
             Statement::CreateSource(stmt) => f.write_node(stmt),
             Statement::CreateSubsource(stmt) => f.write_node(stmt),
@@ -164,6 +167,7 @@ impl<T: AstInfo> AstDisplay for Statement<T> {
             Statement::Discard(stmt) => f.write_node(stmt),
             Statement::DropObjects(stmt) => f.write_node(stmt),
             Statement::DropOwned(stmt) => f.write_node(stmt),
+            Statement::DropBranch(stmt) => f.write_node(stmt),
             Statement::SetVariable(stmt) => f.write_node(stmt),
             Statement::ResetVariable(stmt) => f.write_node(stmt),
             Statement::Show(stmt) => f.write_node(stmt),
@@ -210,6 +214,7 @@ pub fn statement_kind_label_value(kind: StatementKind) -> &'static str {
         StatementKind::CreateConnection => "create_connection",
         StatementKind::CreateDatabase => "create_database",
         StatementKind::CreateSchema => "create_schema",
+        StatementKind::CreateBranch => "create_branch",
         StatementKind::CreateWebhookSource => "create_webhook",
         StatementKind::CreateSource => "create_source",
         StatementKind::CreateSubsource => "create_subsource",
@@ -248,6 +253,7 @@ pub fn statement_kind_label_value(kind: StatementKind) -> &'static str {
         StatementKind::Discard => "discard",
         StatementKind::DropObjects => "drop_objects",
         StatementKind::DropOwned => "drop_owned",
+        StatementKind::DropBranch => "drop_branch",
         StatementKind::SetVariable => "set_variable",
         StatementKind::ResetVariable => "reset_variable",
         StatementKind::Show => "show",
@@ -583,6 +589,41 @@ impl AstDisplay for CreateSchemaStatement {
     }
 }
 impl_display!(CreateSchemaStatement);
+
+/// `CREATE BRANCH <name> FROM SCHEMA <schema>`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CreateBranchStatement {
+    pub name: UnresolvedSchemaName,
+    pub source: UnresolvedSchemaName,
+}
+
+impl AstDisplay for CreateBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("CREATE BRANCH ");
+        f.write_node(&self.name);
+        f.write_str(" FROM SCHEMA ");
+        f.write_node(&self.source);
+    }
+}
+impl_display!(CreateBranchStatement);
+
+/// `DROP BRANCH [IF EXISTS] <name>`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DropBranchStatement {
+    pub if_exists: bool,
+    pub name: UnresolvedSchemaName,
+}
+
+impl AstDisplay for DropBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("DROP BRANCH ");
+        if self.if_exists {
+            f.write_str("IF EXISTS ");
+        }
+        f.write_node(&self.name);
+    }
+}
+impl_display!(DropBranchStatement);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionDefaultAwsPrivatelink<T: AstInfo> {
@@ -3392,6 +3433,37 @@ impl AstDisplay for ShowVariableStatement {
 }
 impl_display!(ShowVariableStatement);
 
+/// `SHOW BRANCHES`
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShowBranchesStatement<T: AstInfo> {
+    pub filter: Option<ShowStatementFilter<T>>,
+}
+
+impl<T: AstInfo> AstDisplay for ShowBranchesStatement<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("SHOW BRANCHES");
+        if let Some(filter) = &self.filter {
+            f.write_str(" ");
+            f.write_node(filter);
+        }
+    }
+}
+impl_display_t!(ShowBranchesStatement);
+
+/// `SHOW BRANCH STATUS <name>`
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShowBranchStatusStatement {
+    pub name: UnresolvedSchemaName,
+}
+
+impl AstDisplay for ShowBranchStatusStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("SHOW BRANCH STATUS ");
+        f.write_node(&self.name);
+    }
+}
+impl_display!(ShowBranchStatusStatement);
+
 /// `INSPECT SHARD <id>`
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InspectShardStatement {
@@ -5252,6 +5324,8 @@ pub enum ShowStatement<T: AstInfo> {
     ShowCreateType(ShowCreateTypeStatement<T>),
     ShowVariable(ShowVariableStatement),
     InspectShard(InspectShardStatement),
+    ShowBranches(ShowBranchesStatement<T>),
+    ShowBranchStatus(ShowBranchStatusStatement),
 }
 
 impl<T: AstInfo> AstDisplay for ShowStatement<T> {
@@ -5270,6 +5344,8 @@ impl<T: AstInfo> AstDisplay for ShowStatement<T> {
             ShowStatement::ShowCreateType(stmt) => f.write_node(stmt),
             ShowStatement::ShowVariable(stmt) => f.write_node(stmt),
             ShowStatement::InspectShard(stmt) => f.write_node(stmt),
+            ShowStatement::ShowBranches(stmt) => f.write_node(stmt),
+            ShowStatement::ShowBranchStatus(stmt) => f.write_node(stmt),
         }
     }
 }

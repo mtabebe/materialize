@@ -3620,3 +3620,115 @@ DROP NETWORK POLICY if exists q
 DROP NETWORK POLICY IF EXISTS q
 =>
 DropObjects(DropObjectsStatement { object_type: NetworkPolicy, if_exists: true, names: [NetworkPolicy(Ident("q"))], cascade: false })
+
+parse-statement
+CREATE BRANCH branch_a FROM SCHEMA src
+----
+CREATE BRANCH branch_a FROM SCHEMA src
+=>
+CreateBranch(CreateBranchStatement { name: UnresolvedSchemaName([Ident("branch_a")]), source: UnresolvedSchemaName([Ident("src")]) })
+
+parse-statement
+CREATE BRANCH mydb.branch_a FROM SCHEMA mydb.src
+----
+CREATE BRANCH mydb.branch_a FROM SCHEMA mydb.src
+=>
+CreateBranch(CreateBranchStatement { name: UnresolvedSchemaName([Ident("mydb"), Ident("branch_a")]), source: UnresolvedSchemaName([Ident("mydb"), Ident("src")]) })
+
+parse-statement
+CREATE BRANCH branch_a
+----
+error: Expected FROM, found EOF
+CREATE BRANCH branch_a
+                      ^
+
+parse-statement
+CREATE BRANCH FROM SCHEMA src
+----
+error: Expected FROM, found SCHEMA
+CREATE BRANCH FROM SCHEMA src
+                   ^
+
+parse-statement
+CREATE BRANCH branch_a FROM SCHEMA
+----
+error: Expected identifier, found EOF
+CREATE BRANCH branch_a FROM SCHEMA
+                                  ^
+
+parse-statement
+DROP BRANCH branch_a
+----
+DROP BRANCH branch_a
+=>
+DropBranch(DropBranchStatement { if_exists: false, name: UnresolvedSchemaName([Ident("branch_a")]) })
+
+parse-statement
+DROP BRANCH IF EXISTS branch_a
+----
+DROP BRANCH IF EXISTS branch_a
+=>
+DropBranch(DropBranchStatement { if_exists: true, name: UnresolvedSchemaName([Ident("branch_a")]) })
+
+parse-statement
+DROP BRANCH mydb.branch_a
+----
+DROP BRANCH mydb.branch_a
+=>
+DropBranch(DropBranchStatement { if_exists: false, name: UnresolvedSchemaName([Ident("mydb"), Ident("branch_a")]) })
+
+parse-statement
+DROP BRANCH
+----
+error: Expected identifier, found EOF
+DROP BRANCH
+           ^
+
+parse-statement
+DROP BRANCH IF NOT EXISTS branch_a
+----
+error: Expected EXISTS, found NOT
+DROP BRANCH IF NOT EXISTS branch_a
+               ^
+
+parse-statement
+SHOW BRANCHES
+----
+SHOW BRANCHES
+=>
+Show(ShowBranches(ShowBranchesStatement { filter: None }))
+
+parse-statement
+SHOW BRANCHES LIKE '%'
+----
+SHOW BRANCHES LIKE '%'
+=>
+Show(ShowBranches(ShowBranchesStatement { filter: Some(Like("%")) }))
+
+parse-statement
+SHOW BRANCH STATUS branch_a
+----
+SHOW BRANCH STATUS branch_a
+=>
+Show(ShowBranchStatus(ShowBranchStatusStatement { name: UnresolvedSchemaName([Ident("branch_a")]) }))
+
+parse-statement
+SHOW BRANCH STATUS mydb.branch_a
+----
+SHOW BRANCH STATUS mydb.branch_a
+=>
+Show(ShowBranchStatus(ShowBranchStatusStatement { name: UnresolvedSchemaName([Ident("mydb"), Ident("branch_a")]) }))
+
+parse-statement
+SHOW BRANCH STATUS
+----
+error: Expected identifier, found EOF
+SHOW BRANCH STATUS
+                  ^
+
+parse-statement
+SHOW BRANCH branch_a
+----
+error: Expected end of statement, found identifier "branch_a"
+SHOW BRANCH branch_a
+            ^

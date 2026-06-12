@@ -2068,6 +2068,9 @@ fn plan_set_expr(
                 }
                 ShowStatement::ShowVariable(_) => bail_unsupported!("SHOW variable in subqueries"),
                 ShowStatement::InspectShard(_) => sql_bail!("unsupported INSPECT statement"),
+                ShowStatement::ShowBranches(_) | ShowStatement::ShowBranchStatus(_) => {
+                    bail_unsupported!("schema branching")
+                }
             }
         }
     }

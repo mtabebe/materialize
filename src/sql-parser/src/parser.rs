@@ -1945,6 +1945,9 @@ impl<'a> Parser<'a> {
         if self.peek_keyword(DATABASE) {
             self.parse_create_database()
                 .map_parser_err(StatementKind::CreateDatabase)
+        } else if self.peek_keyword(BRANCH) {
+            self.parse_create_branch()
+                .map_parser_err(StatementKind::CreateBranch)
         } else if self.peek_keyword(SCHEMA) {
             self.parse_create_schema()
                 .map_parser_err(StatementKind::CreateSchema)
@@ -2057,6 +2060,18 @@ impl<'a> Parser<'a> {
         Ok(Statement::CreateSchema(CreateSchemaStatement {
             name,
             if_not_exists,
+        }))
+    }
+
+    fn parse_create_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let name = self.parse_schema_name()?;
+        self.expect_keyword(FROM)?;
+        self.expect_keyword(SCHEMA)?;
+        let source = self.parse_schema_name()?;
+        Ok(Statement::CreateBranch(CreateBranchStatement {
+            name,
+            source,
         }))
     }
 
@@ -4696,10 +4711,22 @@ impl<'a> Parser<'a> {
         if self.parse_keyword(OWNED) {
             self.parse_drop_owned()
                 .map_parser_err(StatementKind::DropOwned)
+        } else if self.parse_keyword(BRANCH) {
+            self.parse_drop_branch()
+                .map_parser_err(StatementKind::DropBranch)
         } else {
             self.parse_drop_objects()
                 .map_parser_err(StatementKind::DropObjects)
         }
+    }
+
+    fn parse_drop_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        let if_exists = self.parse_if_exists()?;
+        let name = self.parse_schema_name()?;
+        Ok(Statement::DropBranch(DropBranchStatement {
+            if_exists,
+            name,
+        }))
     }
 
     fn parse_drop_objects(&mut self) -> Result<Statement<Raw>, ParserError> {
@@ -7894,6 +7921,16 @@ impl<'a> Parser<'a> {
         }
         if self.parse_one_of_keywords(&[COLUMNS, FIELDS]).is_some() {
             self.parse_show_columns()
+        } else if self.parse_keyword(BRANCHES) {
+            let filter = self.parse_show_statement_filter()?;
+            Ok(ShowStatement::ShowBranches(ShowBranchesStatement {
+                filter,
+            }))
+        } else if self.parse_keywords(&[BRANCH, STATUS]) {
+            let name = self.parse_schema_name()?;
+            Ok(ShowStatement::ShowBranchStatus(ShowBranchStatusStatement {
+                name,
+            }))
         } else if self.parse_keyword(OBJECTS) {
             let from = if self.parse_keywords(&[FROM]) {
                 Some(self.parse_schema_name()?)
