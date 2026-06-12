@@ -55,11 +55,12 @@ use mz_sql_parser::ast::{
     ClusterAlterOptionValue, ClusterAlterUntilReadyOption, ClusterAlterUntilReadyOptionName,
     ClusterFeature, ClusterFeatureName, ClusterOption, ClusterOptionName,
     ClusterScheduleOptionValue, ColumnDef, ColumnOption, CommentObjectType, CommentStatement,
-    ConnectionOption, ConnectionOptionName, CreateClusterReplicaStatement, CreateClusterStatement,
-    CreateConnectionOption, CreateConnectionOptionName, CreateConnectionStatement,
-    CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
+    ConnectionOption, ConnectionOptionName, CreateBranchStatement, CreateClusterReplicaStatement,
+    CreateClusterStatement, CreateConnectionOption, CreateConnectionOptionName,
+    CreateConnectionStatement, CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
     CreateMaterializedViewStatement, CreateNetworkPolicyStatement, CreateRoleStatement,
-    CreateSchemaStatement, CreateSecretStatement, CreateSinkConnection, CreateSinkOption,
+    CreateSchemaStatement, CreateSecretStatement,
+    CreateSinkConnection, CreateSinkOption,
     CreateSinkOptionName, CreateSinkStatement, CreateSourceConnection, CreateSourceOption,
     CreateSourceOptionName, CreateSourceStatement, CreateSubsourceOption,
     CreateSubsourceOptionName, CreateSubsourceStatement, CreateTableFromSourceStatement,
@@ -67,7 +68,8 @@ use mz_sql_parser::ast::{
     CreateTypeMapOption, CreateTypeMapOptionName, CreateTypeStatement, CreateViewStatement,
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
-    DocOnIdentifier, DocOnSchema, DropObjectsStatement, DropOwnedStatement, Expr, Format,
+    DocOnIdentifier, DocOnSchema, DropBranchStatement, DropObjectsStatement, DropOwnedStatement,
+    Expr, Format,
     FormatSpecifier, IcebergSinkConfigOption, Ident, IfExistsBehavior, IndexOption,
     IndexOptionName, KafkaSinkConfigOption, KeyConstraint, LoadGeneratorOption,
     LoadGeneratorOptionName, MaterializedViewOption, MaterializedViewOptionName, MySqlConfigOption,
@@ -151,12 +153,14 @@ use crate::plan::{
     AlterSchemaSwapPlan, AlterSecretPlan, AlterSetClusterPlan, AlterSinkPlan,
     AlterSourceTimestampIntervalPlan, AlterSystemResetAllPlan, AlterSystemResetPlan,
     AlterSystemSetPlan, AlterTablePlan, ClusterSchedule, CommentPlan, ComputeReplicaConfig,
-    ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateClusterManagedPlan,
-    CreateClusterPlan, CreateClusterReplicaPlan, CreateClusterUnmanagedPlan, CreateClusterVariant,
-    CreateConnectionPlan, CreateDatabasePlan, CreateIndexPlan, CreateMaterializedViewPlan,
-    CreateNetworkPolicyPlan, CreateRolePlan, CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan,
-    CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc,
-    DropObjectsPlan, DropOwnedPlan, HirRelationExpr, Index, MaterializedView, NetworkPolicyRule,
+    ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateBranchPlan,
+    CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
+    CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
+    CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
+    CreateSchemaPlan,
+    CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan, CreateTypePlan,
+    CreateViewPlan, DataSourceDesc, DropBranchPlan, DropObjectsPlan, DropOwnedPlan,
+    HirRelationExpr, Index, MaterializedView, NetworkPolicyRule,
     NetworkPolicyRuleAction, NetworkPolicyRuleDirection, Plan, PlanClusterOption, PlanNotice,
     PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink, Source, Table, TableDataSource, Type,
     VariableValue, View, WebhookBodyFormat, WebhookHeaderFilters, WebhookHeaders,
@@ -266,6 +270,143 @@ pub fn plan_create_schema(
         database_spec,
         schema_name,
         if_not_exists,
+    }))
+}
+
+pub fn describe_create_branch(
+    _: &StatementContext,
+    _: CreateBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn plan_create_branch(
+    scx: &StatementContext,
+    CreateBranchStatement { name, source }: CreateBranchStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_SCHEMA_BRANCHING_SQL)?;
+
+    let active_db = match scx.catalog.active_database() {
+        Some(id) => id.clone(),
+        None => sql_bail!("no active database"),
+    };
+    let active_db_spec = ResolvedDatabaseSpecifier::Id(active_db);
+
+    // Resolve and validate the source schema: must exist, must live in the
+    // current database, and must not itself be a branch.
+    let source_schema = scx.resolve_schema(source.clone())?;
+    let source_db_spec = source_schema.database();
+    if source_db_spec != &active_db_spec {
+        sql_bail!(
+            "source schema {} is not in the current database",
+            source.to_ast_string_simple()
+        );
+    }
+    let source_schema_id = source_schema.id().clone();
+
+    // TODO(branch): reject sub-branches once `BranchDescriptor` lookups are
+    // reachable from the planner. Branches aren't a distinct catalog kind
+    // yet, so there is nothing to check here.
+
+    // Reject if the source schema contains a source or sink.
+    for item_id in source_schema.item_ids() {
+        let item = scx.catalog.get_item(&item_id);
+        match item.item_type() {
+            CatalogItemType::Source | CatalogItemType::Sink => {
+                sql_bail!(
+                    "cannot branch schema {}: contains {} {}",
+                    source.to_ast_string_simple(),
+                    item.item_type(),
+                    item.name().item.quoted(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // Branch name must be unique within the database. A branch is a
+    // schema, so a collision shows up as an existing schema.
+    if name.0.len() > 2 {
+        sql_bail!("branch name {} has more than two components", name);
+    }
+    let mut name_parts = name.0.clone();
+    let branch_ident = name_parts
+        .pop()
+        .expect("schema names always have at least one component");
+    let branch_name = normalize::ident(branch_ident);
+    let branch_db_spec = match name_parts.pop() {
+        None => active_db_spec.clone(),
+        Some(db_ident) => {
+            let db = scx.resolve_database(&UnresolvedDatabaseName(db_ident))?;
+            ResolvedDatabaseSpecifier::Id(db.id())
+        }
+    };
+    if branch_db_spec != active_db_spec {
+        sql_bail!(
+            "branch {} must be created in the current database",
+            name.to_ast_string_simple()
+        );
+    }
+    if scx
+        .catalog
+        .resolve_schema_in_database(&branch_db_spec, &branch_name)
+        .is_ok()
+    {
+        sql_bail!("schema {} already exists", name.to_ast_string_simple());
+    }
+
+    Ok(Plan::CreateBranch(CreateBranchPlan {
+        database_spec: branch_db_spec,
+        branch_name,
+        source_schema_id,
+    }))
+}
+
+pub fn describe_drop_branch(
+    _: &StatementContext,
+    _: DropBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn plan_drop_branch(
+    scx: &StatementContext,
+    DropBranchStatement { if_exists, name }: DropBranchStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_SCHEMA_BRANCHING_SQL)?;
+
+    let active_db = match scx.catalog.active_database() {
+        Some(id) => id.clone(),
+        None => sql_bail!("no active database"),
+    };
+    let active_db_spec = ResolvedDatabaseSpecifier::Id(active_db);
+
+    if name.0.len() > 2 {
+        sql_bail!("branch name {} has more than two components", name);
+    }
+    let mut name_parts = name.0.clone();
+    let branch_ident = name_parts
+        .pop()
+        .expect("schema names always have at least one component");
+    let branch_name = normalize::ident(branch_ident);
+    let branch_db_spec = match name_parts.pop() {
+        None => active_db_spec.clone(),
+        Some(db_ident) => {
+            let db = scx.resolve_database(&UnresolvedDatabaseName(db_ident))?;
+            ResolvedDatabaseSpecifier::Id(db.id())
+        }
+    };
+    if branch_db_spec != active_db_spec {
+        sql_bail!(
+            "branch {} must be dropped from the current database",
+            name.to_ast_string_simple()
+        );
+    }
+
+    Ok(Plan::DropBranch(DropBranchPlan {
+        database_spec: branch_db_spec,
+        branch_name,
+        if_exists,
     }))
 }
 

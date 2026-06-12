@@ -1,0 +1,128 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Smoke test the parser, planner, and sequencer for schema branching
+# statements. The test checks four things:
+#
+#   * the feature flag still gates everything when off,
+#   * the four shapes parse and reach the planner when on,
+#   * validation errors come back from planning, and
+#   * the sequencer rejects CREATE/DROP as unsupported while SHOW
+#     returns an empty result set.
+#
+# Catalog state, read holds, and two-shard reads aren't exercised here.
+
+mode cockroach
+
+reset-server
+
+# ---------------------------------------------------------------------------
+# Feature flag off: every branch statement should fail at planning.
+# ---------------------------------------------------------------------------
+
+statement error schema branching .* is not available
+CREATE BRANCH b FROM SCHEMA public
+
+statement error schema branching .* is not available
+DROP BRANCH b
+
+statement error schema branching .* is not available
+DROP BRANCH IF EXISTS b
+
+statement error schema branching .* is not available
+SHOW BRANCHES
+
+statement error schema branching .* is not available
+SHOW BRANCH STATUS b
+
+# ---------------------------------------------------------------------------
+# Flip the flag on for the rest of the file.
+# ---------------------------------------------------------------------------
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_schema_branching_sql = true
+----
+COMPLETE 0
+
+# ---------------------------------------------------------------------------
+# SHOW BRANCHES / SHOW BRANCH STATUS return empty result sets for now.
+# ---------------------------------------------------------------------------
+
+query TTTTT
+SHOW BRANCHES
+----
+
+query TTTTT
+SHOW BRANCHES LIKE '%'
+----
+
+query TTIIT
+SHOW BRANCH STATUS missing
+----
+
+# ---------------------------------------------------------------------------
+# Set up a tables-only source schema for the validation checks.
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE SCHEMA src
+
+statement ok
+CREATE TABLE src.t1 (a int)
+
+statement ok
+CREATE TABLE src.t2 (a int)
+
+# Source schema does not exist.
+statement error unknown schema 'nope'
+CREATE BRANCH b FROM SCHEMA nope
+
+# Branch name collides with an existing schema in the same database.
+statement error schema public already exists
+CREATE BRANCH public FROM SCHEMA src
+
+# Otherwise valid CREATE BRANCH reaches the sequencer, which
+# rejects with "unsupported" for now. The executor lands separately.
+statement error schema branch DDL statements are not supported
+CREATE BRANCH b FROM SCHEMA src
+
+# DROP BRANCH (with and without IF EXISTS) also reaches the sequencer.
+statement error schema branch DDL statements are not supported
+DROP BRANCH b
+
+statement error schema branch DDL statements are not supported
+DROP BRANCH IF EXISTS b
+
+# ---------------------------------------------------------------------------
+# A source schema containing a source is rejected at planning.
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE SCHEMA src_with_source
+
+statement ok
+CREATE SOURCE src_with_source.s FROM LOAD GENERATOR COUNTER
+
+statement error cannot branch schema src_with_source: contains source "s"
+CREATE BRANCH b FROM SCHEMA src_with_source
+
+# ---------------------------------------------------------------------------
+# Tear down and restore default state.
+# ---------------------------------------------------------------------------
+
+statement ok
+DROP SCHEMA src CASCADE
+
+statement ok
+DROP SCHEMA src_with_source CASCADE
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_schema_branching_sql = false
+----
+COMPLETE 0

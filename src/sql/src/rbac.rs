@@ -1627,6 +1627,44 @@ fn generate_rbac_requirements(
         | Plan::Execute(plan::ExecutePlan { name: _, params: _ })
         | Plan::Deallocate(plan::DeallocatePlan { name: _ })
         | Plan::Raise(plan::RaisePlan { severity: _ }) => Default::default(),
+        Plan::CreateBranch(plan::CreateBranchPlan {
+            database_spec,
+            branch_name: _,
+            source_schema_id,
+        }) => {
+            let mut privileges = vec![];
+            // CREATE on the database that will hold the branch schema.
+            if let ResolvedDatabaseSpecifier::Id(database_id) = database_spec {
+                privileges.push((
+                    SystemObjectId::Object(database_id.into()),
+                    AclMode::CREATE,
+                    role_id,
+                ));
+            }
+            // USAGE on the source schema. The branch also reads the
+            // source's tables, so SELECT on them is effectively required,
+            // but that check belongs on the forked items once they exist
+            // as real catalog entries, not here.
+            privileges.push((
+                SystemObjectId::Object(
+                    (database_spec.clone(), source_schema_id.clone()).into(),
+                ),
+                AclMode::USAGE,
+                role_id,
+            ));
+            RbacRequirements {
+                privileges,
+                item_usage: &CREATE_ITEM_USAGE,
+                ..Default::default()
+            }
+        }
+        // DROP BRANCH requires ownership of the branch. Branches are not
+        // catalog objects yet, so there is nothing to own; an ownership
+        // check will replace this once they are.
+        Plan::DropBranch(_) => RbacRequirements::default(),
+        // SHOW BRANCHES / SHOW BRANCH STATUS are visibility-filtered like
+        // other catalog views; no plan-level privilege requirement.
+        Plan::ShowBranches(_) | Plan::ShowBranchStatus(_) => RbacRequirements::default(),
     }
 }
 

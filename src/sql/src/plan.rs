@@ -134,6 +134,7 @@ pub enum Plan {
     CreateConnection(CreateConnectionPlan),
     CreateDatabase(CreateDatabasePlan),
     CreateSchema(CreateSchemaPlan),
+    CreateBranch(CreateBranchPlan),
     CreateRole(CreateRolePlan),
     CreateCluster(CreateClusterPlan),
     CreateClusterReplica(CreateClusterReplicaPlan),
@@ -152,11 +153,14 @@ pub enum Plan {
     DiscardAll,
     DropObjects(DropObjectsPlan),
     DropOwned(DropOwnedPlan),
+    DropBranch(DropBranchPlan),
     EmptyQuery,
     ShowAllVariables,
     ShowCreate(ShowCreatePlan),
     ShowColumns(ShowColumnsPlan),
     ShowVariable(ShowVariablePlan),
+    ShowBranches(ShowBranchesPlan),
+    ShowBranchStatus(ShowBranchStatusPlan),
     InspectShard(InspectShardPlan),
     SetVariable(SetVariablePlan),
     ResetVariable(ResetVariablePlan),
@@ -321,6 +325,8 @@ impl Plan {
                 PlanKind::ShowColumns,
                 PlanKind::ShowAllVariables,
                 PlanKind::InspectShard,
+                PlanKind::ShowBranches,
+                PlanKind::ShowBranchStatus,
             ],
             StatementKind::StartTransaction => &[PlanKind::StartTransaction],
             StatementKind::Subscribe => &[PlanKind::Subscribe],
@@ -328,8 +334,8 @@ impl Plan {
             StatementKind::ValidateConnection => &[PlanKind::ValidateConnection],
             StatementKind::AlterRetainHistory => &[PlanKind::AlterRetainHistory],
             StatementKind::ExecuteUnitTest => &[],
-            StatementKind::CreateBranch => &[],
-            StatementKind::DropBranch => &[],
+            StatementKind::CreateBranch => &[PlanKind::CreateBranch],
+            StatementKind::DropBranch => &[PlanKind::DropBranch],
         }
     }
 
@@ -339,6 +345,7 @@ impl Plan {
             Plan::CreateConnection(_) => "create connection",
             Plan::CreateDatabase(_) => "create database",
             Plan::CreateSchema(_) => "create schema",
+            Plan::CreateBranch(_) => "create branch",
             Plan::CreateRole(_) => "create role",
             Plan::CreateCluster(_) => "create cluster",
             Plan::CreateClusterReplica(_) => "create cluster replica",
@@ -374,11 +381,14 @@ impl Plan {
                 ObjectType::NetworkPolicy => "drop network policy",
             },
             Plan::DropOwned(_) => "drop owned",
+            Plan::DropBranch(_) => "drop branch",
             Plan::EmptyQuery => "do nothing",
             Plan::ShowAllVariables => "show all variables",
             Plan::ShowCreate(_) => "show create",
             Plan::ShowColumns(_) => "show columns",
             Plan::ShowVariable(_) => "show variable",
+            Plan::ShowBranches(_) => "show branches",
+            Plan::ShowBranchStatus(_) => "show branch status",
             Plan::InspectShard(_) => "inspect shard",
             Plan::SetVariable(_) => "set variable",
             Plan::ResetVariable(_) => "reset variable",
@@ -498,6 +508,8 @@ impl Plan {
             Plan::ShowCreate(_) => true,
             Plan::ShowColumns(_) => true,
             Plan::ShowVariable(_) => true,
+            Plan::ShowBranches(_) => true,
+            Plan::ShowBranchStatus(_) => true,
             Plan::InspectShard(_) => true,
             Plan::Subscribe(_) => true,
             Plan::CopyTo(_) => true,
@@ -554,6 +566,20 @@ pub struct CreateSchemaPlan {
     pub database_spec: ResolvedDatabaseSpecifier,
     pub schema_name: String,
     pub if_not_exists: bool,
+}
+
+#[derive(Debug)]
+pub struct CreateBranchPlan {
+    pub database_spec: ResolvedDatabaseSpecifier,
+    pub branch_name: String,
+    pub source_schema_id: SchemaSpecifier,
+}
+
+#[derive(Debug)]
+pub struct DropBranchPlan {
+    pub database_spec: ResolvedDatabaseSpecifier,
+    pub branch_name: String,
+    pub if_exists: bool,
 }
 
 #[derive(Debug)]
@@ -954,6 +980,16 @@ pub struct ShowColumnsPlan {
     pub id: CatalogItemId,
     pub select_plan: SelectPlan,
     pub new_resolved_ids: ResolvedIds,
+}
+
+#[derive(Debug)]
+pub struct ShowBranchesPlan {
+    pub rows: Vec<Row>,
+}
+
+#[derive(Debug)]
+pub struct ShowBranchStatusPlan {
+    pub rows: Vec<Row>,
 }
 
 #[derive(Debug)]

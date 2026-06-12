@@ -910,9 +910,12 @@ impl ExecuteResponse {
             DiscardAll => &[DiscardedAll],
             DropObjects => &[DroppedObject],
             DropOwned => &[DroppedOwned],
+            DropBranch => &[DroppedObject],
+            CreateBranch => &[CreatedSchema],
             PlanKind::EmptyQuery => &[ExecuteResponseKind::EmptyQuery],
             ExplainPlan | ExplainPushdown | ExplainTimestamp | Select | ShowAllVariables
-            | ShowCreate | ShowColumns | ShowVariable | InspectShard | ExplainSinkSchema => &[
+            | ShowCreate | ShowColumns | ShowVariable | ShowBranches | ShowBranchStatus
+            | InspectShard | ExplainSinkSchema => &[
                 ExecuteResponseKind::CopyTo,
                 SendingRowsStreaming,
                 SendingRowsImmediate,

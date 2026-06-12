@@ -98,6 +98,10 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::DiscardAll
         | Plan::DropObjects(_)
         | Plan::DropOwned(_)
+        | Plan::DropBranch(_)
+        | Plan::CreateBranch(_)
+        | Plan::ShowBranches(_)
+        | Plan::ShowBranchStatus(_)
         | Plan::EmptyQuery
         | Plan::ShowAllVariables
         | Plan::ShowCreate(_)

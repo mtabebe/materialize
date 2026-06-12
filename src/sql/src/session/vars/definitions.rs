@@ -2153,6 +2153,12 @@ feature_flags!(
         enable_for_item_parsing: true,
     },
     {
+        name: enable_schema_branching_sql,
+        desc: "schema branching SQL (CREATE BRANCH, DROP BRANCH, SHOW BRANCHES, SHOW BRANCH STATUS)",
+        default: false,
+        enable_for_item_parsing: true,
+    },
+    {
         name: enable_join_prioritize_arranged,
         desc: "Whether join planning should prioritize already-arranged keys over keys with more fields.",
         default: false,

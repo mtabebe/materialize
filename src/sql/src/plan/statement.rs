@@ -262,14 +262,13 @@ pub fn describe(
                 discussion_no: None,
             });
         }
-        Statement::CreateBranch(_)
-        | Statement::DropBranch(_)
-        | Statement::Show(ShowStatement::ShowBranches(_))
-        | Statement::Show(ShowStatement::ShowBranchStatus(_)) => {
-            return Err(PlanError::Unsupported {
-                feature: "schema branching".to_string(),
-                discussion_no: None,
-            });
+        Statement::CreateBranch(stmt) => ddl::describe_create_branch(&scx, stmt)?,
+        Statement::DropBranch(stmt) => ddl::describe_drop_branch(&scx, stmt)?,
+        Statement::Show(ShowStatement::ShowBranches(stmt)) => {
+            show::describe_show_branches(&scx, stmt)?
+        }
+        Statement::Show(ShowStatement::ShowBranchStatus(stmt)) => {
+            show::describe_show_branch_status(&scx, stmt)?
         }
     };
 
@@ -464,14 +463,11 @@ pub fn plan(
                 discussion_no: None,
             });
         }
-        Statement::CreateBranch(_)
-        | Statement::DropBranch(_)
-        | Statement::Show(ShowStatement::ShowBranches(_))
-        | Statement::Show(ShowStatement::ShowBranchStatus(_)) => {
-            return Err(PlanError::Unsupported {
-                feature: "schema branching".to_string(),
-                discussion_no: None,
-            });
+        Statement::CreateBranch(stmt) => ddl::plan_create_branch(scx, stmt),
+        Statement::DropBranch(stmt) => ddl::plan_drop_branch(scx, stmt),
+        Statement::Show(ShowStatement::ShowBranches(stmt)) => show::plan_show_branches(scx, stmt),
+        Statement::Show(ShowStatement::ShowBranchStatus(stmt)) => {
+            show::plan_show_branch_status(scx, stmt)
         }
     };
 

@@ -30,9 +30,10 @@ use query::QueryContext;
 
 use crate::ast::visit_mut::VisitMut;
 use crate::ast::{
-    SelectStatement, ShowColumnsStatement, ShowCreateIndexStatement, ShowCreateSinkStatement,
-    ShowCreateSourceStatement, ShowCreateTableStatement, ShowCreateViewStatement,
-    ShowObjectsStatement, ShowStatementFilter, Statement, Value,
+    SelectStatement, ShowBranchStatusStatement, ShowBranchesStatement, ShowColumnsStatement,
+    ShowCreateIndexStatement, ShowCreateSinkStatement, ShowCreateSourceStatement,
+    ShowCreateTableStatement, ShowCreateViewStatement, ShowObjectsStatement, ShowStatementFilter,
+    Statement, Value,
 };
 use crate::catalog::{CatalogItemType, SessionCatalog};
 use crate::names::{
@@ -44,8 +45,10 @@ use crate::plan::scope::Scope;
 use crate::plan::statement::ddl::unplan_create_cluster;
 use crate::plan::statement::{StatementContext, StatementDesc, dml};
 use crate::plan::{
-    HirRelationExpr, Params, Plan, PlanError, ShowColumnsPlan, ShowCreatePlan, query, transform_ast,
+    HirRelationExpr, Params, Plan, PlanError, ShowBranchStatusPlan, ShowBranchesPlan,
+    ShowColumnsPlan, ShowCreatePlan, query, transform_ast,
 };
+use crate::session::vars;
 
 pub fn describe_show_create_view(
     _: &StatementContext,
@@ -1279,4 +1282,53 @@ fn humanize_sql_for_show_create(
             },
         },
     ))
+}
+
+pub fn describe_show_branches(
+    _: &StatementContext,
+    _: ShowBranchesStatement<Aug>,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("name", SqlScalarType::String.nullable(false))
+            .with_column("source_schema", SqlScalarType::String.nullable(false))
+            .with_column("branch_ts", SqlScalarType::MzTimestamp.nullable(false))
+            .with_column("status", SqlScalarType::String.nullable(false))
+            .with_column("created_at", SqlScalarType::TimestampTz { precision: None }.nullable(false))
+            .finish(),
+    )))
+}
+
+pub fn plan_show_branches(
+    scx: &StatementContext,
+    _: ShowBranchesStatement<Aug>,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_SCHEMA_BRANCHING_SQL)?;
+    // TODO(branch): populate from `BranchDescriptor` once it is reachable
+    // from the planner. The planner can't see branch state yet, so the
+    // result is always empty.
+    Ok(Plan::ShowBranches(ShowBranchesPlan { rows: vec![] }))
+}
+
+pub fn describe_show_branch_status(
+    _: &StatementContext,
+    _: ShowBranchStatusStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("branch_ts", SqlScalarType::MzTimestamp.nullable(false))
+            .with_column("source_upper", SqlScalarType::MzTimestamp.nullable(true))
+            .with_column("lag_ms", SqlScalarType::Int64.nullable(true))
+            .with_column("local_writes", SqlScalarType::Int64.nullable(false))
+            .with_column("hydration", SqlScalarType::String.nullable(false))
+            .finish(),
+    )))
+}
+
+pub fn plan_show_branch_status(
+    scx: &StatementContext,
+    _: ShowBranchStatusStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_SCHEMA_BRANCHING_SQL)?;
+    Ok(Plan::ShowBranchStatus(ShowBranchStatusPlan { rows: vec![] }))
 }

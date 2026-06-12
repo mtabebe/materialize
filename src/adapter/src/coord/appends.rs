@@ -987,6 +987,10 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::DiscardAll
         | Plan::DropObjects(_)
         | Plan::DropOwned(_)
+        | Plan::DropBranch(_)
+        | Plan::CreateBranch(_)
+        | Plan::ShowBranches(_)
+        | Plan::ShowBranchStatus(_)
         | Plan::EmptyQuery
         | Plan::ShowAllVariables
         | Plan::ShowCreate(_)

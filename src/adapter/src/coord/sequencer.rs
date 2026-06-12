@@ -688,6 +688,17 @@ impl Coordinator {
                         ctx.retire(res);
                     });
                 }
+                Plan::CreateBranch(_) | Plan::DropBranch(_) => {
+                    ctx.retire(Err(AdapterError::Unsupported(
+                        "schema branch DDL statements",
+                    )));
+                }
+                Plan::ShowBranches(plan) => {
+                    ctx.retire(Ok(Self::send_immediate_rows(plan.rows)));
+                }
+                Plan::ShowBranchStatus(plan) => {
+                    ctx.retire(Ok(Self::send_immediate_rows(plan.rows)));
+                }
             }
         }
         .instrument(tracing::debug_span!("coord::sequencer::sequence_plan"))
