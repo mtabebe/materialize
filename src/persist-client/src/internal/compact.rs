@@ -552,6 +552,9 @@ where
                 for part in &res.output.parts {
                     part_deletes.add(part);
                 }
+                // The output that's being thrown away was never committed,
+                // so no external manifest can reference its blobs. Pass the
+                // noop gate.
                 part_deletes
                     .delete(
                         machine.applier.state_versions.blob.as_ref(),
@@ -559,6 +562,7 @@ where
                         GC_BLOB_DELETE_CONCURRENCY_LIMIT.get(&machine.applier.cfg),
                         &*metrics,
                         &metrics.retries.external.compaction_noop_delete,
+                        &crate::internal::gc::NoopBlobRefCheck,
                     )
                     .await;
             }
