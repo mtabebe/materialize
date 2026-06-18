@@ -2127,6 +2127,210 @@ mod tests {
 
     #[mz_persist_proc::test(tokio::test)]
     #[cfg_attr(miri, ignore)] // too slow
+    async fn initialize_from_snapshot_rejects_mismatched_upper(dyncfgs: ConfigUpdates) {
+        use crate::internal::machine::{InitializeFromSnapshotError, Machine};
+        use crate::rpc::NoopPubSubSender;
+
+        let cache = new_test_client_cache(&dyncfgs);
+        let client = cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .expect("client");
+
+        let shard_id = ShardId::new();
+        let state_versions = Arc::new(StateVersions::new(
+            client.cfg.clone(),
+            Arc::clone(&client.consensus),
+            Arc::clone(&client.blob),
+            Arc::clone(&client.metrics),
+        ));
+
+        // Supplying an upper that doesn't match the supplied batches (here:
+        // no batches, but a non-minimum upper) must be a hard error so we
+        // catch bookkeeping mistakes at the call site rather than installing
+        // an inconsistent shard.
+        let err = Machine::<String, String, u64, i64>::initialize_from_snapshot(
+            client.cfg.clone(),
+            shard_id,
+            vec![],
+            Antichain::from_elem(5u64),
+            Arc::clone(&client.metrics),
+            Arc::clone(&state_versions),
+            Arc::new(StateCache::new(
+                &client.cfg,
+                Arc::clone(&client.metrics),
+                Arc::new(NoopPubSubSender),
+            )),
+            Arc::clone(&client.pubsub_sender),
+            Arc::clone(&client.isolated_runtime),
+            Diagnostics::for_tests(),
+        )
+        .await
+        .expect_err("should reject mismatched upper");
+        assert!(matches!(err, InitializeFromSnapshotError::InvalidArgs(_)));
+
+        // The empty/minimum case succeeds (no batches, default upper).
+        let _machine = Machine::<String, String, u64, i64>::initialize_from_snapshot(
+            client.cfg.clone(),
+            shard_id,
+            vec![],
+            Antichain::from_elem(u64::minimum()),
+            Arc::clone(&client.metrics),
+            Arc::clone(&state_versions),
+            Arc::new(StateCache::new(
+                &client.cfg,
+                Arc::clone(&client.metrics),
+                Arc::new(NoopPubSubSender),
+            )),
+            Arc::clone(&client.pubsub_sender),
+            Arc::clone(&client.isolated_runtime),
+            Diagnostics::for_tests(),
+        )
+        .await
+        .expect("empty bootstrap should succeed");
+    }
+
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn initialize_from_snapshot_round_trip(dyncfgs: ConfigUpdates) {
+        use crate::internal::machine::{InitializeFromSnapshotError, Machine};
+        use crate::internal::state::{BatchPart, RunPart};
+        use crate::internal::paths::PartialBatchKey;
+        use crate::rpc::NoopPubSubSender;
+
+        let data = [
+            (("a".to_owned(), "alpha".to_owned()), 1u64, 1i64),
+            (("b".to_owned(), "beta".to_owned()), 2u64, 1i64),
+            (("c".to_owned(), "gamma".to_owned()), 3u64, 1i64),
+        ];
+
+        // One PersistClient backs both shards so they share the same blob and
+        // consensus stores. That's what lets shard B's manifest reach shard A's
+        // blobs through absolute keys.
+        let cache = new_test_client_cache(&dyncfgs);
+        let client = cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .expect("client");
+
+        let shard_a = ShardId::new();
+        let (mut write_a, read_a) = client
+            .expect_open::<String, String, u64, i64>(shard_a)
+            .await;
+        write_a.expect_compare_and_append(&data, 0, 4).await;
+
+        // Pull the trace's batches out of shard A. These have relative keys
+        // pointing at shard A's blob namespace.
+        let source_batches = read_a.machine.applier.all_batches();
+        assert!(
+            source_batches.iter().any(|b| !b.is_empty()),
+            "shard A should have at least one non-empty batch"
+        );
+
+        // Rewrite every part's key to an absolute path that includes shard A's
+        // id, and stamp every inherited batch with `cutoff_ts = Some(3)`.
+        // Bridging an upper of 4 means cutoff_ts = 3 keeps every update we
+        // wrote (the highest write was at ts=3).
+        let branch_ts = 3u64;
+        let mut snapshot_batches: Vec<_> = source_batches
+            .into_iter()
+            .map(|mut batch| {
+                for part in batch.parts.iter_mut() {
+                    if let RunPart::Single(BatchPart::Hollow(hollow)) = part {
+                        let absolute = format!("{}/{}", shard_a, hollow.key);
+                        hollow.key = PartialBatchKey::Absolute(absolute);
+                    }
+                }
+                batch.cutoff_ts = Some(branch_ts);
+                batch
+            })
+            .collect();
+        // Pad with an empty bridging batch if needed so the upper lines up.
+        let last_upper = snapshot_batches
+            .iter()
+            .map(|b| b.desc.upper().clone())
+            .max_by(|a, b| {
+                if PartialOrder::less_equal(a, b) {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            })
+            .unwrap_or_else(|| Antichain::from_elem(0u64));
+        let target_upper = Antichain::from_elem(4u64);
+        if last_upper != target_upper {
+            snapshot_batches.push(crate::internal::state::HollowBatch::new_run(
+                differential_dataflow::trace::Description::new(
+                    last_upper,
+                    target_upper.clone(),
+                    Antichain::from_elem(0u64),
+                ),
+                vec![],
+                0,
+            ));
+        }
+
+        // Initialize shard B from the rewritten batches.
+        let shard_b = ShardId::new();
+        let state_versions = Arc::new(StateVersions::new(
+            client.cfg.clone(),
+            Arc::clone(&client.consensus),
+            Arc::clone(&client.blob),
+            Arc::clone(&client.metrics),
+        ));
+        let _machine_b = Machine::<String, String, u64, i64>::initialize_from_snapshot(
+            client.cfg.clone(),
+            shard_b,
+            snapshot_batches,
+            target_upper,
+            Arc::clone(&client.metrics),
+            Arc::clone(&state_versions),
+            Arc::new(StateCache::new(
+                &client.cfg,
+                Arc::clone(&client.metrics),
+                Arc::new(NoopPubSubSender),
+            )),
+            Arc::clone(&client.pubsub_sender),
+            Arc::clone(&client.isolated_runtime),
+            Diagnostics::for_tests(),
+        )
+        .await
+        .expect("initialize_from_snapshot succeeds");
+
+        // Open a normal ReadHandle against shard B and confirm the data that
+        // was written to shard A is what comes back.
+        let (_write_b, mut read_b) = client
+            .expect_open::<String, String, u64, i64>(shard_b)
+            .await;
+        assert_eq!(
+            read_b.expect_snapshot_and_fetch(3).await,
+            all_ok(&data, 3)
+        );
+
+        // Calling initialize_from_snapshot a second time on an already-
+        // initialized shard fails.
+        let err = Machine::<String, String, u64, i64>::initialize_from_snapshot(
+            client.cfg.clone(),
+            shard_b,
+            vec![],
+            Antichain::from_elem(0u64),
+            Arc::clone(&client.metrics),
+            Arc::clone(&state_versions),
+            Arc::clone(&client.shared_states),
+            Arc::clone(&client.pubsub_sender),
+            Arc::clone(&client.isolated_runtime),
+            Diagnostics::for_tests(),
+        )
+        .await
+        .expect_err("re-init should fail");
+        assert!(matches!(
+            err,
+            InitializeFromSnapshotError::AlreadyInitialized
+        ));
+    }
+
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
     async fn cutoff_ts_filters_updates_above_threshold(dyncfgs: ConfigUpdates) {
         let data = [
             (("a".to_owned(), "one".to_owned()), 1u64, 1i64),
