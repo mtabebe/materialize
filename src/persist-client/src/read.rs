@@ -1232,10 +1232,12 @@ where
             memory_budget_bytes,
         );
         for batch in batches {
+            let cutoff_ts = batch.cutoff_ts.clone();
             for (meta, run) in batch.runs() {
                 consolidator.enqueue_run(
                     &batch.desc,
                     meta,
+                    cutoff_ts.clone(),
                     run.into_iter()
                         .filter(|p| should_fetch_part(p.stats()))
                         .cloned(),

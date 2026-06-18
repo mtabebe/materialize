@@ -892,7 +892,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
 
                         let run_refs: Vec<_> = runs
                             .iter()
-                            .map(|(meta, run)| (&compact_desc, meta, run.as_slice()))
+                            .map(|(meta, run)| (&compact_desc, None, meta, run.as_slice()))
                             .collect();
 
                         let output_batch = Compactor::<K, V, T, D>::compact_runs(
