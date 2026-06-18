@@ -368,8 +368,13 @@ impl StateVersions {
                             // TODO: Would be nice to include these too, but we lose the info atm.
                             RunPart::Single(BatchPart::Inline { .. }) => None,
                         }?;
+                        // Absolute keys point into another shard's blob namespace
+                        // and don't carry a local writer prefix; skip them here.
+                        if key.is_absolute() {
+                            return None;
+                        }
                         // Carefully avoid any String allocs by splitting.
-                        let (writer_key, _) = key.0.split_once('/')?;
+                        let (writer_key, _) = key.as_str().split_once('/')?;
                         match &writer_key[..1] {
                             "w" => Some(("old", part.encoded_size_bytes())),
                             "n" => Some((&writer_key[1..], part.encoded_size_bytes())),

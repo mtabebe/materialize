@@ -1268,7 +1268,7 @@ mod tests {
                     .into_iter()
                     .map(|encoded_size_bytes| {
                         RunPart::Single(BatchPart::Hollow(HollowBatchPart {
-                            key: PartialBatchKey(
+                            key: PartialBatchKey::Relative(
                                 "n0000000/p00000000-0000-0000-0000-000000000000".into(),
                             ),
                             meta: Default::default(),

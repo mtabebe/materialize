@@ -1290,7 +1290,7 @@ where
             cfg,
             metrics,
             registered_desc,
-            &part.key.0,
+            part.key.as_str(),
             part.ts_rewrite.as_ref(),
             parsed,
         )
