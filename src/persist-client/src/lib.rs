@@ -2125,6 +2125,110 @@ mod tests {
         assert!(is_finalized, "shard must still be finalized");
     }
 
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn cutoff_ts_filters_updates_above_threshold(dyncfgs: ConfigUpdates) {
+        let data = [
+            (("a".to_owned(), "one".to_owned()), 1u64, 1i64),
+            (("b".to_owned(), "two".to_owned()), 2u64, 1i64),
+            (("c".to_owned(), "three".to_owned()), 3u64, 1i64),
+        ];
+
+        let shard_id = ShardId::new();
+        let client = new_test_client(&dyncfgs).await;
+        let (mut write, mut read) = client
+            .expect_open::<String, String, u64, i64>(shard_id)
+            .await;
+
+        write.expect_compare_and_append(&data, 0, 4).await;
+
+        // Fetch all leased parts straight through the fetch path with no
+        // cutoff and confirm every row makes it out: this is the baseline
+        // before we tweak anything.
+        let baseline_parts = read
+            .snapshot(Antichain::from_elem(3))
+            .await
+            .expect("snapshot");
+        let mut baseline = fetch_all_via_batch_fetcher::<String, String, u64, i64>(
+            &client,
+            shard_id,
+            baseline_parts,
+        )
+        .await;
+        baseline.sort();
+        let mut expected_baseline = all_ok(&data, 3);
+        expected_baseline.sort();
+        assert_eq!(baseline, expected_baseline);
+
+        // Snapshot again, mutate each part's `cutoff_ts` so that any update
+        // beyond ts=2 is dropped on read, and verify the filter.
+        let mut cutoff_parts = read
+            .snapshot(Antichain::from_elem(3))
+            .await
+            .expect("snapshot");
+        for part in &mut cutoff_parts {
+            part.cutoff_ts = Some(2);
+        }
+        let mut cutoff_filtered = fetch_all_via_batch_fetcher::<String, String, u64, i64>(
+            &client,
+            shard_id,
+            cutoff_parts,
+        )
+        .await;
+        cutoff_filtered.sort();
+        let mut expected_filtered = all_ok(&data[..2], 3);
+        expected_filtered.sort();
+        assert_eq!(cutoff_filtered, expected_filtered);
+    }
+
+    /// Test helper: trade every `LeasedBatchPart` in `parts` for its decoded
+    /// updates by routing through `BatchFetcher`. The fetcher is the same path
+    /// `persist_source` uses, so this exercises the cutoff filter end-to-end.
+    async fn fetch_all_via_batch_fetcher<K, V, T, D>(
+        client: &PersistClient,
+        shard_id: ShardId,
+        parts: Vec<crate::fetch::LeasedBatchPart<T>>,
+    ) -> Vec<((K, V), T, D)>
+    where
+        K: Debug + Codec + Clone + Ord,
+        V: Debug + Codec + Clone + Ord,
+        T: Timestamp + Lattice + TotalOrder + Codec64 + Sync,
+        D: Monoid + Codec64 + Ord + Send + Sync,
+        K::Schema: Default,
+        V::Schema: Default,
+    {
+        let mut fetcher = client
+            .create_batch_fetcher::<K, V, T, D>(
+                shard_id,
+                Arc::new(K::Schema::default()),
+                Arc::new(V::Schema::default()),
+                false,
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("batch fetcher");
+
+        let mut out = Vec::new();
+        let mut leases = Vec::new();
+        for part in parts {
+            let (exch, lease) = part.into_exchangeable_part();
+            leases.push(lease);
+            let blob = fetcher
+                .fetch_leased_part(exch)
+                .await
+                .expect("valid usage")
+                .expect("blob present");
+            let mut decoded = blob.parse().part;
+            while let Some(((k, v), t, d)) =
+                decoded.next_with_storage(&mut None, &mut None)
+            {
+                out.push(((k, v), t, d));
+            }
+        }
+        drop(leases);
+        out
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(4096))]
 
