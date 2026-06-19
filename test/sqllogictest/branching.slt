@@ -1,0 +1,62 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Tests for the BRANCH DDL surface. The orchestration that actually creates
+# a branch is gated behind plumbing not in this MVP slice; these tests pin
+# the flag-off rejection (the user-facing default) and confirm that the
+# four BRANCH statements parse and surface a clear error when the flag is
+# off.
+
+mode cockroach
+
+# Default: the flag is off, so any BRANCH statement must error with a
+# message naming the flag. The exact error path runs through the planner
+# stub, which surfaces a `sql_bail!` mentioning `enable_branching`.
+
+query error CREATE BRANCH.*enable_branching.*off
+CREATE BRANCH nightly FROM SCHEMA public
+
+query error DROP BRANCH.*enable_branching.*off
+DROP BRANCH nightly
+
+query error DROP BRANCH.*enable_branching.*off
+DROP BRANCH IF EXISTS nightly
+
+query error SHOW BRANCHES.*enable_branching.*off
+SHOW BRANCHES
+
+query error SHOW BRANCH STATUS.*enable_branching.*off
+SHOW BRANCH STATUS nightly
+
+# Turning the flag on lets the statements plan; the sequencer surface
+# still returns Unsupported because the execution path is deferred.
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_branching = on
+----
+COMPLETE 0
+
+query error BRANCH execution path not implemented
+CREATE BRANCH nightly FROM SCHEMA public
+
+query error BRANCH execution path not implemented
+DROP BRANCH nightly
+
+query error BRANCH execution path not implemented
+SHOW BRANCHES
+
+query error BRANCH execution path not implemented
+SHOW BRANCH STATUS nightly
+
+# Reset the flag so this file doesn't pollute later tests.
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM RESET enable_branching
+----
+COMPLETE 0
