@@ -32,6 +32,7 @@ use crate::coord::Coordinator;
 use crate::coord::branch::commit::{
     BranchIdentity, BranchedObject, persist_branch_state,
 };
+use crate::coord::branch::pick_branch_ts;
 use crate::session::Session;
 
 impl Coordinator {
@@ -135,7 +136,50 @@ impl Coordinator {
 
         let branch_id = Uuid::new_v4();
         let now_ms = (self.catalog().config().now)();
-        let branch_ts = self.peek_local_write_ts().await;
+        // Pick a branch_ts that is strictly below every source persist
+        // shard's actual upper. `storage_collections.collection_frontiers`
+        // reports an optimistically-advanced `write_frontier` that can run
+        // ahead of the persist shard's `compare_and_append` upper, so we
+        // open a writer per source shard to read the authoritative upper.
+        let mut source_uppers = Vec::with_capacity(source_tables.len());
+        for source in &source_tables {
+            let source_meta = self
+                .controller
+                .storage_collections
+                .collection_metadata(source.global_id)
+                .map_err(|err| {
+                    AdapterError::Unstructured(anyhow::anyhow!(
+                        "missing storage metadata for source table {}: {err:?}",
+                        source.name
+                    ))
+                })?;
+            let writer = self
+                .persist_client
+                .open_writer::<SourceData, (), Timestamp, StorageDiff>(
+                    source_meta.data_shard,
+                    Arc::new(source_meta.relation_desc.clone()),
+                    Arc::new(UnitSchema),
+                    Diagnostics {
+                        shard_name: format!("branch_upper_probe:{}", source.name),
+                        handle_purpose: "probe persist upper for branch_ts".to_owned(),
+                    },
+                )
+                .await
+                .map_err(|err| {
+                    AdapterError::Unstructured(anyhow::anyhow!(
+                        "open_writer probe failed for {}: {err:?}",
+                        source.name
+                    ))
+                })?;
+            source_uppers.push(writer.upper().clone());
+            writer.expire().await;
+        }
+        let branch_ts = pick_branch_ts(&source_uppers).ok_or_else(|| {
+            AdapterError::Unstructured(anyhow::anyhow!(
+                "cannot branch from {}: a source shard is finalized",
+                source_schema_name
+            ))
+        })?;
 
         // Fork each source table's persist shard. Each fork inherits the
         // source's history up to `branch_ts` via absolute blob keys + cutoff
