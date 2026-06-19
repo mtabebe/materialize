@@ -24,6 +24,7 @@ use mz_repr::Timestamp;
 use timely::PartialOrder;
 use timely::progress::Antichain;
 
+pub mod commit;
 pub mod fork_shard;
 
 /// A timestamp that is dominated by every shard's upper in `uppers`.
