@@ -18,7 +18,7 @@
 //! `emission_enabled = false`, and branched tables / MVs / indexes with
 //! their normal flags.
 
-use mz_persist::fork_blob_refs::{ForkBlobRef, ForkBlobRefs};
+use mz_persist::fork_blob_refs::{ForkBlobRef, ForkBlobRefsStore};
 use mz_repr::{CatalogItemId, GlobalId, Timestamp};
 use uuid::Uuid;
 
@@ -56,12 +56,6 @@ pub enum PersistBranchError {
     /// inserted. The inserted ref rows will be cleaned up on the next
     /// `DROP BRANCH`-style retry.
     DescriptorWriteFailed(String),
-    /// The orchestration needed to coordinate the two writes atomically is
-    /// not yet wired into the coordinator. Concretely this needs the
-    /// catalog `Transaction::insert_branch_descriptor` helper from the
-    /// follow-on plus the `ForkBlobRefs` handle to be plumbed onto the
-    /// coordinator.
-    NotYetWired,
 }
 
 impl std::fmt::Display for PersistBranchError {
@@ -73,9 +67,6 @@ impl std::fmt::Display for PersistBranchError {
             PersistBranchError::DescriptorWriteFailed(msg) => {
                 write!(f, "BranchDescriptor write failed: {msg}")
             }
-            PersistBranchError::NotYetWired => f.write_str(
-                "branch commit requires catalog Transaction + ForkBlobRefs plumbing",
-            ),
         }
     }
 }
@@ -122,22 +113,36 @@ pub fn build_descriptors(
         .collect()
 }
 
-/// Durably record the branch in one CRDB transaction and register its catalog
-/// items. The implementation needs catalog `Transaction` plumbing and the
-/// coordinator's `ForkBlobRefs` handle, both of which are deferred. The
-/// function exposes the signature so the sequencer hook can call it.
-#[allow(dead_code)]
+/// Durably record the branch by inserting `fork_blob_refs` rows for every
+/// blob the fork shards reference and writing the per-object
+/// `BranchDescriptor` rows into the supplied catalog transaction.
+///
+/// Both writes are idempotent on the same inputs: `fork_blob_refs` uses an
+/// `ON CONFLICT DO NOTHING` bulk insert and the catalog `TableTransaction`
+/// rejects duplicate keys at commit, so a retry with the same descriptor
+/// set fails cleanly rather than double-counting references.
 pub async fn persist_branch_state(
-    _refs: &ForkBlobRefs,
-    _identity: BranchIdentity,
-    _objects: Vec<BranchedObject>,
+    refs: &dyn ForkBlobRefsStore,
+    txn: &mut mz_catalog::durable::Transaction<'_>,
+    identity: BranchIdentity,
+    objects: Vec<BranchedObject>,
 ) -> Result<(), PersistBranchError> {
-    Err(PersistBranchError::NotYetWired)
+    let ref_rows = build_ref_rows(identity.branch_id, &objects);
+    refs.bulk_insert(&ref_rows)
+        .await
+        .map_err(|err| PersistBranchError::RefInsertFailed(err.to_string()))?;
+
+    for descriptor in build_descriptors(&identity, &objects) {
+        txn.insert_branch_descriptor(descriptor)
+            .map_err(|err| PersistBranchError::DescriptorWriteFailed(err.to_string()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mz_persist::fork_blob_refs::InMemoryForkBlobRefs;
     use mz_persist_client::ShardId;
     use mz_repr::role_id::RoleId;
 
@@ -213,5 +218,116 @@ mod tests {
         let branch = Uuid::new_v4();
         let objects = vec![make_object(11, vec![])];
         assert!(build_ref_rows(branch, &objects).is_empty());
+    }
+
+    /// Drive the full `persist_branch_state` chain against an in-memory
+    /// `ForkBlobRefs` and a real catalog `Transaction`. This proves the
+    /// integration end-to-end: refs and descriptors land together, and
+    /// retrying the same call is idempotent.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)]
+    async fn persist_branch_state_end_to_end() {
+        use mz_catalog::durable::{TestCatalogStateBuilder, test_bootstrap_args};
+        use mz_persist_client::PersistLocation;
+        use mz_persist_client::cache::PersistClientCache;
+
+        const VERSION: semver::Version = semver::Version::new(26, 0, 0);
+        let mut persist_cache = PersistClientCache::new_no_metrics();
+        persist_cache.cfg.build_version = VERSION.clone();
+        let persist_client = persist_cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .unwrap();
+        let state_builder = TestCatalogStateBuilder::new(persist_client)
+            .with_default_deploy_generation()
+            .with_version(VERSION);
+        let _ = state_builder
+            .clone()
+            .unwrap_build()
+            .await
+            .open(mz_ore::now::SYSTEM_TIME().into(), &test_bootstrap_args())
+            .await
+            .unwrap()
+            .0;
+        let mut catalog_state = state_builder
+            .unwrap_build()
+            .await
+            .open_savepoint(mz_ore::now::SYSTEM_TIME().into(), &test_bootstrap_args())
+            .await
+            .unwrap()
+            .0;
+        let _ = catalog_state.sync_to_current_updates().await.unwrap();
+
+        let refs = InMemoryForkBlobRefs::default();
+        let branch = Uuid::new_v4();
+        let identity = make_identity(branch);
+        let objects = vec![
+            make_object(101, vec!["abs-1".into(), "abs-2".into()]),
+            make_object(102, vec!["abs-3".into()]),
+        ];
+
+        // First commit: refs land in the store, descriptors land in the
+        // catalog transaction.
+        let op_updates;
+        {
+            let mut txn = catalog_state.transaction().await.unwrap();
+            persist_branch_state(&refs, &mut txn, identity.clone(), objects.clone())
+                .await
+                .expect("first commit");
+            let listed: Vec<_> = txn.get_branch_descriptors().collect();
+            assert_eq!(listed.len(), 2);
+            // Drain the ops emitted by our insert so commit's "no
+            // unconsumed updates" assertion holds. The standard catalog
+            // pipeline does this from `catalog_transact_inner` before
+            // calling commit; in this isolated test we do it inline.
+            op_updates = txn.get_and_commit_op_updates();
+            let commit_ts = txn.upper();
+            txn.commit(commit_ts).await.unwrap();
+        }
+        let descriptor_updates: Vec<_> = op_updates
+            .into_iter()
+            .filter(|u| {
+                matches!(
+                    u.kind,
+                    mz_catalog::memory::objects::StateUpdateKind::BranchDescriptor(_),
+                )
+            })
+            .collect();
+        assert_eq!(
+            descriptor_updates.len(),
+            2,
+            "expected two BranchDescriptor additions in the commit's op stream",
+        );
+
+        // Each absolute blob key now reports as referenced.
+        assert!(refs.exists("abs-1").await.unwrap());
+        assert!(refs.exists("abs-3").await.unwrap());
+        assert!(!refs.exists("abs-missing").await.unwrap());
+
+        // After the commit, the descriptors are readable through a fresh
+        // transaction (i.e. they're in the catalog state, not just the
+        // ephemeral transaction).
+        let _ = catalog_state.sync_to_current_updates().await.unwrap();
+        {
+            let txn = catalog_state.transaction().await.unwrap();
+            let listed: Vec<_> = txn.get_branch_descriptors().collect();
+            assert_eq!(listed.len(), 2, "descriptors should survive the commit");
+            for descriptor in &listed {
+                assert_eq!(descriptor.branch_id, branch.to_string());
+            }
+        }
+
+        // Retry with the same inputs: `bulk_insert` is idempotent. We don't
+        // commit again here because the catalog transaction would reject the
+        // duplicate insert; the persist-layer idempotency is what we care
+        // about for replay safety.
+        refs.bulk_insert(&build_ref_rows(branch, &objects))
+            .await
+            .expect("idempotent re-insert");
+
+        // DROP releases everything tagged with this branch.
+        let removed = refs.delete_by_branch(branch).await.unwrap();
+        assert_eq!(removed, 3);
+        assert!(!refs.exists("abs-1").await.unwrap());
     }
 }

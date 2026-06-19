@@ -92,6 +92,61 @@ async fn pg_query_opt_prepared(
     client.query_opt(statement, params).await
 }
 
+/// Backing store for the `fork_blob_refs` table. Trait so tests can mock
+/// the durable store with an in-memory map without dragging in a real
+/// Postgres connection.
+#[async_trait::async_trait]
+pub trait ForkBlobRefsStore: std::fmt::Debug + Send + Sync {
+    async fn bulk_insert(&self, rows: &[ForkBlobRef]) -> Result<(), ExternalError>;
+    async fn delete_by_branch(&self, branch_id: Uuid) -> Result<u64, ExternalError>;
+    async fn exists(&self, blob_key: &str) -> Result<bool, ExternalError>;
+}
+
+#[async_trait::async_trait]
+impl ForkBlobRefsStore for ForkBlobRefs {
+    async fn bulk_insert(&self, rows: &[ForkBlobRef]) -> Result<(), ExternalError> {
+        ForkBlobRefs::bulk_insert(self, rows).await
+    }
+    async fn delete_by_branch(&self, branch_id: Uuid) -> Result<u64, ExternalError> {
+        ForkBlobRefs::delete_by_branch(self, branch_id).await
+    }
+    async fn exists(&self, blob_key: &str) -> Result<bool, ExternalError> {
+        ForkBlobRefs::exists(self, blob_key).await
+    }
+}
+
+/// An in-memory [`ForkBlobRefsStore`] for tests. Mirrors the same row
+/// semantics as the Postgres-backed [`ForkBlobRefs`]: `(blob_key,
+/// fork_shard_id)` is the primary key, duplicates are silently skipped,
+/// and `delete_by_branch` removes every matching row.
+#[derive(Default, Debug)]
+pub struct InMemoryForkBlobRefs {
+    rows: tokio::sync::Mutex<std::collections::BTreeMap<(String, String), (Uuid,)>>,
+}
+
+#[async_trait::async_trait]
+impl ForkBlobRefsStore for InMemoryForkBlobRefs {
+    async fn bulk_insert(&self, rows: &[ForkBlobRef]) -> Result<(), ExternalError> {
+        let mut store = self.rows.lock().await;
+        for row in rows {
+            store
+                .entry((row.blob_key.clone(), row.fork_shard_id.clone()))
+                .or_insert((row.branch_id,));
+        }
+        Ok(())
+    }
+    async fn delete_by_branch(&self, branch_id: Uuid) -> Result<u64, ExternalError> {
+        let mut store = self.rows.lock().await;
+        let before = store.len();
+        store.retain(|_, (bid,)| *bid != branch_id);
+        Ok(u64::try_from(before - store.len()).unwrap_or(0))
+    }
+    async fn exists(&self, blob_key: &str) -> Result<bool, ExternalError> {
+        let store = self.rows.lock().await;
+        Ok(store.keys().any(|(k, _)| k == blob_key))
+    }
+}
+
 /// Reference-count table backed by Postgres or CockroachDB.
 pub struct ForkBlobRefs {
     postgres_client: PostgresClient,
