@@ -41,6 +41,8 @@ use crate::error::CodecMismatch;
 use crate::internal::machine::{InitializeFromSnapshotError, Machine};
 use crate::internal::metrics::Metrics;
 use crate::internal::paths::PartialBatchKey;
+use differential_dataflow::trace::Description;
+
 use crate::internal::state::{BatchPart, HollowBatch, RunPart};
 use crate::internal::state_versions::StateVersions;
 use crate::rpc::PubSubSender;
@@ -153,11 +155,26 @@ where
 
     // Rewrite each batch's part keys to absolute and stamp the cutoff. Track
     // the absolute blob keys so the caller can pin them against GC.
+    //
+    // Each batch also has its `since` reset to `T::minimum()`. The source
+    // shard may have compacted past its initial since (e.g. shard.since
+    // is at branch_ts - delta), and its batches carry that since. But the
+    // fork shard starts fresh with `since = T::minimum()`, and pushing a
+    // batch whose since is greater than the spine's since panics. Resetting
+    // to minimum makes the batches compatible with the new spine; readers
+    // get the same results because compaction since is a "no updates
+    // before this ts" hint, not a data filter.
+    let minimum_since: Antichain<T> = Antichain::from_elem(T::minimum());
     let mut absolute_blob_keys = Vec::new();
     let mut fork_batches = Vec::with_capacity(source_batches.len());
     for mut batch in source_batches {
         rewrite_parts_to_absolute(&mut batch, source_shard, &mut absolute_blob_keys);
         batch.cutoff_ts = Some(branch_ts.clone());
+        batch.desc = Description::new(
+            batch.desc.lower().clone(),
+            batch.desc.upper().clone(),
+            minimum_since.clone(),
+        );
         fork_batches.push(batch);
     }
 

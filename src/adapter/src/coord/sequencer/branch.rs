@@ -12,6 +12,8 @@
 use std::sync::Arc;
 
 use mz_catalog::memory::objects::{CatalogItem, Table};
+use mz_persist_types::StepForward;
+use timely::progress::Antichain;
 use mz_persist_client::{Diagnostics, ShardId};
 use mz_persist_types::codec_impls::UnitSchema;
 use mz_repr::{Datum, GlobalId, IntoRowIterator, RelationDesc, Row, Timestamp};
@@ -32,7 +34,6 @@ use crate::coord::Coordinator;
 use crate::coord::branch::commit::{
     BranchIdentity, BranchedObject, persist_branch_state,
 };
-use crate::coord::branch::pick_branch_ts;
 use crate::session::Session;
 
 impl Coordinator {
@@ -136,49 +137,32 @@ impl Coordinator {
 
         let branch_id = Uuid::new_v4();
         let now_ms = (self.catalog().config().now)();
-        // Pick `branch_ts` from the controller's authoritative
-        // `write_frontier` for each source table. The controller's
-        // frontier is txn-wal-aware: it advances when an INSERT commits
-        // to the txns shard, even before the write is rolled into the
-        // data shard. `peek_local_write_ts` (wall-clock) would run
-        // ahead of every source shard, and the data shard's `upper`
-        // would run behind by the txn-wal lag, so neither alone works.
-        let source_write_frontiers: Vec<_> = source_tables
-            .iter()
-            .map(|t| {
-                self.controller
-                    .storage_collections
-                    .collection_frontiers(t.global_id)
-                    .map(|f| f.write_frontier)
-                    .map_err(|err| {
-                        AdapterError::Unstructured(anyhow::anyhow!(
-                            "missing storage frontiers for {}: {err:?}",
-                            t.name
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let branch_ts = pick_branch_ts(&source_write_frontiers).ok_or_else(|| {
-            AdapterError::Unstructured(anyhow::anyhow!(
-                "cannot branch from {}: a source shard is finalized",
-                source_schema_name
-            ))
-        })?;
 
-        // `fork_shard` requires `branch_ts < persist_data_shard_upper` for
-        // each source shard. For txn-wal tables, the data shard's upper
-        // can lag behind the controller's `write_frontier` until the
-        // background `PersistTableWriteWorker` rolls outstanding txn-wal
-        // writes into each table's data shard.
+        // Choose a `branch_ts` that's safely above every committed write
+        // and below the data-shard upper of every source. Two steps:
         //
-        // We poll each source shard's persist upper, bounded by a
-        // 30s deadline. In a quiescent envd with no new writes this
-        // will time out because nothing triggers the apply — a real
-        // fix here needs to plumb `TxnsHandle::apply_le` through the
-        // storage controller so the coordinator can request an
-        // explicit flush. Until then, CREATE BRANCH is best-effort
-        // against tables that have just been INSERTed into.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // 1. apply_le(branch_ts): force the txn-wal to roll all writes
+        //    at or below branch_ts into each source's data shard. This
+        //    advances the data shard's upper past every applied write
+        //    *for shards that had writes to apply*.
+        // 2. For each source shard, issue an empty compare_and_append
+        //    that advances the data shard's upper to `branch_ts + 1`.
+        //    This is the no-op-flush case: a table that had no recent
+        //    writes still needs its data shard upper to cross branch_ts
+        //    so `fork_shard`'s observability check passes.
+        //
+        // After both steps, branch_ts < data_shard.upper for every
+        // source, AND every committed source write has time <= branch_ts,
+        // so the fork's cutoff_ts keeps all of it.
+        let branch_ts = self.peek_local_write_ts().await;
+
+        let _ = self
+            .controller
+            .storage
+            .apply_table_writes_le(branch_ts)
+            .await;
+
+        let upper_target = Antichain::from_elem(branch_ts.step_forward());
         for source in &source_tables {
             let source_meta = self
                 .controller
@@ -190,43 +174,46 @@ impl Coordinator {
                         source.name
                     ))
                 })?;
+            let mut writer = self
+                .persist_client
+                .open_writer::<SourceData, (), Timestamp, StorageDiff>(
+                    source_meta.data_shard,
+                    Arc::new(source_meta.relation_desc.clone()),
+                    Arc::new(UnitSchema),
+                    Diagnostics {
+                        shard_name: format!("branch_upper_advance:{}", source.name),
+                        handle_purpose: "advance data shard upper past branch_ts"
+                            .to_owned(),
+                    },
+                )
+                .await
+                .map_err(|err| {
+                    AdapterError::Unstructured(anyhow::anyhow!(
+                        "open_writer advance failed for {}: {err:?}",
+                        source.name
+                    ))
+                })?;
+            // Loop until upper >= branch_ts + 1. compare_and_append rejects
+            // with the actual current upper on mismatch; retry with that.
             loop {
-                let writer = self
-                    .persist_client
-                    .open_writer::<SourceData, (), Timestamp, StorageDiff>(
-                        source_meta.data_shard,
-                        Arc::new(source_meta.relation_desc.clone()),
-                        Arc::new(UnitSchema),
-                        Diagnostics {
-                            shard_name: format!("branch_upper_wait:{}", source.name),
-                            handle_purpose: "wait for persist upper to cross branch_ts"
-                                .to_owned(),
-                        },
-                    )
-                    .await
-                    .map_err(|err| {
-                        AdapterError::Unstructured(anyhow::anyhow!(
-                            "open_writer wait failed for {}: {err:?}",
-                            source.name
-                        ))
-                    })?;
-                let upper = writer.upper().clone();
-                writer.expire().await;
-                let crossed = upper
-                    .elements()
-                    .iter()
-                    .all(|u| branch_ts < *u);
-                if crossed {
+                let current_upper = writer.shared_upper();
+                if !timely::PartialOrder::less_than(&current_upper, &upper_target) {
                     break;
                 }
-                if std::time::Instant::now() >= deadline {
-                    return Err(AdapterError::Unstructured(anyhow::anyhow!(
-                        "timed out waiting for source table {} persist upper to cross branch_ts {:?} (last seen upper: {:?}); the txn-wal hasn't flushed this table's writes into its data shard. Triggering a SELECT against {} before CREATE BRANCH forces the apply.",
-                        source.name, branch_ts, upper.elements(), source.name
-                    )));
+                let empty: &[((&SourceData, &()), &Timestamp, StorageDiff)] = &[];
+                let res = writer
+                    .compare_and_append(empty, current_upper.clone(), upper_target.clone())
+                    .await
+                    .expect("compare_and_append shouldn't error");
+                match res {
+                    Ok(()) => break,
+                    Err(_mismatch) => {
+                        // Someone else advanced the upper; loop to re-check.
+                        continue;
+                    }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
+            writer.expire().await;
         }
 
         // Fork each source table's persist shard. Each fork inherits the
