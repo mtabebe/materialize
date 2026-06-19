@@ -26,6 +26,7 @@ use timely::progress::Antichain;
 
 pub mod commit;
 pub mod ddl_freeze;
+pub mod drop;
 pub mod fork_shard;
 
 /// A timestamp that is dominated by every shard's upper in `uppers`.
