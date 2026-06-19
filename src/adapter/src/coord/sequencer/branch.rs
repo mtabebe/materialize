@@ -167,11 +167,17 @@ impl Coordinator {
 
         // `fork_shard` requires `branch_ts < persist_data_shard_upper` for
         // each source shard. For txn-wal tables, the data shard's upper
-        // can lag behind the controller's write_frontier by however long
-        // it takes the txn-wal to apply outstanding writes. Wait for each
-        // source's persist upper to catch up to `branch_ts` before
-        // forking. We poll the writer handle until its upper crosses
-        // `branch_ts`, bounded by a generous deadline.
+        // can lag behind the controller's `write_frontier` until the
+        // background `PersistTableWriteWorker` rolls outstanding txn-wal
+        // writes into each table's data shard.
+        //
+        // We poll each source shard's persist upper, bounded by a
+        // 30s deadline. In a quiescent envd with no new writes this
+        // will time out because nothing triggers the apply — a real
+        // fix here needs to plumb `TxnsHandle::apply_le` through the
+        // storage controller so the coordinator can request an
+        // explicit flush. Until then, CREATE BRANCH is best-effort
+        // against tables that have just been INSERTed into.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         for source in &source_tables {
             let source_meta = self
@@ -215,8 +221,8 @@ impl Coordinator {
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err(AdapterError::Unstructured(anyhow::anyhow!(
-                        "timed out waiting for source table {} persist upper to cross branch_ts {:?} (last seen upper: {:?})",
-                        source.name, branch_ts, upper.elements()
+                        "timed out waiting for source table {} persist upper to cross branch_ts {:?} (last seen upper: {:?}); the txn-wal hasn't flushed this table's writes into its data shard. Triggering a SELECT against {} before CREATE BRANCH forces the apply.",
+                        source.name, branch_ts, upper.elements(), source.name
                     )));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
