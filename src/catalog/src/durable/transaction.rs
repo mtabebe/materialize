@@ -48,14 +48,14 @@ use crate::durable::initialize::{
 };
 use crate::durable::objects::serialization::proto;
 use crate::durable::objects::{
-    AuditLogKey, Cluster, ClusterConfig, ClusterIntrospectionSourceIndexKey,
-    ClusterIntrospectionSourceIndexValue, ClusterKey, ClusterReplica, ClusterReplicaKey,
-    ClusterReplicaValue, ClusterSystemConfiguration, ClusterSystemConfigurationKey,
-    ClusterSystemConfigurationValue, ClusterValue, CommentKey, CommentValue, Config, ConfigKey,
-    ConfigValue, Database, DatabaseKey, DatabaseValue, DefaultPrivilegesKey,
-    DefaultPrivilegesValue, DurableType, GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
-    IntrospectionSourceIndex, Item, ItemKey, ItemValue, NetworkPolicyKey, NetworkPolicyValue,
-    ReplicaConfig, ReplicaSystemConfiguration, ReplicaSystemConfigurationKey,
+    AuditLogKey, BranchDescriptorKey, BranchDescriptorValue, Cluster, ClusterConfig,
+    ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue, ClusterKey,
+    ClusterReplica, ClusterReplicaKey, ClusterReplicaValue, ClusterSystemConfiguration,
+    ClusterSystemConfigurationKey, ClusterSystemConfigurationValue, ClusterValue, CommentKey,
+    CommentValue, Config, ConfigKey, ConfigValue, Database, DatabaseKey, DatabaseValue,
+    DefaultPrivilegesKey, DefaultPrivilegesValue, DurableType, GidMappingKey, GidMappingValue,
+    IdAllocKey, IdAllocValue, IntrospectionSourceIndex, Item, ItemKey, ItemValue, NetworkPolicyKey,
+    NetworkPolicyValue, ReplicaConfig, ReplicaSystemConfiguration, ReplicaSystemConfigurationKey,
     ReplicaSystemConfigurationValue, Role, RoleKey, RoleValue, Schema, SchemaKey, SchemaValue,
     ServerConfigurationKey, ServerConfigurationValue, SettingKey, SettingValue, SourceReference,
     SourceReferencesKey, SourceReferencesValue, StorageCollectionMetadataKey,
@@ -109,6 +109,7 @@ pub struct Transaction<'a> {
         TableTransaction<StorageCollectionMetadataKey, StorageCollectionMetadataValue>,
     unfinalized_shards: TableTransaction<UnfinalizedShardKey, ()>,
     txn_wal_shard: TableTransaction<(), TxnWalShardValue>,
+    branch_descriptors: TableTransaction<BranchDescriptorKey, BranchDescriptorValue>,
     // Don't make this a table transaction so that it's not read into the
     // in-memory cache.
     audit_log_updates: Vec<(AuditLogKey, Diff, Timestamp)>,
@@ -145,6 +146,7 @@ impl<'a> Transaction<'a> {
             storage_collection_metadata,
             unfinalized_shards,
             txn_wal_shard,
+            branch_descriptors,
         }: Snapshot,
         upper: mz_repr::Timestamp,
     ) -> Result<Transaction<'a>, CatalogError> {
@@ -200,6 +202,7 @@ impl<'a> Transaction<'a> {
             // the value (the key is the unit struct `()` so this is a singleton
             // value).
             txn_wal_shard: TableTransaction::new(txn_wal_shard)?,
+            branch_descriptors: TableTransaction::new(branch_descriptors)?,
             audit_log_updates: Vec::new(),
             upper,
             op_id: 0,
@@ -1061,6 +1064,7 @@ impl<'a> Transaction<'a> {
             storage_collection_metadata: self.storage_collection_metadata.current_items_proto(),
             unfinalized_shards: self.unfinalized_shards.current_items_proto(),
             txn_wal_shard: self.txn_wal_shard.current_items_proto(),
+            branch_descriptors: self.branch_descriptors.current_items_proto(),
         }
     }
 
@@ -2435,6 +2439,7 @@ impl<'a> Transaction<'a> {
             audit_log_updates,
             storage_collection_metadata,
             unfinalized_shards,
+            branch_descriptors,
             // Not representable as a `StateUpdate`.
             id_allocator: _,
             configs: _,
@@ -2540,6 +2545,11 @@ impl<'a> Transaction<'a> {
                 StateUpdateKind::UnfinalizedShard,
                 self.op_id,
             ))
+            .chain(get_collection_op_updates(
+                branch_descriptors,
+                StateUpdateKind::BranchDescriptor,
+                self.op_id,
+            ))
             .chain(get_large_collection_op_updates(
                 audit_log_updates,
                 StateUpdateKind::AuditLog,
@@ -2602,6 +2612,7 @@ impl<'a> Transaction<'a> {
             storage_collection_metadata: self.storage_collection_metadata.pending(),
             unfinalized_shards: self.unfinalized_shards.pending(),
             txn_wal_shard: self.txn_wal_shard.pending(),
+            branch_descriptors: self.branch_descriptors.pending(),
             audit_log_updates,
             upper: self.upper,
         };
@@ -2649,6 +2660,7 @@ impl<'a> Transaction<'a> {
             storage_collection_metadata,
             unfinalized_shards,
             txn_wal_shard,
+            branch_descriptors,
             audit_log_updates,
             upper: _,
         } = &mut txn_batch;
@@ -2677,6 +2689,7 @@ impl<'a> Transaction<'a> {
         differential_dataflow::consolidation::consolidate_updates(storage_collection_metadata);
         differential_dataflow::consolidation::consolidate_updates(unfinalized_shards);
         differential_dataflow::consolidation::consolidate_updates(txn_wal_shard);
+        differential_dataflow::consolidation::consolidate_updates(branch_descriptors);
         differential_dataflow::consolidation::consolidate_updates(audit_log_updates);
 
         let upper = durable_catalog
@@ -2892,6 +2905,11 @@ pub struct TransactionBatch {
     )>,
     pub(crate) unfinalized_shards: Vec<(proto::UnfinalizedShardKey, (), Diff)>,
     pub(crate) txn_wal_shard: Vec<((), proto::TxnWalShardValue, Diff)>,
+    pub(crate) branch_descriptors: Vec<(
+        proto::BranchDescriptorKey,
+        proto::BranchDescriptorValue,
+        Diff,
+    )>,
     pub(crate) audit_log_updates: Vec<(proto::AuditLogKey, (), Diff)>,
     /// The upper of the catalog when the transaction started.
     pub(crate) upper: mz_repr::Timestamp,
@@ -2923,6 +2941,7 @@ impl TransactionBatch {
             storage_collection_metadata,
             unfinalized_shards,
             txn_wal_shard,
+            branch_descriptors,
             audit_log_updates,
             upper: _,
         } = self;
@@ -2949,6 +2968,7 @@ impl TransactionBatch {
             && storage_collection_metadata.is_empty()
             && unfinalized_shards.is_empty()
             && txn_wal_shard.is_empty()
+            && branch_descriptors.is_empty()
             && audit_log_updates.is_empty()
     }
 }
@@ -3010,6 +3030,7 @@ mod unique_name {
 
     impl_no_unique_name!(
         (),
+        BranchDescriptorValue,
         ClusterIntrospectionSourceIndexValue,
         ClusterSystemConfigurationValue,
         CommentValue,
