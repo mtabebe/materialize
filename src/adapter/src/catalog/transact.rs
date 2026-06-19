@@ -1399,7 +1399,12 @@ impl Catalog {
                     }
                     CatalogItem::MaterializedView(mv) => {
                         let mv_gid = mv.global_id_writes();
-                        if let Some(target_id) = mv.replacement_target {
+                        if let Some(shard_id) = mv.branch_target_shard {
+                            // Branch-target MV: bind to the pre-existing
+                            // fork shard. The MV's dataflow is suppressed
+                            // (snapshot-only mode); the fork serves reads.
+                            storage_collections_to_register.insert(mv_gid, shard_id);
+                        } else if let Some(target_id) = mv.replacement_target {
                             let target_gid = state.get_entry(&target_id).latest_global_id();
                             let shard_id =
                                 state.storage_metadata().get_collection_shard(target_gid)?;

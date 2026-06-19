@@ -1458,6 +1458,7 @@ impl CatalogState {
                     optimized_plan: None,
                     physical_plan: None,
                     dataflow_metainfo: None,
+                    branch_target_shard: None,
                 })
             }
             Plan::CreateIndex(CreateIndexPlan { index, .. }) => CatalogItem::Index(Index {

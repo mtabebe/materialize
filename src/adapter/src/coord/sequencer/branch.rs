@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use mz_catalog::memory::objects::{CatalogItem, Table};
+use mz_catalog::memory::objects::{CatalogItem, MaterializedView, Table};
 use mz_persist_types::StepForward;
 use timely::progress::Antichain;
 use mz_persist_client::{Diagnostics, ShardId};
@@ -95,15 +95,22 @@ impl Coordinator {
             .to_owned();
         drop(conn_catalog);
 
-        // Snapshot the source schema's tables. We snapshot identity + desc +
-        // create_sql up front so the subsequent fork loop doesn't hold a
-        // borrow on catalog state across the await points.
+        // Snapshot the source schema's branchable items (tables + MVs). We
+        // snapshot identity + desc + create_sql + the original item up
+        // front so the subsequent fork loop doesn't hold a borrow on
+        // catalog state across the await points.
+        #[derive(Clone)]
+        enum SourceItemKind {
+            Table(Table),
+            MaterializedView(MaterializedView),
+        }
         struct SourceTable {
             item_id: mz_repr::CatalogItemId,
             name: String,
             global_id: GlobalId,
             desc: RelationDesc,
             create_sql: String,
+            kind: SourceItemKind,
         }
         let source_tables: Vec<SourceTable> = {
             let state = self.catalog().state();
@@ -127,8 +134,17 @@ impl Coordinator {
                                 global_id: entry.latest_global_id(),
                                 desc: t.desc.latest(),
                                 create_sql,
+                                kind: SourceItemKind::Table(t.clone()),
                             })
                         }
+                        CatalogItem::MaterializedView(mv) => Some(SourceTable {
+                            item_id: *item_id,
+                            name: name.clone(),
+                            global_id: entry.latest_global_id(),
+                            desc: mv.desc.latest(),
+                            create_sql: mv.create_sql.clone(),
+                            kind: SourceItemKind::MaterializedView(mv.clone()),
+                        }),
                         _ => None,
                     }
                 })
@@ -293,7 +309,7 @@ impl Coordinator {
                 .clone()
         };
 
-        // Phase 2: register one branched-table item per forked source table.
+        // Phase 2: register one branched item per forked source item.
         let mut item_ops: Vec<catalog::Op> = Vec::new();
         for f in &forked {
             let branched_create_sql = retarget_create_sql(
@@ -304,18 +320,38 @@ impl Coordinator {
             );
             let mut collections = std::collections::BTreeMap::new();
             collections.insert(mz_repr::RelationVersion::root(), f.branch_global_id);
-            let table = Table {
-                create_sql: Some(branched_create_sql),
-                desc: mz_repr::VersionedRelationDesc::new(f.source.desc.clone()),
-                collections,
-                conn_id: None,
-                resolved_ids: mz_sql::names::ResolvedIds::empty(),
-                custom_logical_compaction_window: None,
-                is_retained_metrics_object: false,
-                data_source: mz_catalog::memory::objects::TableDataSource::TableWrites {
-                    defaults: vec![mz_sql::ast::Expr::null(); f.source.desc.arity()],
-                },
-                branch_target_shard: Some(f.fork_shard_id),
+            let catalog_item = match &f.source.kind {
+                SourceItemKind::Table(_) => {
+                    let table = Table {
+                        create_sql: Some(branched_create_sql),
+                        desc: mz_repr::VersionedRelationDesc::new(f.source.desc.clone()),
+                        collections,
+                        conn_id: None,
+                        resolved_ids: mz_sql::names::ResolvedIds::empty(),
+                        custom_logical_compaction_window: None,
+                        is_retained_metrics_object: false,
+                        data_source: mz_catalog::memory::objects::TableDataSource::TableWrites {
+                            defaults: vec![mz_sql::ast::Expr::null(); f.source.desc.arity()],
+                        },
+                        branch_target_shard: Some(f.fork_shard_id),
+                    };
+                    CatalogItem::Table(table)
+                }
+                SourceItemKind::MaterializedView(source_mv) => {
+                    let mut branched = source_mv.clone();
+                    branched.create_sql = branched_create_sql;
+                    branched.collections = collections;
+                    branched.desc = mz_repr::VersionedRelationDesc::new(f.source.desc.clone());
+                    branched.branch_target_shard = Some(f.fork_shard_id);
+                    // Snapshot-only branched MV: clear plans so the
+                    // standard catalog code doesn't try to ship a
+                    // dataflow off them. The fork shard already holds
+                    // the snapshot at branch_ts; reads serve from there.
+                    branched.optimized_plan = None;
+                    branched.physical_plan = None;
+                    branched.dataflow_metainfo = None;
+                    CatalogItem::MaterializedView(branched)
+                }
             };
             item_ops.push(catalog::Op::CreateItem {
                 id: f.branch_item_id,
@@ -326,12 +362,49 @@ impl Coordinator {
                     },
                     item: f.source.name.clone(),
                 },
-                item: CatalogItem::Table(table),
+                item: catalog_item,
                 owner_id: *session.current_role_id(),
             });
         }
         if !item_ops.is_empty() {
             self.catalog_transact(Some(session), item_ops).await?;
+        }
+
+        // Register each branched MV's storage collection with the
+        // controller. `storage_collections_to_register` durably binds the
+        // (gid, shard) mapping, but reads against an MV's collection
+        // need the controller's in-memory registry to know about it.
+        // Tables get registered through their own write-handle flow on
+        // first use; MVs need an explicit `create_collections` call.
+        let mv_collections: Vec<_> = forked
+            .iter()
+            .filter_map(|f| match &f.source.kind {
+                SourceItemKind::MaterializedView(_) => {
+                    let mut desc = mz_storage_client::controller::CollectionDescription::for_other(
+                        f.source.desc.clone(),
+                        None,
+                    );
+                    // Mark the source MV as the primary of the shared
+                    // shard. Snapshot-only branched MV is a read-only
+                    // dependent on the source MV's storage collection,
+                    // mirroring the `replacement_target` pattern.
+                    desc.primary = Some(f.source.global_id);
+                    Some((f.branch_global_id, desc))
+                }
+                SourceItemKind::Table(_) => None,
+            })
+            .collect();
+        if !mv_collections.is_empty() {
+            let storage_metadata = self.catalog().state().storage_metadata().clone();
+            self.controller
+                .storage
+                .create_collections(&storage_metadata, None, mv_collections)
+                .await
+                .map_err(|err| {
+                    AdapterError::Unstructured(anyhow::anyhow!(
+                        "create_collections failed for branched MVs: {err}"
+                    ))
+                })?;
         }
 
         // Bookkeeping: pin fork blobs against GC and write descriptor rows.

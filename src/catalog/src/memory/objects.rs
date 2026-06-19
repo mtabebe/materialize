@@ -1450,6 +1450,16 @@ pub struct MaterializedView {
     /// Dataflow metainfo (optimizer notices, etc.), set after optimization.
     #[serde(skip)]
     pub dataflow_metainfo: Option<DataflowMetainfo<Arc<OptimizerNotice>>>,
+    /// If set, this materialized view is a branched-schema MV backed by a
+    /// pre-existing persist shard (the fork). Same role as
+    /// [`Table::branch_target_shard`]: at `Op::CreateItem` time the catalog
+    /// binds the MV's global id to this shard via
+    /// `storage_collections_to_register` instead of allocating a fresh
+    /// shard. The MV's dataflow is suppressed in snapshot-only mode; the
+    /// fork's contents serve reads against the branched MV. In-memory
+    /// only, not serialized to durable.
+    #[serde(skip)]
+    pub branch_target_shard: Option<mz_persist_client::ShardId>,
 }
 
 impl MaterializedView {
@@ -1554,6 +1564,7 @@ impl MaterializedView {
             optimized_plan: replacement.optimized_plan,
             physical_plan: replacement.physical_plan,
             dataflow_metainfo: replacement.dataflow_metainfo,
+            branch_target_shard: replacement.branch_target_shard,
         };
     }
 }

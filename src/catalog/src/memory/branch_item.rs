@@ -65,7 +65,10 @@ pub fn build_branch_item(
             Ok(CatalogItem::Source(branch_source(source, branch_gid, desc)))
         }
         CatalogItem::MaterializedView(mv) => Ok(CatalogItem::MaterializedView(branch_mv(
-            mv, branch_gid, desc,
+            mv,
+            branch_gid,
+            desc,
+            descriptor.fork_shard_id,
         ))),
         CatalogItem::Sink(_)
         | CatalogItem::Index(_)
@@ -123,12 +126,18 @@ fn branch_source(source: &Source, branch_gid: GlobalId, desc: RelationDesc) -> S
     }
 }
 
-fn branch_mv(source: &MaterializedView, branch_gid: GlobalId, desc: RelationDesc) -> MaterializedView {
+fn branch_mv(
+    source: &MaterializedView,
+    branch_gid: GlobalId,
+    desc: RelationDesc,
+    fork_shard_id: mz_persist_client::ShardId,
+) -> MaterializedView {
     let mut collections = BTreeMap::new();
     collections.insert(RelationVersion::root(), branch_gid);
     let mut branched = source.clone();
     branched.collections = collections;
     branched.desc = VersionedRelationDesc::new(desc);
+    branched.branch_target_shard = Some(fork_shard_id);
     branched
 }
 
