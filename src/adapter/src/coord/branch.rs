@@ -63,58 +63,30 @@ pub fn pick_branch_ts(uppers: &[Antichain<Timestamp>]) -> Option<Timestamp> {
     meet.map(|t| t.saturating_sub(1))
 }
 
-/// Errors that [`fork_shard::fork_shard`] can produce.
-#[derive(Debug)]
-pub enum ForkShardError {
-    /// The orchestration that turns a source shard into a fork shard with
-    /// absolute keys and a per-batch cutoff is not yet wired into the public
-    /// persist API.
-    NotYetWired,
-    /// The source shard could not be read at `branch_ts`.
-    SourceUnavailable(String),
-    /// The fresh fork shard's initial state could not be installed in
-    /// consensus.
-    InstallFailed(String),
-}
+pub use mz_persist_client::fork::{ForkShardError, ForkShardOutput};
 
-impl std::fmt::Display for ForkShardError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ForkShardError::NotYetWired => {
-                f.write_str("fork_shard requires persist-client APIs that are not yet public")
-            }
-            ForkShardError::SourceUnavailable(msg) => {
-                write!(f, "source shard unavailable at branch_ts: {msg}")
-            }
-            ForkShardError::InstallFailed(msg) => {
-                write!(f, "failed to install fork shard state: {msg}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ForkShardError {}
-
-/// What `fork_shard` produces on success: the new shard's id and the set of
-/// absolute blob keys its initial manifest references. The caller bulk-inserts
-/// one `fork_blob_refs` row per blob key to pin them against GC.
-#[derive(Debug, Clone)]
-pub struct ForkShardOutput {
-    pub fork_shard_id: ShardId,
-    pub absolute_blob_keys: Vec<String>,
-}
-
-/// Sketch of the fork-shard primitive. The actual implementation needs
-/// `Machine::initialize_from_snapshot` and `HollowBatch` to be reachable
-/// from this crate; that re-export is intentionally deferred so we can
-/// commit the public surface here without leaking persist internals.
-#[allow(dead_code)]
+/// Fork `source_shard` at `branch_ts`. Delegates to the persist primitive;
+/// the coordinator passes its `PersistClient` and the source object's
+/// schemas. The returned `absolute_blob_keys` is what the caller pins into
+/// the shared `fork_blob_refs` table to keep persist from reclaiming the
+/// source's blobs while the fork is live.
 pub async fn fork_shard(
-    _source_shard: ShardId,
-    _branch_ts: Timestamp,
-    _persist: Arc<mz_persist_client::PersistClient>,
+    persist: &mz_persist_client::PersistClient,
+    source_shard: ShardId,
+    branch_ts: Timestamp,
+    diagnostics: mz_persist_client::Diagnostics,
+    key_schema: Arc<mz_persist_types::codec_impls::StringSchema>,
+    val_schema: Arc<mz_persist_types::codec_impls::StringSchema>,
 ) -> Result<ForkShardOutput, ForkShardError> {
-    Err(ForkShardError::NotYetWired)
+    persist
+        .fork_shard::<String, String, Timestamp, i64>(
+            source_shard,
+            branch_ts,
+            diagnostics,
+            key_schema,
+            val_schema,
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -164,15 +136,4 @@ mod tests {
         assert_eq!(t, Timestamp::MIN);
     }
 
-    /// `fork_shard` is intentionally a stub so the call site can be wired
-    /// before the persist-internal types are exposed.
-    #[mz_ore::test(tokio::test)]
-    #[cfg_attr(miri, ignore)]
-    async fn fork_shard_returns_not_yet_wired() {
-        // We can't build a real `PersistClient` in a unit test without
-        // dragging in a full client cache; instead just confirm that the
-        // unsupported path is reachable via a non-default future.
-        let err = ForkShardError::NotYetWired;
-        assert!(format!("{err}").contains("not yet public"));
-    }
 }

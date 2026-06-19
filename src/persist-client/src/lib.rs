@@ -104,6 +104,7 @@ mod internal {
     pub mod cache;
     pub mod compact;
     pub mod encoding;
+    pub mod fork;
     pub mod gc;
     pub mod machine;
     pub mod maintenance;
@@ -129,6 +130,15 @@ pub const BUILD_INFO: BuildInfo = build_info!();
 pub use mz_persist_types::{PersistLocation, ShardId};
 
 pub use crate::internal::encoding::Schemas;
+pub use crate::internal::machine::InitializeFromSnapshotError;
+
+pub mod fork {
+    //! Branch-time shard fork primitive: snapshot a source shard, rewrite
+    //! its part keys to absolute form, stamp every inherited batch with a
+    //! cutoff timestamp, and bootstrap a fresh persist shard whose initial
+    //! state references the source's blobs.
+    pub use crate::internal::fork::{ForkShardError, ForkShardOutput};
+}
 
 /// Additional diagnostic information used within Persist
 /// e.g. for logging, metric labels, etc.
@@ -260,6 +270,57 @@ impl PersistClient {
         )
         .await?;
         Ok(machine)
+    }
+
+    /// Fork `source_shard` at `branch_ts`, returning a fresh shard whose
+    /// initial manifest references the source's blobs by absolute key and
+    /// whose inherited batches are stamped with `cutoff_ts = branch_ts`.
+    ///
+    /// Reads of the fork shard return source data at or below `branch_ts`
+    /// and exclude any straddling-batch updates above it. Writes on the
+    /// fork shard land under its own blob namespace.
+    ///
+    /// The returned `absolute_blob_keys` is the set of full blob paths the
+    /// fork shard's manifest now references; the caller must pin them
+    /// against persist garbage collection (see [`mz_persist::fork_blob_refs`]).
+    pub async fn fork_shard<K, V, T, D>(
+        &self,
+        source_shard: ShardId,
+        branch_ts: T,
+        diagnostics: Diagnostics,
+        key_schema: Arc<K::Schema>,
+        val_schema: Arc<V::Schema>,
+    ) -> Result<fork::ForkShardOutput, fork::ForkShardError>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + Sync + Ord,
+        D: Monoid + Codec64 + Send + Sync,
+    {
+        let state_versions = Arc::new(StateVersions::new(
+            self.cfg.clone(),
+            Arc::clone(&self.consensus),
+            Arc::clone(&self.blob),
+            Arc::clone(&self.metrics),
+        ));
+        let schemas = Schemas {
+            id: None,
+            key: key_schema,
+            val: val_schema,
+        };
+        crate::internal::fork::fork_shard::<K, V, T, D>(
+            self.cfg.clone(),
+            source_shard,
+            branch_ts,
+            Arc::clone(&self.metrics),
+            state_versions,
+            Arc::clone(&self.shared_states),
+            Arc::clone(&self.pubsub_sender),
+            Arc::clone(&self.isolated_runtime),
+            diagnostics,
+            schemas,
+        )
+        .await
     }
 
     /// Provides capabilities for the durable TVC identified by `shard_id` at
@@ -2431,6 +2492,60 @@ mod tests {
         }
         drop(leases);
         out
+    }
+
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn fork_shard_reads_source_data_via_absolute_keys(dyncfgs: ConfigUpdates) {
+        let data = [
+            (("a".to_owned(), "alpha".to_owned()), 1u64, 1i64),
+            (("b".to_owned(), "beta".to_owned()), 2u64, 1i64),
+            (("c".to_owned(), "gamma".to_owned()), 3u64, 1i64),
+        ];
+
+        let client = new_test_client(&dyncfgs).await;
+
+        // Write three rows to a source shard at timestamps 1, 2, 3.
+        let source = ShardId::new();
+        let (mut write, _read) = client
+            .expect_open::<String, String, u64, i64>(source)
+            .await;
+        write.expect_compare_and_append(&data, 0, 4).await;
+
+        // Fork at branch_ts = 2: t=1, t=2 visible; t=3 dropped by cutoff.
+        let output = client
+            .fork_shard::<String, String, u64, i64>(
+                source,
+                2u64,
+                Diagnostics::for_tests(),
+                Arc::new(StringSchema),
+                Arc::new(StringSchema),
+            )
+            .await
+            .expect("fork");
+        // Whenever the source shard has hollow parts, the absolute keys
+        // must point back into the source shard's namespace. Inline parts
+        // don't appear in this list (they live in the manifest itself),
+        // so the only correctness claim is "every emitted key has the
+        // source's prefix".
+        let source_prefix = source.to_string();
+        for key in &output.absolute_blob_keys {
+            assert!(
+                key.starts_with(&source_prefix),
+                "absolute key {key} should start with source shard id {source_prefix}",
+            );
+        }
+
+        // Open a ReadHandle on the fork shard and confirm we see exactly the
+        // rows at t <= 2.
+        let (_fork_write, mut fork_read) = client
+            .expect_open::<String, String, u64, i64>(output.fork_shard_id)
+            .await;
+        let mut rows = fork_read.expect_snapshot_and_fetch(3).await;
+        rows.sort();
+        let mut expected = all_ok(&data[..2], 3);
+        expected.sort();
+        assert_eq!(rows, expected);
     }
 
     proptest! {
