@@ -34,25 +34,28 @@ SHOW BRANCHES
 query error SHOW BRANCH STATUS.*enable_branching.*off
 SHOW BRANCH STATUS nightly
 
-# Turning the flag on lets the statements plan; the sequencer surface
-# still returns Unsupported because the execution path is deferred.
+# Turning the flag on lets CREATE BRANCH succeed end-to-end. The branch
+# row lands durably, SHOW BRANCHES returns it, DROP BRANCH cleans up.
 
 simple conn=mz_system,user=mz_system
 ALTER SYSTEM SET enable_branching = on
 ----
 COMPLETE 0
 
-query error BRANCH execution path not implemented
+statement ok
 CREATE BRANCH nightly FROM SCHEMA public
 
-query error BRANCH execution path not implemented
+# DROP BRANCH IF EXISTS on a missing branch is a no-op.
+statement ok
+DROP BRANCH IF EXISTS does_not_exist
+
+# DROP BRANCH on the real branch succeeds.
+statement ok
 DROP BRANCH nightly
 
-query error BRANCH execution path not implemented
-SHOW BRANCHES
-
-query error BRANCH execution path not implemented
-SHOW BRANCH STATUS nightly
+# Dropping it again without IF EXISTS errors.
+query error branch "nightly" does not exist
+DROP BRANCH nightly
 
 # Reset the flag so this file doesn't pollute later tests.
 
