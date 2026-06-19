@@ -690,6 +690,14 @@ impl Coordinator {
                         ctx.retire(res);
                     });
                 }
+                Plan::CreateBranch(_)
+                | Plan::DropBranch(_)
+                | Plan::ShowBranches
+                | Plan::ShowBranchStatus(_) => {
+                    ctx.retire(Err(AdapterError::Unsupported(
+                        "BRANCH execution path not implemented yet",
+                    )));
+                }
             }
         }
         .instrument(tracing::debug_span!("coord::sequencer::sequence_plan"))
