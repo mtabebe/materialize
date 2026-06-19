@@ -294,10 +294,7 @@ impl Coordinator {
             .map_err(|err| AdapterError::Unstructured(anyhow::anyhow!(err)))?;
         drop(storage);
 
-        let rows: Vec<Row> = Vec::new();
-        Ok(ExecuteResponse::SendingRowsImmediate {
-            rows: Box::new(rows.into_row_iter()),
-        })
+        Ok(ExecuteResponse::CreatedSchema)
     }
 
     /// Execute `DROP BRANCH [IF EXISTS] <name>`.
@@ -323,10 +320,9 @@ impl Coordinator {
             .collect();
         if descriptors.is_empty() {
             if if_exists {
-                let rows: Vec<Row> = Vec::new();
-                return Ok(ExecuteResponse::SendingRowsImmediate {
-                    rows: Box::new(rows.into_row_iter()),
-                });
+                return Ok(ExecuteResponse::DroppedObject(
+                    mz_sql::catalog::ObjectType::Schema,
+                ));
             }
             return Err(AdapterError::Unstructured(anyhow::anyhow!(
                 "branch \"{branch_name}\" does not exist"
@@ -354,10 +350,9 @@ impl Coordinator {
             .map_err(|err| AdapterError::Unstructured(anyhow::anyhow!(err)))?;
         drop(storage);
 
-        let rows: Vec<Row> = Vec::new();
-        Ok(ExecuteResponse::SendingRowsImmediate {
-            rows: Box::new(rows.into_row_iter()),
-        })
+        Ok(ExecuteResponse::DroppedObject(
+            mz_sql::catalog::ObjectType::Schema,
+        ))
     }
 
     /// Execute `SHOW BRANCHES`.
@@ -436,27 +431,57 @@ fn encode_relation_desc(desc: &RelationDesc) -> Vec<u8> {
 }
 
 /// Rewrite a source table's `create_sql` so it names the branch schema in
-/// place of the source schema. This is best-effort: it textually substitutes
-/// the fully-qualified `db.source_schema.` prefix with `db.branch_schema.`,
-/// preserving the rest of the statement verbatim. The CREATE statement is
-/// only re-parsed on catalog rehydration; within the current session the
-/// catalog item is consumed directly from the in-memory `Table` we hand to
-/// `Op::CreateItem`, so DML works regardless of the rewrite's fidelity.
+/// place of the source schema. The catalog persists `create_sql` in a
+/// canonicalized, fully-quoted form (`"db"."schema"."name"`), so the
+/// substitution matches the quoted `"db"."source_schema".` prefix.
 fn retarget_create_sql(
     source_sql: &str,
     database: &str,
     source_schema: &str,
     branch_schema: &str,
 ) -> String {
-    let from = format!("{database}.{source_schema}.");
-    let to = format!("{database}.{branch_schema}.");
-    if source_sql.contains(&from) {
-        source_sql.replacen(&from, &to, 1)
-    } else {
-        // Fall back: leave the create_sql as the source's. Re-parse on
-        // restart will then bind the branched item to the source's name,
-        // which is wrong; flagged as a follow-up. For the current session,
-        // the in-memory `Table` is used directly so DML still works.
-        source_sql.to_owned()
+    let from_quoted = format!("\"{database}\".\"{source_schema}\".");
+    let to_quoted = format!("\"{database}\".\"{branch_schema}\".");
+    if source_sql.contains(&from_quoted) {
+        return source_sql.replacen(&from_quoted, &to_quoted, 1);
+    }
+    let from_bare = format!("{database}.{source_schema}.");
+    let to_bare = format!("{database}.{branch_schema}.");
+    if source_sql.contains(&from_bare) {
+        return source_sql.replacen(&from_bare, &to_bare, 1);
+    }
+    source_sql.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[mz_ore::test]
+    fn retarget_create_sql_handles_quoted_qualified_names() {
+        let src = "CREATE TABLE \"materialize\".\"public\".\"t\" (\"i\" [s20 AS \"pg_catalog\".\"int4\"])";
+        let out = retarget_create_sql(src, "materialize", "public", "nightly");
+        assert!(
+            out.contains("\"materialize\".\"nightly\".\"t\""),
+            "expected branch schema substitution; got: {out}"
+        );
+        assert!(
+            !out.contains("\"materialize\".\"public\".\"t\""),
+            "source schema should be replaced; got: {out}"
+        );
+    }
+
+    #[mz_ore::test]
+    fn retarget_create_sql_handles_bare_qualified_names() {
+        let src = "CREATE TABLE materialize.public.t (i int)";
+        let out = retarget_create_sql(src, "materialize", "public", "nightly");
+        assert_eq!(out, "CREATE TABLE materialize.nightly.t (i int)");
+    }
+
+    #[mz_ore::test]
+    fn retarget_create_sql_unchanged_when_no_match() {
+        let src = "CREATE TABLE t (i int)";
+        let out = retarget_create_sql(src, "materialize", "public", "nightly");
+        assert_eq!(out, src);
     }
 }
