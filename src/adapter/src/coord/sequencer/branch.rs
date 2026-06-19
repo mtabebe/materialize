@@ -137,14 +137,19 @@ impl Coordinator {
                                 kind: SourceItemKind::Table(t.clone()),
                             })
                         }
-                        CatalogItem::MaterializedView(mv) => Some(SourceTable {
-                            item_id: *item_id,
-                            name: name.clone(),
-                            global_id: entry.latest_global_id(),
-                            desc: mv.desc.latest(),
-                            create_sql: mv.create_sql.clone(),
-                            kind: SourceItemKind::MaterializedView(mv.clone()),
-                        }),
+                        // MVs are skipped here. A branched MV needs its
+                        // own compute dataflow installed on the branch's
+                        // cluster with input GlobalIds rewritten to the
+                        // branched tables. Forking the MV's persist
+                        // shard alone (snapshot-only) doesn't satisfy
+                        // the storage controller, which requires every
+                        // MV collection to have a live compute dataflow.
+                        // The proper fix needs either plan-tree GID
+                        // substitution or full re-planning of the MV's
+                        // SQL against the branch schema; until then,
+                        // users can manually CREATE MATERIALIZED VIEW
+                        // against branched tables after CREATE BRANCH.
+                        CatalogItem::MaterializedView(_) => None,
                         _ => None,
                     }
                 })
