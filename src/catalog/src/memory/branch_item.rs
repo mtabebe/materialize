@@ -55,7 +55,12 @@ pub fn build_branch_item(
     let branch_gid = descriptor.branch_global_id;
 
     match source {
-        CatalogItem::Table(table) => Ok(CatalogItem::Table(branch_table(table, branch_gid, desc))),
+        CatalogItem::Table(table) => Ok(CatalogItem::Table(branch_table(
+            table,
+            branch_gid,
+            desc,
+            descriptor.fork_shard_id,
+        ))),
         CatalogItem::Source(source) => {
             Ok(CatalogItem::Source(branch_source(source, branch_gid, desc)))
         }
@@ -84,7 +89,12 @@ fn decode_relation_desc(bytes: &[u8]) -> Result<RelationDesc, BranchItemError> {
         .map_err(|err| BranchItemError::InvalidRelationDesc(err.to_string()))
 }
 
-fn branch_table(source: &Table, branch_gid: GlobalId, desc: RelationDesc) -> Table {
+fn branch_table(
+    source: &Table,
+    branch_gid: GlobalId,
+    desc: RelationDesc,
+    fork_shard_id: mz_persist_client::ShardId,
+) -> Table {
     let mut collections = BTreeMap::new();
     collections.insert(RelationVersion::root(), branch_gid);
     Table {
@@ -96,6 +106,7 @@ fn branch_table(source: &Table, branch_gid: GlobalId, desc: RelationDesc) -> Tab
         custom_logical_compaction_window: source.custom_logical_compaction_window,
         is_retained_metrics_object: source.is_retained_metrics_object,
         data_source: source.data_source.clone(),
+        branch_target_shard: Some(fork_shard_id),
     }
 }
 
@@ -207,6 +218,43 @@ mod tests {
         let (key, value) = descriptor.clone().into_key_value();
         let recovered = BranchDescriptor::from_key_value(key, value);
         assert_eq!(descriptor, recovered);
+    }
+
+    #[mz_ore::test]
+    fn branched_table_carries_fork_target_shard() {
+        // The Table built from a descriptor must record the fork shard so
+        // `catalog_transact_inner`'s Op::CreateItem path routes through
+        // `storage_collections_to_register` instead of allocating a fresh
+        // shard. Without this binding, DML on the branched table would land
+        // on a brand-new (empty) shard and the fork's pre-loaded history
+        // would be invisible to reads.
+        let desc = make_desc();
+        let descriptor = make_descriptor(GlobalId::User(42), &desc);
+        let source = CatalogItem::Table(Table {
+            create_sql: Some("CREATE TABLE t (id int4 NOT NULL)".to_owned()),
+            desc: VersionedRelationDesc::new(desc.clone()),
+            collections: BTreeMap::from([(RelationVersion::root(), GlobalId::User(1))]),
+            conn_id: None,
+            resolved_ids: mz_sql::names::ResolvedIds::empty(),
+            custom_logical_compaction_window: None,
+            is_retained_metrics_object: false,
+            data_source: crate::memory::objects::TableDataSource::TableWrites {
+                defaults: vec![],
+            },
+            branch_target_shard: None,
+        });
+        let built = build_branch_item(&descriptor, &source).expect("build");
+        let table = match built {
+            CatalogItem::Table(t) => t,
+            other => panic!("expected Table, got {other:?}"),
+        };
+        assert_eq!(
+            table.branch_target_shard,
+            Some(descriptor.fork_shard_id),
+            "branched Table must record the descriptor's fork shard id"
+        );
+        // Its identity is the branch's, not the source's.
+        assert!(table.collections.values().any(|gid| *gid == GlobalId::User(42)));
     }
 
     #[mz_ore::test]

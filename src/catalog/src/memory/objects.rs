@@ -883,6 +883,16 @@ pub struct Table {
     pub is_retained_metrics_object: bool,
     /// Where data for this table comes from, e.g. `INSERT` statements or an upstream source.
     pub data_source: TableDataSource,
+    /// If set, this table is a branched-schema table backed by a pre-existing
+    /// persist shard (the fork). At [`Op::CreateItem`] time the catalog binds
+    /// the table's global id to this shard via `storage_collections_to_register`
+    /// instead of allocating a fresh shard. The mapping persists in
+    /// `storage_metadata`, so this field is in-memory only and is not
+    /// re-derived on rehydration.
+    ///
+    /// [`Op::CreateItem`]: crate::durable::objects
+    #[serde(skip)]
+    pub branch_target_shard: Option<mz_persist_client::ShardId>,
 }
 
 impl Table {

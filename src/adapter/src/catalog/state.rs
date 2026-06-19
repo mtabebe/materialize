@@ -1222,6 +1222,7 @@ impl CatalogState {
                             }
                         },
                     },
+                    branch_target_shard: None,
                 })
             }
             Plan::CreateSource(CreateSourcePlan {
