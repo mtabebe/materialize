@@ -33,6 +33,8 @@ mod mz_internal;
 pub use mz_internal::*;
 mod mz_introspection;
 pub use mz_introspection::*;
+mod mz_prometheus_sinks;
+pub use mz_prometheus_sinks::*;
 mod information_schema;
 pub use information_schema::*;
 
@@ -619,6 +621,113 @@ impl BuiltinMaterializedView {
             "CREATE MATERIALIZED VIEW {}.{} {}",
             self.schema, self.name, self.sql
         )
+    }
+}
+
+/// The kind of a Prometheus metric emitted by a [`BuiltinPrometheusSink`].
+///
+/// Gauges and counters only. A new kind requires matching work in the render
+/// operator, so it is a deliberate change rather than a bare enum addition.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
+pub enum PromKind {
+    /// A value that can move up or down. The operator publishes the latest
+    /// value for a label set and drops the series when its row retracts.
+    Gauge,
+    /// A monotonic accumulator. The operator publishes the additive fold of
+    /// `value * diff` over the input stream, so `rate()` stays sane across
+    /// compaction and object churn.
+    Counter,
+}
+
+/// One metric family emitted by a [`BuiltinPrometheusSink`].
+///
+/// A single sink projects one label set (see [`BuiltinPrometheusSink::labels`])
+/// but may emit several values from the same view. Each [`PromValue`] names the
+/// SQL column that carries the value and the Prometheus family it feeds.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
+pub struct PromValue {
+    /// Column in the view SQL that holds this value. Must be numeric and
+    /// non-null. See the [`BuiltinPrometheusSink`] contract for the exact rule.
+    pub column: &'static str,
+    /// Prometheus metric family name (e.g. `mz_arrangement_size_bytes`).
+    pub metric: &'static str,
+    /// Whether this family is a gauge or a counter.
+    pub kind: PromKind,
+    /// Prometheus `# HELP` text for the family.
+    pub help: &'static str,
+}
+
+/// A built-in Prometheus sink: a SQL view paired with a label/value schema.
+///
+/// A Prometheus sink runs its [`sql`](Self::sql) continually as a compute
+/// dataflow on every replica and writes the view's output rows into clusterd's
+/// local `MetricsRegistry`, where Prometheus scrapes them directly. Attribution
+/// (collection id plus human name) is produced inside the SQL via joins against
+/// the catalog, so the emitted series carry stable labels without any
+/// Prometheus-side joins.
+///
+/// Unlike other builtins, a Prometheus sink is **not** a queryable catalog
+/// item. It is not user-visible (there is no `CREATE PROMETHEUS SINK`) and does
+/// not appear in `mz_catalog`. It is installed as a compute dataflow via
+/// `CreateDataflow` at replica-create time. For that reason it lives in its own
+/// [`BUILTIN_PROMETHEUS_SINKS`] registry rather than in the [`Builtin`] enum /
+/// [`BUILTINS_STATIC`], which would force it through `apply_builtins_to_catalog`
+/// and require a `CatalogItem` shape it does not have.
+///
+/// ## Column / label / value contract
+///
+/// These rules are enforced when the sink's SQL is planned at bootstrap,
+/// against the planned view's `RelationDesc`. They are stated here so sink
+/// authors get them right at declaration time.
+///
+/// - **Column names match exactly.** The SQL must project exactly one column
+///   per entry in [`labels`](Self::labels) and one per
+///   [`values[].column`](PromValue::column). Extra or missing columns are a
+///   bootstrap error, caught before any dataflow is installed.
+/// - **Label columns are text and non-null.** Labels must have type `text`. If
+///   a join can miss (say a replica-name lookup fails), the SQL is responsible
+///   for `COALESCE`-ing to a sentinel or filtering the row. The operator does
+///   not invent empty labels.
+/// - **Value columns are numeric and non-null.** Allowed types are the integer
+///   and float families plus `numeric`. `NULL` value rows are dropped with a
+///   warning, not emitted as 0.
+/// - **One sink, many values, one label set.** All of [`values`](Self::values)
+///   are emitted under the single label set in [`labels`](Self::labels) from
+///   one view.
+pub struct BuiltinPrometheusSink {
+    pub name: &'static str,
+    pub schema: &'static str,
+    pub oid: u32,
+    /// The view SQL. Must project every column named in [`labels`](Self::labels)
+    /// and in each [`values[].column`](PromValue::column), and nothing else.
+    pub sql: &'static str,
+    /// Ordered label column names. The order is stable and becomes the wire
+    /// contract between planning and rendering.
+    pub labels: &'static [&'static str],
+    /// One entry per emitted metric family. All share the [`labels`](Self::labels)
+    /// label set.
+    pub values: &'static [PromValue],
+    /// ACL items to apply to the object.
+    pub access: Vec<MzAclItem>,
+    /// Ontology metadata. None means this builtin is not an ontology entity.
+    pub ontology: Option<Ontology>,
+}
+
+impl BuiltinPrometheusSink {
+    /// The `CREATE VIEW` statement for the sink's input view.
+    ///
+    /// A Prometheus sink's input is a plain SQL view. The adapter plans this
+    /// statement through the same session-less path a builtin view uses to get
+    /// the view's optimized plan and `RelationDesc`, then attaches the terminal
+    /// `PrometheusSink` operator.
+    pub fn create_sql(&self) -> String {
+        format!("CREATE VIEW {}.{} AS {}", self.schema, self.name, self.sql)
+    }
+}
+
+impl Fingerprint for &BuiltinPrometheusSink {
+    fn fingerprint(&self) -> String {
+        self.create_sql()
     }
 }
 
@@ -1578,6 +1687,15 @@ pub const BUILTIN_CLUSTER_REPLICAS: &[&BuiltinClusterReplica] = &[
     &MZ_PROBE_CLUSTER_REPLICA,
 ];
 
+/// The Prometheus sink library.
+///
+/// These are not [`Builtin`]s / [`BUILTINS_STATIC`] entries: a Prometheus sink
+/// is not a queryable catalog item (see [`BuiltinPrometheusSink`]). The adapter
+/// reads this registry at bootstrap to plan one `DataflowDescription` per sink
+/// and installs them per replica via `CreateDataflow`.
+pub static BUILTIN_PROMETHEUS_SINKS: LazyLock<Vec<&'static BuiltinPrometheusSink>> =
+    LazyLock::new(|| vec![&*MZ_PROM_ARRANGEMENT_SIZES]);
+
 #[allow(non_snake_case)]
 pub mod BUILTINS {
     use super::*;
@@ -1654,6 +1772,84 @@ mod tests {
     use mz_sql_parser::ast::{Raw, RawItemName, UnresolvedItemName};
 
     use super::*;
+
+    /// Validates the static contract on every [`BuiltinPrometheusSink`] in
+    /// [`BUILTIN_PROMETHEUS_SINKS`], independent of planning.
+    ///
+    /// This is the guard that keeps a malformed sink from landing. Planning the
+    /// sink at bootstrap additionally checks that the declared columns appear in
+    /// the planned view.
+    #[mz_ore::test]
+    #[cfg_attr(miri, ignore)] // unsupported operation: can't call foreign function `rust_psm_stack_pointer` on OS `linux`
+    fn test_prometheus_sink_contract() {
+        let mut all_metrics: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut all_sink_names: BTreeSet<&str> = BTreeSet::new();
+
+        for sink in BUILTIN_PROMETHEUS_SINKS.iter() {
+            assert!(
+                all_sink_names.insert(sink.name),
+                "duplicate Prometheus sink name {:?}",
+                sink.name
+            );
+            assert!(
+                !sink.labels.is_empty(),
+                "Prometheus sink {:?} has no labels",
+                sink.name
+            );
+            assert!(
+                !sink.values.is_empty(),
+                "Prometheus sink {:?} has no values",
+                sink.name
+            );
+
+            // No duplicate label columns within the sink.
+            let label_set: BTreeSet<&str> = sink.labels.iter().copied().collect();
+            assert_eq!(
+                label_set.len(),
+                sink.labels.len(),
+                "Prometheus sink {:?} has duplicate label columns",
+                sink.name
+            );
+
+            // No duplicate value columns within the sink, and no value column
+            // collides with a label column (they name distinct projected
+            // columns of the same view).
+            let mut value_columns: BTreeSet<&str> = BTreeSet::new();
+            for value in sink.values {
+                assert!(
+                    !value.metric.is_empty(),
+                    "Prometheus sink {:?} has a value with an empty metric name",
+                    sink.name
+                );
+                assert!(
+                    !value.column.is_empty(),
+                    "Prometheus sink {:?} metric {:?} has an empty source column",
+                    sink.name,
+                    value.metric
+                );
+                assert!(
+                    value_columns.insert(value.column),
+                    "Prometheus sink {:?} has duplicate value column {:?}",
+                    sink.name,
+                    value.column
+                );
+                assert!(
+                    !label_set.contains(value.column),
+                    "Prometheus sink {:?} column {:?} is used as both a label and a value",
+                    sink.name,
+                    value.column
+                );
+
+                // No duplicate metric family names across all sinks.
+                if let Some(prev) = all_metrics.insert(value.metric, sink.name) {
+                    panic!(
+                        "metric family {:?} is emitted by both {:?} and {:?}",
+                        value.metric, prev, sink.name
+                    );
+                }
+            }
+        }
+    }
 
     #[mz_ore::test]
     #[cfg_attr(miri, ignore)] // unsupported operation: can't call foreign function `rust_psm_stack_pointer` on OS `linux`
