@@ -1545,6 +1545,9 @@ impl Instance {
                 ComputeSinkConnection::CopyToS3Oneshot(conn) => {
                     ComputeSinkConnection::CopyToS3Oneshot(conn)
                 }
+                // A Prometheus sink carries no storage metadata, so the
+                // connection is unchanged by dataflow augmentation.
+                ComputeSinkConnection::Prometheus(conn) => ComputeSinkConnection::Prometheus(conn),
             };
             let desc = ComputeSinkDesc {
                 from: se.from,
