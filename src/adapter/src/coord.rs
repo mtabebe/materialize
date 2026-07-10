@@ -240,6 +240,7 @@ mod info_metrics;
 mod introspection;
 mod message_handler;
 mod privatelink_status;
+pub(crate) mod prometheus_sinks;
 mod sql;
 mod validity;
 
