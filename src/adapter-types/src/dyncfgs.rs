@@ -344,10 +344,24 @@ pub const CLUSTER_CONTROLLER_TICK_INTERVAL: Config<Duration> = Config::new(
     "How often the cluster controller runs a reconcile tick.",
 );
 
+/// Whether to install builtin Prometheus sinks on compute replicas.
+///
+/// Off by default. When off, no sink dataflows are installed and clusterd's
+/// `/metrics` is unchanged. When on, the coordinator ships one `CreateDataflow`
+/// per builtin Prometheus sink to each newly created (introspection-enabled)
+/// replica. Flipping it takes effect as replicas are created or bounced, the
+/// same update semantics as adding a sink.
+pub const ENABLE_PROMETHEUS_SINKS: Config<bool> = Config::new(
+    "enable_prometheus_sinks",
+    false,
+    "Whether to install builtin Prometheus sinks on compute replicas.",
+);
+
 /// Adds the full set of all adapter `Config`s.
 pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
     configs
         .add(&ALLOW_USER_SESSIONS)
+        .add(&ENABLE_PROMETHEUS_SINKS)
         .add(&ENABLE_CLUSTER_CONTROLLER)
         .add(&CLUSTER_CONTROLLER_TICK_INTERVAL)
         .add(&WITH_0DT_DEPLOYMENT_MAX_WAIT)

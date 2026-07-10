@@ -1635,6 +1635,11 @@ impl Coordinator {
             .system_config()
             .enable_storage_introspection_logs();
 
+        // Captured before `replica_config` is moved into `create_replica`. The
+        // Prometheus sinks read this replica's `mz_internal.*` logging
+        // arrangements, which only exist when introspection is enabled.
+        let introspection_enabled = replica_config.compute.logging.enabled();
+
         // This replica's scoped (replica-local) overrides were pushed into the
         // controller's per-replica layer before this loop, by the
         // replica-scoped-configuration implication, so the replica's first
@@ -1655,6 +1660,9 @@ impl Coordinator {
             .expect("creating replicas must not fail");
 
         self.install_introspection_subscribes(cluster_id, replica_id)
+            .await;
+
+        self.install_prometheus_sinks_on_replica(cluster_id, replica_id, introspection_enabled)
             .await;
     }
 }

@@ -71,6 +71,12 @@ pub struct Optimizer {
     non_null_assertions: Vec<usize>,
     /// Refresh schedule, e.g., `REFRESH EVERY '1 day'`
     refresh_schedule: Option<RefreshSchedule>,
+    /// Overrides the exported sink's connection. When `None` (the default), the
+    /// dataflow exports a `MaterializedView` sink. Set to
+    /// `ComputeSinkConnection::Prometheus(..)` to reuse this optimizer for a
+    /// builtin Prometheus sink. The rest of the pipeline (import resolution,
+    /// global optimization, LIR lowering) is sink-agnostic.
+    sink_connection_override: Option<ComputeSinkConnection>,
     /// A human-readable name exposed internally (useful for debugging).
     debug_name: String,
     /// Optimizer config.
@@ -103,11 +109,19 @@ impl Optimizer {
             column_names,
             non_null_assertions,
             refresh_schedule,
+            sink_connection_override: None,
             debug_name,
             config,
             metrics,
             duration: Default::default(),
         }
+    }
+
+    /// Overrides the exported sink's connection, so this optimizer can build the
+    /// dataflow for a builtin Prometheus sink instead of a materialized view.
+    pub fn with_sink_connection(mut self, connection: ComputeSinkConnection) -> Self {
+        self.sink_connection_override = Some(connection);
+        self
     }
 }
 
@@ -248,13 +262,16 @@ impl Optimize<LocalMirPlan> for Optimizer {
         )?;
         df_builder.maybe_reoptimize_imported_views(&mut df_desc, &self.config)?;
 
+        let connection = self.sink_connection_override.clone().unwrap_or_else(|| {
+            ComputeSinkConnection::MaterializedView(MaterializedViewSinkConnection {
+                value_desc: rel_desc.clone(),
+                storage_metadata: (),
+            })
+        });
         let sink_description = ComputeSinkDesc {
             from: self.view_id,
             from_desc: rel_desc.clone(),
-            connection: ComputeSinkConnection::MaterializedView(MaterializedViewSinkConnection {
-                value_desc: rel_desc,
-                storage_metadata: (),
-            }),
+            connection,
             with_snapshot: true,
             up_to: Antichain::default(),
             non_null_assertions: self.non_null_assertions.clone(),

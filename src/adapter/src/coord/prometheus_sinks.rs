@@ -21,21 +21,22 @@
 //! cluster-agnostic is the planned view expression, its `RelationDesc`, and the
 //! lowered [`PrometheusSinkConnection`], held in [`PlannedPrometheusSink`].
 
-// The planning entry points and `compute_sink_desc` are exercised by the tests
-// below. Their production caller is the coordinator's replica-install path.
-#![allow(dead_code)]
-
+use mz_adapter_types::dyncfgs::ENABLE_PROMETHEUS_SINKS;
 use mz_catalog::builtin::{BuiltinPrometheusSink, PromKind as CatalogPromKind};
+use mz_compute_types::dataflows::DataflowDescription;
+use mz_compute_types::plan::LirRelationExpr;
 use mz_compute_types::sinks::{
-    ComputeSinkConnection, ComputeSinkDesc, PromKind, PromLabelSpec, PromValueSpec,
-    PrometheusSinkConnection,
+    ComputeSinkConnection, PromKind, PromLabelSpec, PromValueSpec, PrometheusSinkConnection,
 };
+use mz_controller_types::{ClusterId, ReplicaId};
+use mz_repr::optimize::OverrideFrom;
 use mz_repr::{RelationDesc, SqlScalarType};
 use mz_sql::plan::{HirRelationExpr, Plan};
-use timely::progress::Antichain;
 
 use crate::AdapterError;
 use crate::catalog::CatalogState;
+use crate::coord::Coordinator;
+use crate::optimize::{Optimize, OptimizerConfig, materialized_view};
 
 /// A builtin Prometheus sink after session-less planning.
 ///
@@ -53,23 +54,6 @@ pub struct PlannedPrometheusSink {
     pub desc: RelationDesc,
     /// The lowered connection with resolved column indices.
     pub connection: PrometheusSinkConnection,
-}
-
-impl PlannedPrometheusSink {
-    /// Builds the terminal [`ComputeSinkDesc`] for this sink. `from` is the
-    /// `GlobalId` of the sink's input view collection in the assembled
-    /// dataflow. The sink runs forever (`up_to` empty) and takes a snapshot.
-    pub fn compute_sink_desc(&self, from: mz_repr::GlobalId) -> ComputeSinkDesc {
-        ComputeSinkDesc {
-            from,
-            from_desc: self.desc.clone(),
-            connection: ComputeSinkConnection::Prometheus(self.connection.clone()),
-            with_snapshot: true,
-            up_to: Antichain::default(),
-            non_null_assertions: Vec::new(),
-            refresh_schedule: None,
-        }
-    }
 }
 
 /// Plans a single builtin Prometheus sink session-lessly and lowers its schema.
@@ -128,6 +112,93 @@ pub fn plan_all_prometheus_sinks(catalog_state: &CatalogState) -> Vec<PlannedPro
         }
     }
     planned
+}
+
+impl Coordinator {
+    /// Installs the builtin Prometheus sinks on a newly created replica.
+    ///
+    /// A no-op unless the `enable_prometheus_sinks` flag is on. Skips replicas
+    /// with introspection disabled, whose `mz_internal.*` logging arrangements
+    /// the sinks read do not exist. Ships one `CreateDataflow` per sink to this
+    /// replica. Teardown comes for free when the replica drops and its
+    /// dataflows are cancelled, dropping the operator's lifecycle token.
+    pub(crate) async fn install_prometheus_sinks_on_replica(
+        &mut self,
+        cluster_id: ClusterId,
+        replica_id: ReplicaId,
+        introspection_enabled: bool,
+    ) {
+        if !ENABLE_PROMETHEUS_SINKS.get(self.catalog().system_config().dyncfgs()) {
+            return;
+        }
+        if !introspection_enabled {
+            tracing::debug!(
+                %cluster_id, %replica_id,
+                "skipping prometheus sinks: replica has introspection disabled"
+            );
+            return;
+        }
+
+        // Planned once here per install. The flag is off by default, so this
+        // runs only for replicas created while the feature is enabled.
+        for sink in plan_all_prometheus_sinks(self.catalog().state()) {
+            match self.build_prometheus_sink_dataflow(cluster_id, &sink) {
+                Ok(df_desc) => {
+                    self.ship_dataflow(df_desc, cluster_id, Some(replica_id))
+                        .await;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        sink = %sink.name, %cluster_id, %replica_id,
+                        "failed to build prometheus sink dataflow: {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Optimizes a planned Prometheus sink into a per-cluster
+    /// `DataflowDescription` with a `Prometheus` sink terminal, reusing the
+    /// materialized-view optimizer with an overridden sink connection. The
+    /// global optimization step binds the cluster's logging index imports.
+    fn build_prometheus_sink_dataflow(
+        &mut self,
+        cluster_id: ClusterId,
+        sink: &PlannedPrometheusSink,
+    ) -> Result<DataflowDescription<LirRelationExpr>, AdapterError> {
+        let compute_instance = self
+            .instance_snapshot(cluster_id)
+            .map_err(|e| AdapterError::Internal(format!("compute instance missing: {e}")))?;
+        let (_, sink_id) = self.allocate_transient_id();
+        let (_, view_id) = self.allocate_transient_id();
+        let column_names = sink.desc.iter_names().cloned().collect();
+
+        let optimizer_config = {
+            let system_config = self.catalog().system_config();
+            let overrides = self.catalog().get_cluster(cluster_id).config.features();
+            OptimizerConfig::from(system_config).override_from(&overrides)
+        };
+
+        let mut optimizer = materialized_view::Optimizer::new(
+            self.owned_catalog().as_optimizer_catalog(),
+            compute_instance,
+            sink_id,
+            view_id,
+            column_names,
+            Vec::new(),
+            None,
+            format!("prometheus-sink-{}", sink.name),
+            optimizer_config,
+            self.optimizer_metrics(),
+        )
+        .with_sink_connection(ComputeSinkConnection::Prometheus(sink.connection.clone()));
+
+        let local_plan = optimizer.optimize(sink.expr.clone())?;
+        let global_mir_plan = optimizer.optimize(local_plan)?;
+        let global_lir_plan = optimizer.optimize(global_mir_plan)?;
+        let (df_desc, _df_meta) = global_lir_plan.unapply();
+        Ok(df_desc)
+    }
 }
 
 /// Lowers a [`BuiltinPrometheusSink`]'s label/value schema against the planned

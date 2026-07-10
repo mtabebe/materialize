@@ -603,6 +603,8 @@ fn augment(
             ComputeSinkConnection::CopyToS3Oneshot(_) => {
                 anyhow::bail!("copy-to-s3 sink {id} is not implemented")
             }
+            // A Prometheus sink carries no storage metadata.
+            ComputeSinkConnection::Prometheus(conn) => ComputeSinkConnection::Prometheus(conn),
         };
         sink_exports.insert(
             id,
