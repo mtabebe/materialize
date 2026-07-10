@@ -379,10 +379,37 @@ mod tests {
         assert!(err.to_string().contains("must be numeric"), "{err}");
     }
 
-    /// Plans the worked example `mz_prom_arrangement_sizes` end to end against a
-    /// real debug catalog and asserts the lowered connection shape. This is the
-    /// guard that the sink's SQL actually plans and that its declared columns
-    /// match the planned view.
+    /// Plans every registered sink end to end against a real debug catalog and
+    /// asserts each lowers cleanly. This is the modularity guard: adding a sink
+    /// is covered here automatically, and a sink whose SQL does not plan or
+    /// whose declared columns do not match its view fails in CI.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // unsupported operation: can't call foreign function
+    async fn plan_all_sinks() {
+        use mz_catalog::builtin::BUILTIN_PROMETHEUS_SINKS;
+
+        use crate::catalog::Catalog;
+
+        Catalog::with_debug(|catalog| async move {
+            for builtin in BUILTIN_PROMETHEUS_SINKS.iter() {
+                let planned = plan_builtin_prometheus_sink(catalog.state(), builtin)
+                    .unwrap_or_else(|e| panic!("sink {} must plan: {e}", builtin.name));
+                assert_eq!(planned.name, builtin.name);
+                assert_eq!(planned.connection.labels.len(), builtin.labels.len());
+                assert_eq!(planned.connection.values.len(), builtin.values.len());
+                let arity = planned.desc.arity();
+                for label in &planned.connection.labels {
+                    assert!(label.column_index < arity, "label index in range");
+                }
+                for value in &planned.connection.values {
+                    assert!(value.column_index < arity, "value index in range");
+                }
+            }
+        })
+        .await;
+    }
+
+    /// Spot-checks the worked example's shape: six labels, three gauge families.
     #[mz_ore::test(tokio::test)]
     #[cfg_attr(miri, ignore)] // unsupported operation: can't call foreign function
     async fn plan_worked_example() {
@@ -393,18 +420,8 @@ mod tests {
         Catalog::with_debug(|catalog| async move {
             let planned = plan_builtin_prometheus_sink(catalog.state(), &MZ_PROM_ARRANGEMENT_SIZES)
                 .expect("mz_prom_arrangement_sizes plans");
-            assert_eq!(planned.name, "mz_prom_arrangement_sizes");
             assert_eq!(planned.connection.labels.len(), 6);
             assert_eq!(planned.connection.values.len(), 3);
-            // Column indices resolve within the view's arity.
-            let arity = planned.desc.arity();
-            for label in &planned.connection.labels {
-                assert!(label.column_index < arity);
-            }
-            for value in &planned.connection.values {
-                assert!(value.column_index < arity);
-            }
-            // The three declared metric families are present.
             let metrics: Vec<_> = planned
                 .connection
                 .values

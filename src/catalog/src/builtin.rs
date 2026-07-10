@@ -1694,7 +1694,13 @@ pub const BUILTIN_CLUSTER_REPLICAS: &[&BuiltinClusterReplica] = &[
 /// reads this registry at bootstrap to plan one `DataflowDescription` per sink
 /// and installs them per replica via `CreateDataflow`.
 pub static BUILTIN_PROMETHEUS_SINKS: LazyLock<Vec<&'static BuiltinPrometheusSink>> =
-    LazyLock::new(|| vec![&*MZ_PROM_ARRANGEMENT_SIZES]);
+    LazyLock::new(|| {
+        vec![
+            &*MZ_PROM_ARRANGEMENT_SIZES,
+            &*MZ_PROM_DATAFLOW_ELAPSED,
+            &*MZ_PROM_DATAFLOW_ERRORS,
+        ]
+    });
 
 #[allow(non_snake_case)]
 pub mod BUILTINS {

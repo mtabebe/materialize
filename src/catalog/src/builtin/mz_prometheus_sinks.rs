@@ -93,3 +93,99 @@ pub static MZ_PROM_ARRANGEMENT_SIZES: LazyLock<BuiltinPrometheusSink> =
         access: vec![PUBLIC_SELECT],
         ontology: None,
     });
+
+/// `mz_prom_dataflow_elapsed`: per-object elapsed worker time on a replica,
+/// summed across the object's dataflow operators and workers.
+///
+/// The counter `elapsed_seconds` accumulates, so `rate()` gives per-object
+/// worker-time consumption. The source `mz_scheduling_elapsed_per_worker.id` is
+/// an operator id, mapped to its dataflow (and thence to the owning object) the
+/// same way `mz_prom_arrangement_sizes` does.
+///
+/// NOTE: per-replica attribution is a placeholder, as in
+/// [`MZ_PROM_ARRANGEMENT_SIZES`].
+pub static MZ_PROM_DATAFLOW_ELAPSED: LazyLock<BuiltinPrometheusSink> =
+    LazyLock::new(|| BuiltinPrometheusSink {
+        name: "mz_prom_dataflow_elapsed",
+        schema: MZ_INTROSPECTION_SCHEMA,
+        oid: oid::SINK_MZ_PROM_DATAFLOW_ELAPSED_OID,
+        sql: "
+            SELECT
+                o.id                                    AS object_id,
+                o.name                                  AS object_name,
+                c.id                                    AS cluster_id,
+                c.name                                  AS cluster_name,
+                cr.id                                   AS replica_id,
+                cr.name                                 AS replica_name,
+                (SUM(s.elapsed_ns) / 1000000000.0)::float8 AS elapsed_seconds
+            FROM mz_introspection.mz_scheduling_elapsed_per_worker s
+            JOIN mz_introspection.mz_dataflow_operator_dataflows mdod ON s.id = mdod.id
+            JOIN mz_introspection.mz_compute_exports e ON mdod.dataflow_id = e.dataflow_id
+            JOIN mz_catalog.mz_objects o                ON e.export_id = o.id
+            JOIN mz_catalog.mz_clusters c               ON o.cluster_id = c.id
+            JOIN mz_catalog.mz_cluster_replicas cr      ON cr.cluster_id = c.id
+            GROUP BY o.id, o.name, c.id, c.name, cr.id, cr.name",
+        labels: &[
+            "object_id",
+            "object_name",
+            "cluster_id",
+            "cluster_name",
+            "replica_id",
+            "replica_name",
+        ],
+        values: &[PromValue {
+            column: "elapsed_seconds",
+            metric: "mz_dataflow_elapsed_seconds_total",
+            kind: PromKind::Counter,
+            help: "Total elapsed worker time for an object's dataflow, in seconds.",
+        }],
+        access: vec![PUBLIC_SELECT],
+        ontology: None,
+    });
+
+/// `mz_prom_dataflow_errors`: per-object count of errors in an object's dataflow
+/// on a replica, so alerting on dataflow errors does not go through envd.
+///
+/// A gauge (the current error count), distinct from the sink's own
+/// `mz_prom_sink_errors_total` (which counts errors in the sink's own SQL). The
+/// source `mz_compute_error_counts.export_id` is the object id, joined directly
+/// to `mz_objects`.
+///
+/// NOTE: per-replica attribution is a placeholder, as in
+/// [`MZ_PROM_ARRANGEMENT_SIZES`].
+pub static MZ_PROM_DATAFLOW_ERRORS: LazyLock<BuiltinPrometheusSink> =
+    LazyLock::new(|| BuiltinPrometheusSink {
+        name: "mz_prom_dataflow_errors",
+        schema: MZ_INTROSPECTION_SCHEMA,
+        oid: oid::SINK_MZ_PROM_DATAFLOW_ERRORS_OID,
+        sql: "
+            SELECT
+                o.id                        AS object_id,
+                o.name                      AS object_name,
+                c.id                        AS cluster_id,
+                c.name                      AS cluster_name,
+                cr.id                       AS replica_id,
+                cr.name                     AS replica_name,
+                SUM(ec.count)::float8       AS count
+            FROM mz_introspection.mz_compute_error_counts ec
+            JOIN mz_catalog.mz_objects o                ON ec.export_id = o.id
+            JOIN mz_catalog.mz_clusters c               ON o.cluster_id = c.id
+            JOIN mz_catalog.mz_cluster_replicas cr      ON cr.cluster_id = c.id
+            GROUP BY o.id, o.name, c.id, c.name, cr.id, cr.name",
+        labels: &[
+            "object_id",
+            "object_name",
+            "cluster_id",
+            "cluster_name",
+            "replica_id",
+            "replica_name",
+        ],
+        values: &[PromValue {
+            column: "count",
+            metric: "mz_dataflow_error_count",
+            kind: PromKind::Gauge,
+            help: "Number of errors in an object's dataflow.",
+        }],
+        access: vec![PUBLIC_SELECT],
+        ontology: None,
+    });
