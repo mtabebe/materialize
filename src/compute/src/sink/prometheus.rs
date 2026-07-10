@@ -707,6 +707,99 @@ mod tests {
         });
     }
 
+    /// Freshness under stall: when the frontier freezes, the liveness timestamp
+    /// stops advancing so the alerting expression
+    /// `time() - mz_prom_sink_last_update_timestamp_seconds` grows past a
+    /// threshold, while the last-good value stays readable. Modeled at the
+    /// operator level with an injected clock, since wedging a real worker is
+    /// flaky.
+    #[mz_ore::test]
+    fn test_freshness_under_stall() {
+        let registry = MetricsRegistry::new();
+        let reg = registry.clone();
+        // Wall clock the alert would read, and the injected sink clock, kept
+        // separate so we can advance "now" while the sink's frontier is frozen.
+        let clock = Arc::new(AtomicU64::new(1_000)); // 1s
+        let clock2 = Arc::clone(&clock);
+        timely::execute_directly(move |worker| {
+            let mut ok_input: InputSession<Timestamp, Row, Diff> = InputSession::new();
+            let mut err_input: InputSession<Timestamp, DataflowErrorSer, Diff> =
+                InputSession::new();
+            let connection = arrangement_sizes_connection();
+            let now = NowFn::from(move || clock2.load(Ordering::SeqCst));
+
+            let _token = worker.dataflow(|scope| {
+                let ok = ok_input.to_collection(scope);
+                let err = err_input.to_collection(scope);
+                prometheus_sink(
+                    ok,
+                    err,
+                    &connection,
+                    &reg,
+                    0,
+                    1,
+                    now,
+                    GlobalId::Transient(5),
+                )
+            });
+
+            let labels = ["u1", "obj", "u2", "clus", "u3", "rep"];
+            ok_input.advance_to(Timestamp::from(1u64));
+            err_input.advance_to(Timestamp::from(1u64));
+            ok_input.update(sizes_row(labels, 100.0, 5.0, 2.0), Diff::ONE);
+            ok_input.advance_to(Timestamp::from(2u64));
+            err_input.advance_to(Timestamp::from(2u64));
+            ok_input.flush();
+            err_input.flush();
+            for _ in 0..20 {
+                worker.step();
+            }
+
+            let read = |families: &[MetricFamily], name: &str| -> f64 {
+                find_series(families, name, "object_name", "obj")
+                    .unwrap_or_else(|| panic!("{name} present"))
+                    .get_gauge()
+                    .value()
+            };
+            let read_ts = |families: &[MetricFamily]| -> f64 {
+                families
+                    .iter()
+                    .find(|f| f.name() == LAST_UPDATE_METRIC)
+                    .expect("liveness family")
+                    .get_metric()[0]
+                    .get_gauge()
+                    .value()
+            };
+
+            let families = reg.gather();
+            let fresh_ts = read_ts(&families);
+            assert_eq!(fresh_ts, 1.0, "timestamp set to the clock on first advance");
+            assert_eq!(read(&families, "mz_arrangement_size_bytes"), 100.0);
+
+            // Stall: advance the wall clock far ahead but hold the frontier.
+            clock.store(120_000, Ordering::SeqCst); // 120s
+            for _ in 0..20 {
+                worker.step();
+            }
+            let families = reg.gather();
+            let stalled_ts = read_ts(&families);
+            assert_eq!(
+                stalled_ts, fresh_ts,
+                "frozen frontier freezes the timestamp"
+            );
+
+            // The alerting expression `time() - metric` now shows the staleness.
+            let now_secs = clock.load(Ordering::SeqCst) as f64 / 1000.0;
+            let staleness = now_secs - stalled_ts;
+            assert!(
+                staleness > 60.0,
+                "staleness {staleness}s crosses a 60s alert threshold"
+            );
+            // The last-good value is still readable during the stall.
+            assert_eq!(read(&families, "mz_arrangement_size_bytes"), 100.0);
+        });
+    }
+
     /// A counter reflects the accumulated fold of `value * diff`, not the raw
     /// last value: feeding 10 then partially retracting 4 leaves 6.
     #[mz_ore::test]
