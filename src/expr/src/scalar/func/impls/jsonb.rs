@@ -20,9 +20,9 @@ use mz_repr::{ArrayRustType, Datum, Row, RowPacker, SqlColumnType, SqlScalarType
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{
     AstInfo, AvroSchema, ConnectionOption, ConnectionOptionName, CreateConnectionType,
-    CreateSubsourceOptionName, Format, FormatSpecifier, KafkaSourceConfigOptionName,
-    PgConfigOptionName, ProtobufSchema, RawClusterName, RawItemName, SourceEnvelope,
-    SourceErrorPolicy, Value, WithOptionValue,
+    CreateSinkConnection, CreateSubsourceOptionName, Format, FormatSpecifier, IcebergSinkMode,
+    KafkaSourceConfigOptionName, PgConfigOptionName, ProtobufSchema, RawClusterName, RawItemName,
+    SinkEnvelope, SourceEnvelope, SourceErrorPolicy, Value, WithOptionValue,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -539,7 +539,82 @@ fn parse_catalog_create_sql<'a>(a: &'a str) -> Result<Jsonb, EvalError> {
 
                 "subsource"
             }
-            CreateSink(_) => "sink",
+            // Reproduces Sink::sink_type / envelope / combined_format / formats
+            // (src/catalog/src/memory/objects.rs) and
+            // KafkaSinkFormat::get_format_name (src/storage-types/src/sinks.rs)
+            // for the mz_sinks builtin materialized view. Keep in sync with
+            // those functions.
+            CreateSink(stmt) => {
+                let Some(in_cluster) = stmt.in_cluster else {
+                    return Err("missing IN CLUSTER".into());
+                };
+                info.insert("cluster_id", json!(get_cluster_id(in_cluster)?));
+
+                match stmt.connection {
+                    CreateSinkConnection::Kafka { connection, .. } => {
+                        info.insert("sink_type", json!("kafka"));
+                        info.insert("connection_id", json!(get_item_id(connection)?));
+
+                        // Kafka sinks always carry ENVELOPE (planning requires it).
+                        if let Some(envelope) = stmt.envelope {
+                            let envelope_type = match envelope {
+                                SinkEnvelope::Upsert => "upsert",
+                                SinkEnvelope::Debezium => "debezium",
+                            };
+                            info.insert("envelope_type", json!(envelope_type));
+                        }
+
+                        if let Some(format_spec) = stmt.format {
+                            let (key_format, value_format) = match &format_spec {
+                                FormatSpecifier::Bare(fmt) => (None, format_name(fmt)),
+                                FormatSpecifier::KeyValue { key, value } => {
+                                    (Some(format_name(key)), format_name(value))
+                                }
+                            };
+                            if let Some(key_format) = key_format {
+                                info.insert("key_format", json!(key_format));
+                            }
+                            info.insert("value_format", json!(value_format));
+
+                            // Deprecated combined `format` column. Collapse to the
+                            // shared name ONLY for avro/avro or json/json (matches
+                            // KafkaSinkFormat::get_format_name); every other pair,
+                            // including text/text and bytes/bytes, is the composite
+                            // form.
+                            let combined = match key_format {
+                                None => value_format.to_string(),
+                                Some(key_format)
+                                    if key_format == value_format
+                                        && (value_format == "avro" || value_format == "json") =>
+                                {
+                                    value_format.to_string()
+                                }
+                                Some(key_format) => {
+                                    format!("key-{key_format}-value-{value_format}")
+                                }
+                            };
+                            info.insert("format", json!(combined));
+                        }
+                    }
+                    CreateSinkConnection::Iceberg {
+                        catalog_connection, ..
+                    } => {
+                        info.insert("sink_type", json!("iceberg"));
+                        info.insert("connection_id", json!(get_item_id(catalog_connection)?));
+                        // Iceberg envelope comes from MODE; iceberg has no format
+                        // columns.
+                        if let Some(mode) = stmt.mode {
+                            let envelope_type = match mode {
+                                IcebergSinkMode::Upsert => "upsert",
+                                IcebergSinkMode::Append => "append",
+                            };
+                            info.insert("envelope_type", json!(envelope_type));
+                        }
+                    }
+                }
+
+                "sink"
+            }
             CreateIndex(stmt) => {
                 let Some(in_cluster) = stmt.in_cluster else {
                     return Err("missing IN CLUSTER".into());
@@ -1547,5 +1622,134 @@ mod tests {
         let sql = "CREATE VIEW v AS SELECT 1";
         let out = super::parse_connection_details(sql).expect("ok");
         assert_eq!(as_serde(out), serde_json::Value::Null);
+    }
+
+    // --- parse_catalog_create_sql, CreateSink arm ----------------------------
+    //
+    // These lock down the sink detail derivation that the mz_sinks builtin
+    // materialized view reads (type, connection_id, envelope_type, format,
+    // key_format, value_format, cluster_id). The SLT covers real end-to-end
+    // sinks; these cover the fiddly format-collapse edges the SLT cannot inject.
+
+    /// Build a resolved `CREATE SINK ... INTO KAFKA` create_sql with the given
+    /// format/envelope tail appended, in the shape the catalog persists.
+    fn kafka_sink_sql(tail: &str) -> String {
+        format!(
+            "CREATE SINK \"materialize\".\"public\".\"snk\" \
+             IN CLUSTER [u1] \
+             FROM [u2 AS \"materialize\".\"public\".\"tbl\"] \
+             INTO KAFKA CONNECTION [u3 AS \"materialize\".\"public\".\"kc\"] \
+             (TOPIC 'topic') {tail}"
+        )
+    }
+
+    fn parsed_sink(sql: &str) -> serde_json::Value {
+        as_serde(super::parse_catalog_create_sql(sql).expect("ok"))
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_bare_json_upsert() {
+        let sql = kafka_sink_sql("FORMAT JSON ENVELOPE UPSERT");
+        assert_eq!(
+            parsed_sink(&sql),
+            json!({
+                "type": "sink",
+                "sink_type": "kafka",
+                "connection_id": "u3",
+                "cluster_id": "u1",
+                "envelope_type": "upsert",
+                "value_format": "json",
+                "format": "json",
+            }),
+        );
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_debezium() {
+        let sql = kafka_sink_sql("FORMAT JSON ENVELOPE DEBEZIUM");
+        let out = parsed_sink(&sql);
+        assert_eq!(out["envelope_type"], json!("debezium"));
+        // append is reachable only via iceberg MODE APPEND, never a kafka sink.
+        assert_ne!(out["envelope_type"], json!("append"));
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_key_value_avro_collapses() {
+        // avro/avro collapses to the shared name for the deprecated `format`.
+        let tail = "KEY FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY CONNECTION \
+             [u4 AS \"materialize\".\"public\".\"csr\"] \
+             VALUE FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY CONNECTION \
+             [u4 AS \"materialize\".\"public\".\"csr\"] ENVELOPE UPSERT";
+        let out = parsed_sink(&kafka_sink_sql(tail));
+        assert_eq!(out["key_format"], json!("avro"));
+        assert_eq!(out["value_format"], json!("avro"));
+        assert_eq!(out["format"], json!("avro"));
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_key_value_json_collapses() {
+        let tail = "KEY FORMAT JSON VALUE FORMAT JSON ENVELOPE UPSERT";
+        let out = parsed_sink(&kafka_sink_sql(tail));
+        assert_eq!(out["key_format"], json!("json"));
+        assert_eq!(out["value_format"], json!("json"));
+        assert_eq!(out["format"], json!("json"));
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_key_value_text_bytes_composite() {
+        let tail = "KEY FORMAT TEXT VALUE FORMAT BYTES ENVELOPE UPSERT";
+        let out = parsed_sink(&kafka_sink_sql(tail));
+        assert_eq!(out["key_format"], json!("text"));
+        assert_eq!(out["value_format"], json!("bytes"));
+        assert_eq!(out["format"], json!("key-text-value-bytes"));
+    }
+
+    #[mz_ore::test]
+    fn sink_kafka_key_value_text_text_does_not_collapse() {
+        // Only avro/avro and json/json collapse. text/text stays composite.
+        let tail = "KEY FORMAT TEXT VALUE FORMAT TEXT ENVELOPE UPSERT";
+        let out = parsed_sink(&kafka_sink_sql(tail));
+        assert_eq!(out["format"], json!("key-text-value-text"));
+    }
+
+    #[mz_ore::test]
+    fn sink_iceberg_upsert() {
+        let sql = "CREATE SINK \"materialize\".\"public\".\"isnk\" \
+             IN CLUSTER [u1] \
+             FROM [u2 AS \"materialize\".\"public\".\"tbl\"] \
+             INTO ICEBERG CATALOG CONNECTION [u5 AS \"materialize\".\"public\".\"ic\"] \
+             (TABLE 'ns.tbl') MODE UPSERT";
+        let out = parsed_sink(sql);
+        assert_eq!(out["type"], json!("sink"));
+        assert_eq!(out["sink_type"], json!("iceberg"));
+        // connection_id is the catalog connection, not the optional aws connection.
+        assert_eq!(out["connection_id"], json!("u5"));
+        assert_eq!(out["envelope_type"], json!("upsert"));
+        // Iceberg sinks have no format columns.
+        assert_eq!(out.get("format"), None);
+        assert_eq!(out.get("key_format"), None);
+        assert_eq!(out.get("value_format"), None);
+    }
+
+    #[mz_ore::test]
+    fn sink_iceberg_append() {
+        let sql = "CREATE SINK \"materialize\".\"public\".\"isnk\" \
+             IN CLUSTER [u1] \
+             FROM [u2 AS \"materialize\".\"public\".\"tbl\"] \
+             INTO ICEBERG CATALOG CONNECTION [u5 AS \"materialize\".\"public\".\"ic\"] \
+             (TABLE 'ns.tbl') MODE APPEND";
+        let out = parsed_sink(sql);
+        assert_eq!(out["sink_type"], json!("iceberg"));
+        assert_eq!(out["envelope_type"], json!("append"));
+        // debezium is reachable only via a kafka ENVELOPE, never an iceberg sink.
+        assert_ne!(out["envelope_type"], json!("debezium"));
+    }
+
+    #[mz_ore::test]
+    fn sink_arm_leaves_other_item_types_unchanged() {
+        // Regression guard: extending the CreateSink arm must not perturb the
+        // shape emitted for a non-sink item.
+        let sql = "CREATE VIEW \"materialize\".\"public\".\"v\" AS SELECT 1";
+        assert_eq!(parsed_sink(sql), json!({ "type": "view" }));
     }
 }
