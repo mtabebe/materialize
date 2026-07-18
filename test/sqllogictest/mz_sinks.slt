@@ -1,0 +1,122 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Behavioural tests for mz_catalog.mz_sinks. The view is a
+# BuiltinMaterializedView backed by SQL over mz_internal.mz_catalog_raw: see
+# MZ_SINKS in src/catalog/src/builtin/mz_catalog.rs and the CreateSink arm of
+# the parse_catalog_create_sql helper in
+# src/expr/src/scalar/func/impls/jsonb.rs.
+#
+# Populated sinks need a live broker (creating a kafka/iceberg sink validates
+# the external endpoint), so the per-column derivations (type, envelope, format
+# collapse, connection/cluster ids) are covered by the parse_catalog_create_sql
+# unit tests in jsonb.rs and by the real end-to-end sinks in
+# test/testdrive/mz-sinks.td and test/testdrive/kafka-avro-sinks.td. This file
+# pins the column shape and the non-sink filtering, neither of which need a
+# broker.
+
+mode cockroach
+
+reset-server
+
+# --- Schema -------------------------------------------------------------------
+
+# Lock down: 15 columns, canonical order, types, and nullability.
+query TTT
+SELECT c.name, c.type, c.nullable::text
+FROM mz_catalog.mz_columns c
+JOIN mz_catalog.mz_objects o ON c.id = o.id
+JOIN mz_catalog.mz_schemas s ON o.schema_id = s.id
+WHERE o.name = 'mz_sinks' AND s.name = 'mz_catalog'
+ORDER BY c.position
+----
+id  text  false
+oid  oid  false
+schema_id  text  false
+name  text  false
+type  text  false
+connection_id  text  true
+size  text  true
+envelope_type  text  true
+format  text  true
+key_format  text  true
+value_format  text  true
+cluster_id  text  false
+owner_id  text  false
+create_sql  text  false
+redacted_create_sql  text  false
+
+# mz_sinks is a materialized view, not a table (the SQL-493 conversion).
+query T
+SELECT type FROM mz_objects o
+JOIN mz_schemas s ON o.schema_id = s.id
+WHERE o.name = 'mz_sinks' AND s.name = 'mz_catalog'
+----
+materialized-view
+
+# --- Empty on a fresh env -----------------------------------------------------
+
+query I
+SELECT count(*) FROM mz_sinks
+----
+0
+
+# --- Non-sink items are excluded (parsed->>'type' = 'sink' filter) ------------
+
+statement ok
+CREATE SOURCE lg FROM LOAD GENERATOR COUNTER
+
+statement ok
+CREATE TABLE t (a int)
+
+statement ok
+CREATE VIEW v AS SELECT 1
+
+statement ok
+CREATE MATERIALIZED VIEW mv AS SELECT 1
+
+# None of the non-sink items above leak into mz_sinks.
+query I
+SELECT count(*) FROM mz_sinks
+----
+0
+
+# --- Invariants that hold regardless of population ----------------------------
+
+# size is deprecated and always NULL.
+query I
+SELECT count(*) FROM mz_sinks WHERE size IS NOT NULL
+----
+0
+
+# Every row (if any) joins its parent object and schema, and id/oid are unique.
+query I
+SELECT count(*) FROM mz_sinks s
+LEFT JOIN mz_objects o ON s.id = o.id
+LEFT JOIN mz_schemas sc ON s.schema_id = sc.id
+WHERE o.id IS NULL OR sc.id IS NULL
+----
+0
+
+query II
+SELECT count(*) - count(DISTINCT id), count(*) - count(DISTINCT oid) FROM mz_sinks
+----
+0  0
+
+statement ok
+DROP SOURCE lg
+
+statement ok
+DROP TABLE t
+
+statement ok
+DROP VIEW v
+
+statement ok
+DROP MATERIALIZED VIEW mv

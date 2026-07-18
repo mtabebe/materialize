@@ -230,7 +230,7 @@ MATERIALIZED VIEW
 materialize
 mz_catalog
 mz_sinks
-BASE TABLE
+MATERIALIZED VIEW
 materialize
 mz_catalog
 mz_sources

@@ -1220,11 +1220,17 @@ WHERE
     });
 // mz_sources is generated dynamically in BUILTINS_STATIC via builtin::make_mz_sources()
 // with builtin source/log entries inlined as VALUES. See builtin/builtin.rs.
-pub static MZ_SINKS: LazyLock<BuiltinTable> = LazyLock::new(|| {
-    BuiltinTable {
+// Reproduces the former `pack_sink_update` packer. Every sink detail is derived
+// from the persisted `create_sql` via `parse_catalog_create_sql` (CreateSink
+// arm). `size` is a hardcoded NULL (deprecated, dropped with linked clusters).
+// `format` is the deprecated combined column whose avro/avro and json/json
+// collapse lives in that helper. There are no builtin sinks, so unlike mz_sources
+// this reads only the user `Item` rows, with no VALUES/GidMapping union.
+pub static MZ_SINKS: LazyLock<BuiltinMaterializedView> = LazyLock::new(|| {
+    BuiltinMaterializedView {
         name: "mz_sinks",
         schema: MZ_CATALOG_SCHEMA,
-        oid: oid::TABLE_MZ_SINKS_OID,
+        oid: oid::MV_MZ_SINKS_OID,
         desc: RelationDesc::builder()
             .with_column("id", SqlScalarType::String.nullable(false))
             .with_column("oid", SqlScalarType::Oid.nullable(false))
@@ -1290,6 +1296,44 @@ pub static MZ_SINKS: LazyLock<BuiltinTable> = LazyLock::new(|| {
                 "The redacted `CREATE` SQL statement for the sink.",
             ),
         ]),
+        sql: "
+IN CLUSTER mz_catalog_server
+WITH (
+    ASSERT NOT NULL id,
+    ASSERT NOT NULL oid,
+    ASSERT NOT NULL schema_id,
+    ASSERT NOT NULL name,
+    ASSERT NOT NULL type,
+    ASSERT NOT NULL cluster_id,
+    ASSERT NOT NULL owner_id,
+    ASSERT NOT NULL create_sql,
+    ASSERT NOT NULL redacted_create_sql
+) AS
+SELECT
+    mz_internal.parse_catalog_id(data->'key'->'gid') AS id,
+    (data->'value'->>'oid')::oid AS oid,
+    mz_internal.parse_catalog_id(data->'value'->'schema_id') AS schema_id,
+    data->'value'->>'name' AS name,
+    parsed->>'sink_type' AS type,
+    parsed->>'connection_id' AS connection_id,
+    NULL::text AS size,
+    parsed->>'envelope_type' AS envelope_type,
+    parsed->>'format' AS format,
+    parsed->>'key_format' AS key_format,
+    parsed->>'value_format' AS value_format,
+    parsed->>'cluster_id' AS cluster_id,
+    mz_internal.parse_catalog_id(data->'value'->'owner_id') AS owner_id,
+    data->'value'->'definition'->'V1'->>'create_sql' AS create_sql,
+    mz_internal.redact_sql(data->'value'->'definition'->'V1'->>'create_sql') AS redacted_create_sql
+FROM
+    mz_internal.mz_catalog_raw
+    CROSS JOIN LATERAL (
+        SELECT mz_internal.parse_catalog_create_sql(
+            data->'value'->'definition'->'V1'->>'create_sql')
+    ) AS l(parsed)
+WHERE
+    data->>'kind' = 'Item' AND
+    parsed->>'type' = 'sink'",
         is_retained_metrics_object: true,
         access: vec![PUBLIC_SELECT],
         ontology: Some(Ontology {

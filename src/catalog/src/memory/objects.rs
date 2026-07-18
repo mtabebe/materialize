@@ -1328,6 +1328,9 @@ impl Sink {
     }
 
     /// Envelope of the sink.
+    ///
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// `mz_sinks` builtin materialized view. Keep in sync.
     pub fn envelope(&self) -> Option<&str> {
         match &self.envelope {
             SinkEnvelope::Debezium => Some("debezium"),
@@ -1340,6 +1343,9 @@ impl Sink {
     /// if the key-format is none or the key & value formats are
     /// both the same (either avro or json), we return the value format name,
     /// otherwise we return a composite name.
+    ///
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// `mz_sinks` builtin materialized view. Keep in sync.
     pub fn combined_format(&self) -> Option<Cow<'_, str>> {
         match &self.connection {
             StorageSinkConnection::Kafka(connection) => Some(connection.format.get_format_name()),
@@ -1348,6 +1354,9 @@ impl Sink {
     }
 
     /// Output distinct key_format and value_format of the sink.
+    ///
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// `mz_sinks` builtin materialized view. Keep in sync.
     pub fn formats(&self) -> Option<(Option<&str>, &str)> {
         match &self.connection {
             StorageSinkConnection::Kafka(connection) => {

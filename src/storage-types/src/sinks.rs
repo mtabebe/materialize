@@ -186,6 +186,9 @@ impl<R: ConnectionResolver> IntoInlineConnection<StorageSinkConnection, R>
 
 impl<C: ConnectionAccess> StorageSinkConnection<C> {
     /// returns an option to not constrain ourselves in the future
+    ///
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// `mz_sinks` builtin materialized view. Keep in sync.
     pub fn connection_id(&self) -> Option<CatalogItemId> {
         use StorageSinkConnection::*;
         match self {
@@ -198,6 +201,9 @@ impl<C: ConnectionAccess> StorageSinkConnection<C> {
     }
 
     /// Returns the name of the sink connection.
+    ///
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// `mz_sinks` builtin materialized view. Keep in sync.
     pub fn name(&self) -> &'static str {
         use StorageSinkConnection::*;
         match self {
@@ -485,6 +491,9 @@ impl<C: ConnectionAccess> KafkaSinkFormatType<C> {
 }
 
 impl<C: ConnectionAccess> KafkaSinkFormat<C> {
+    /// Reproduced in SQL by `parse_catalog_create_sql` (CreateSink arm) for the
+    /// deprecated `format` column of the `mz_sinks` builtin materialized view.
+    /// Keep the collapse rule in sync.
     pub fn get_format_name<'a>(&'a self) -> Cow<'a, str> {
         // For legacy reasons, if the key-format is none or the key & value formats are
         // both the same (either avro or json), we return the value format name,
