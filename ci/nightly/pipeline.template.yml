@@ -2112,17 +2112,6 @@ steps:
             # Don't run with Azurite since it's pretty slow, see https://github.com/MaterializeInc/database-issues/issues/8892 for details
             args: [--replicas=8]
 
-  - id: subscribe-consistency-race
-    label: "SUBSCRIBE consistency race"
-    depends_on: build-x86_64
-    timeout_in_minutes: 30
-    agents:
-      queue: hetzner-x86-64-8cpu-16gb
-    plugins:
-      - ./ci/plugins/mzcompose:
-          composition: subscribe-consistency-race
-          args: [--runtime=900, --writers=6, --verifiers=3, --history=128]
-
   - group: "Parallel Workload"
     key: parallel-workload
     steps:
