@@ -50,7 +50,8 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
     c.up("materialized")
     # Column types mirror the parallel-workload table that failed (int list,
     # smallint, uint2, daterange); the defect did not show with plain integers.
-    c.sql(f"""
+    c.sql(
+        f"""
         DROP TABLE IF EXISTS t CASCADE;
         DROP CLUSTER IF EXISTS c_idx CASCADE;
         DROP CLUSTER IF EXISTS c_noidx CASCADE;
@@ -63,7 +64,8 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
                 (DATE '2001-01-01' + g * INTERVAL '1 day')::date)
             FROM generate_series(1, 200) g;
         CREATE DEFAULT INDEX t_idx IN CLUSTER c_idx ON t;
-        """)
+        """
+    )
 
     deadline = time.time() + args.runtime
     flag = {"stop": False}
