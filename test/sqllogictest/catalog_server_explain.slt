@@ -248,6 +248,7 @@ mz_catalog.mz_objects:
         Map: "sink", null
           →Arranged mz_catalog.mz_sinks
             Key: (#0{id})
+      →Read mz_internal.mz_metric_sinks
       →Differential Join %0:mz_indexes[#3{on_id}] » %1:l0[#0{id}]
         Final closure:
           Project: #0, #1, #5, #2, #6, #4, #3, #7
@@ -281,6 +282,9 @@ mz_catalog.mz_objects:
 Source mz_catalog.mz_functions
   project=(#0..=#3, #9, #8, #10, #11)
   map=("function", null, null)
+Source mz_internal.mz_metric_sinks
+  project=(#0..=#3, #7, #6, #5, #8)
+  map=("metric-sink", null)
 
 Used Indexes:
   - mz_catalog.mz_indexes_ind (*** full scan ***)
@@ -1681,7 +1685,7 @@ mz_internal.mz_object_history:
           →Read mz_catalog.mz_audit_events
     cte l2 =
       →Arrange (#0)
-        →Constant (10 rows)
+        →Constant (11 rows)
     cte l3 =
       →Differential Join %1:l2[#0] » %0[#0]
         after %0:
@@ -5108,7 +5112,7 @@ mz_catalog.mz_materialized_views:
           Project: #4, #0, #5, #1, #6, #2, #9, #8, #3, #7
           Map: {=r/s1, s1=r/s1}, "s1"
       →Arrange (#1{schema_name}, #2{name})
-        →Constant (42 rows)
+        →Constant (43 rows)
       →Arrange (empty key) (#0{schema_name}) (#0{schema_name}, #1{name})
         →Fused with Child Map/Filter/Project
           Project: #4, #3, #5
@@ -5696,6 +5700,21 @@ Source mz_internal.mz_catalog_raw
 
 Used Indexes:
   - mz_catalog.mz_sources_ind (delta join lookup)
+
+Target cluster: mz_catalog_server
+
+EOF
+
+query T multiline
+EXPLAIN MATERIALIZED VIEW "mz_internal"."mz_metric_sinks";
+----
+mz_internal.mz_metric_sinks:
+  →Read mz_internal.mz_catalog_raw
+
+Source mz_internal.mz_catalog_raw
+  project=(#3..=#9)
+  filter=(("Item" = (#0{data} ->> "kind")) AND ("metric-sink" = (#2 ->> "type")))
+  map=((#0{data} -> "value"), parse_catalog_create_sql((((#1 -> "definition") -> "V1") ->> "create_sql")), parse_catalog_id(((#0{data} -> "key") -> "gid")), text_to_oid((#1 ->> "oid")), parse_catalog_id((#1 -> "schema_id")), (#1 ->> "name"), (#2{parsed} ->> "from_id"), (#2{parsed} ->> "cluster_id"), parse_catalog_id((#1 -> "owner_id")))
 
 Target cluster: mz_catalog_server
 
@@ -8192,7 +8211,7 @@ query T multiline
 EXPLAIN SELECT * FROM "mz_internal"."mz_builtin_materialized_views";
 ----
 Explained Query (fast path):
-  →Constant (42 rows)
+  →Constant (43 rows)
 
 Target cluster: mz_catalog_server
 
@@ -10194,7 +10213,7 @@ query T multiline
 EXPLAIN SELECT * FROM "mz_internal"."mz_objects_id_namespace_types";
 ----
 Explained Query (fast path):
-  →Constant (10 rows)
+  →Constant (11 rows)
 
 Target cluster: mz_catalog_server
 
@@ -10204,7 +10223,7 @@ query T multiline
 EXPLAIN SELECT * FROM "mz_internal"."mz_ontology_entity_types";
 ----
 Explained Query (fast path):
-  →Constant (134 rows)
+  →Constant (135 rows)
 
 Target cluster: mz_catalog_server
 
@@ -10214,7 +10233,7 @@ query T multiline
 EXPLAIN SELECT * FROM "mz_internal"."mz_ontology_link_types";
 ----
 Explained Query (fast path):
-  →Constant (173 rows)
+  →Constant (177 rows)
 
 Target cluster: mz_catalog_server
 
@@ -10228,7 +10247,7 @@ Explained Query:
     cte l0 =
       →Differential Join %1:mz_schemas[#0{id}] » %2:mz_objects[#2{schema_id}] » %0[#0{schema_name}, #1{table_name}] » %3:mz_columns[#0{id}]
         →Arrange (#0{schema_name}, #1{table_name})
-          →Constant (134 rows)
+          →Constant (135 rows)
         →Arrange (#0{id})
           →Fused with Child Map/Filter/Project
             Project: #1, #3
@@ -10281,7 +10300,7 @@ Explained Query:
       →Differential Join %0:l4[#0{entity_name}, #1{name}] » %1[#0{entity_name}, #1{column_name}]
         →Arranged l4
         →Arrange (#0{entity_name}, #1{column_name})
-          →Constant (272 rows)
+          →Constant (278 rows)
   →Return
     →Union
       →Map/Filter/Project

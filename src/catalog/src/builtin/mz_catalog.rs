@@ -3465,6 +3465,8 @@ pub static MZ_OBJECTS: LazyLock<BuiltinView> = LazyLock::new(|| {
 UNION ALL
     SELECT id, oid, schema_id, name, 'sink', owner_id, cluster_id, NULL::mz_catalog.mz_aclitem[] FROM mz_catalog.mz_sinks
 UNION ALL
+    SELECT id, oid, schema_id, name, 'metric-sink', owner_id, cluster_id, NULL::mz_catalog.mz_aclitem[] FROM mz_internal.mz_metric_sinks
+UNION ALL
     SELECT mz_indexes.id, mz_indexes.oid, mz_relations.schema_id, mz_indexes.name, 'index', mz_indexes.owner_id, mz_indexes.cluster_id, NULL::mz_catalog.mz_aclitem[]
     FROM mz_catalog.mz_indexes
     JOIN mz_catalog.mz_relations ON mz_indexes.on_id = mz_relations.id
