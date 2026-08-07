@@ -207,9 +207,10 @@ contains:still depended upon by metric sink "s"
 
 > DROP CLUSTER REPLICA quickstart.churn
 
-# `mz_cluster_prometheus_metrics` is per-replica introspection, served by
-# whichever replica the query lands on, so this reads the surviving replica's
-# registry.
+# Nothing is asserted while both replicas are up: `mz_cluster_prometheus_metrics`
+# is per-replica introspection, and reading a log relation on a cluster with more
+# than one replica errors as `UntargetedLogRead` unless the session picks one. So
+# this reads the surviving replica's registry, after the churn.
 > SELECT count(*) FROM mz_introspection.mz_cluster_prometheus_metrics
   WHERE metric_name = 'mz_metric_sink_churn_value'
 1

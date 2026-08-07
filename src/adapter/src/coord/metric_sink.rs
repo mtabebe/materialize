@@ -57,8 +57,11 @@ use crate::{AdapterError, ExecuteResponse, optimize};
 /// known by in logs.
 #[derive(Debug)]
 pub(super) struct CuratedMetricSink {
-    /// Identifies the definition in logs, in the registry, and as the assembled dataflow's debug
-    /// name. Must be unique within [`CURATED`].
+    /// Identifies the definition in logs, in [`Coordinator::metric_sinks`], and in the assembled
+    /// dataflow's debug name. Must be unique within [`CURATED`].
+    ///
+    /// NOTE: this is not what the operator's health gauges carry. Those are labelled
+    /// `sink="<GlobalId>"`, and for a curated sink that id is transient.
     name: &'static str,
     /// A `SELECT` producing the canonical metric-sink columns (`metric_name`, `metric_type`,
     /// `labels`, `value`, `help`), the contract `mz_sql::plan::validate_metric_sink_desc` checks.
@@ -102,7 +105,9 @@ impl Coordinator {
     /// Installs the curated metric sinks on the given replica.
     ///
     /// Turning `enable_metric_sink` off stops installing on replicas created from then on. It does
-    /// not tear down what is already installed, which clears on the next replica restart.
+    /// not tear down what is already installed: those keep running until their replica is dropped
+    /// or envd restarts. A replica that merely reconnects re-renders them from the controller's
+    /// command history, so a replica restart does not clear them either.
     pub(super) async fn install_metric_sinks(
         &mut self,
         cluster_id: ClusterId,
@@ -363,7 +368,9 @@ impl CuratedMetricSink {
             bail!("source SQL is not a SELECT: {plan:?}");
         };
         // The sink consumes the whole collection continuously, so there is no row set for a
-        // finishing to order, limit, or project. A non-trivial one would be silently dropped here.
+        // finishing to order or limit. Dropping one silently would also desync `desc` from `source`,
+        // since a finishing's `project` reorders the output columns and the shaping resolves the
+        // canonical columns by index into `desc`.
         if !finishing.is_trivial(desc.arity()) {
             bail!("source SQL must not use ORDER BY, LIMIT, or OFFSET");
         }
