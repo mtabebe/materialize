@@ -183,3 +183,35 @@ contains:still depended upon by metric sink "s"
 0
 
 > DROP TABLE t
+
+# Replica churn drives the coordinator's curated metric-sink install and
+# teardown (`install_metric_sinks` / `drop_metric_sinks`). The curated list is
+# empty, so there is no series to assert on: what is under test is that both
+# hooks run over an empty list without erroring, and that a replica added and
+# removed under a live sink leaves that sink publishing on the replicas that
+# remain.
+> CREATE VIEW churn_v AS
+  SELECT 'mz_metric_sink_churn_value'::text AS metric_name,
+         'gauge'::text AS metric_type,
+         map_build(LIST[ROW('k', 'a')])::map[text=>text] AS labels,
+         1.0::double precision AS value,
+         'a metric emitted across replica churn'::text AS help
+
+> CREATE METRIC SINK s_churn IN CLUSTER quickstart FROM churn_v
+
+> SELECT count(*) FROM mz_introspection.mz_cluster_prometheus_metrics
+  WHERE metric_name = 'mz_metric_sink_churn_value'
+1
+
+> CREATE CLUSTER REPLICA quickstart.churn SIZE '1'
+
+> DROP CLUSTER REPLICA quickstart.churn
+
+# `mz_cluster_prometheus_metrics` is per-replica introspection, served by
+# whichever replica the query lands on, so this reads the surviving replica's
+# registry.
+> SELECT count(*) FROM mz_introspection.mz_cluster_prometheus_metrics
+  WHERE metric_name = 'mz_metric_sink_churn_value'
+1
+
+> DROP VIEW churn_v CASCADE
