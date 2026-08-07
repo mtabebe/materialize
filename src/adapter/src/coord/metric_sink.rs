@@ -241,19 +241,21 @@ impl Coordinator {
                         optimize::metric_sink::MetricSinkFrom::Query { expr, desc },
                     );
 
-                    // MIR ⇒ MIR optimization (global)
-                    let global_mir_plan = optimizer.catch_unwind_optimize(metric_sink)?;
-                    // MIR ⇒ LIR lowering and LIR ⇒ LIR optimization (global)
-                    let global_lir_plan = optimizer
-                        .catch_unwind_optimize(global_mir_plan)
-                        .inspect_err(|err| {
-                            // `sequence_staged` has no session to report to for a
-                            // coordinator-driven install, so an error would otherwise vanish.
-                            soft_panic_or_log!(
-                                "curated metric sink failed to optimize (name={}): {err}",
-                                definition.name
-                            )
-                        })?;
+                    // Both steps run inside one closure so either failure hits the same log.
+                    // `sequence_staged` has no session to report to for a coordinator-driven
+                    // install, so an error would otherwise vanish.
+                    let global_lir_plan = (|| {
+                        // MIR ⇒ MIR optimization (global)
+                        let global_mir_plan = optimizer.catch_unwind_optimize(metric_sink)?;
+                        // MIR ⇒ LIR lowering and LIR ⇒ LIR optimization (global)
+                        optimizer.catch_unwind_optimize(global_mir_plan)
+                    })()
+                    .inspect_err(|err| {
+                        soft_panic_or_log!(
+                            "curated metric sink failed to optimize (name={}): {err}",
+                            definition.name
+                        )
+                    })?;
 
                     let stage = MetricSinkStage::Finish(MetricSinkFinish {
                         validity,
@@ -284,8 +286,9 @@ impl Coordinator {
         } = stage;
 
         // The replica may already have been dropped, in which case we must not install a dataflow
-        // for it. Comparing the recorded sink id, not just the key, also covers the replica having
-        // been dropped and re-created under the same id while this install was in flight.
+        // for it: `drop_metric_sinks` removed the entry. Comparing the recorded sink id, not just
+        // the key, keeps the check about *this* install rather than whatever is registered under
+        // the key now.
         let still_wanted = self
             .metric_sinks
             .get(&(replica_id, definition.name))
