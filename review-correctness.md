@@ -1,3 +1,11 @@
+---
+status: ready-for-review
+category: cluster-controller
+title: PR #38112 review — correctness-under-adversity lens
+updated: 2026-08-14
+outcome: One blocking finding — migration step pinned to stale dev version (26.38.0-dev.0) will be skipped on the 26.38→26.39 upgrade, panicking catalog open; rest of the change holds up.
+---
+
 # Review — PR #38112, lens: correctness under adversity
 
 **Verdict: Request changes.** One blocking correctness bug: the builtin-schema
