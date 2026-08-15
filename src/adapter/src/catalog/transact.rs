@@ -34,6 +34,7 @@ use mz_audit_log::{
 };
 use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::builtin::BuiltinLog;
+use mz_catalog::durable::objects::{BranchClusterMap, BranchTimestamp};
 use mz_catalog::durable::{DryRunTransaction, NetworkPolicy, Snapshot, Transaction};
 use mz_catalog::expr_cache::LocalExpressions;
 use mz_catalog::memory::error::{AmbiguousRename, Error, ErrorKind};
@@ -45,10 +46,12 @@ use mz_cluster_controller::ctx::RefreshWindowDecision;
 use mz_controller::clusters::{ManagedReplicaLocation, ReplicaConfig, ReplicaLocation};
 use mz_controller_types::{ClusterId, ReplicaId};
 use mz_ore::collections::HashSet;
+use mz_ore::now::EpochMillis;
 use mz_ore::{instrument, soft_assert_or_log};
 use mz_persist_types::ShardId;
 use mz_repr::adt::interval::Interval;
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem, PrivilegeMap, merge_mz_acl_items};
+use mz_repr::branch_id::BranchId;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::optimize::OptimizerFeatures;
 use mz_repr::role_id::RoleId;
@@ -174,6 +177,21 @@ pub enum Op {
         rules: Vec<NetworkPolicyRule>,
         name: String,
         owner_id: RoleId,
+    },
+    /// Writes a branch's header, its per-object identities, and the catalog
+    /// snapshot it forked from, all in this one transaction.
+    ///
+    /// The atomicity is load-bearing: a promote has to move a branch's objects
+    /// back together, so their identities have to have been minted together.
+    CreateBranch {
+        name: String,
+        owner_id: RoleId,
+        expires_ts: Option<EpochMillis>,
+        cluster_maps: Vec<BranchClusterMap>,
+        branch_ts: Vec<BranchTimestamp>,
+    },
+    DropBranch {
+        id: BranchId,
     },
     Comment {
         object_id: CommentObjectId,
@@ -1897,6 +1915,52 @@ impl Catalog {
                         details,
                     )?;
                 }
+            }
+            Op::CreateBranch {
+                name,
+                owner_id,
+                expires_ts,
+                cluster_maps,
+                branch_ts,
+            } => {
+                let created_ts = oracle_write_ts.into();
+                let id = tx.insert_branch(
+                    name.clone(),
+                    owner_id,
+                    created_ts,
+                    expires_ts,
+                    cluster_maps,
+                    branch_ts,
+                )?;
+                CatalogState::add_to_audit_log(
+                    &state.system_configuration,
+                    oracle_write_ts,
+                    session,
+                    tx,
+                    audit_events,
+                    EventType::Create,
+                    ObjectType::Cluster,
+                    EventDetails::IdNameV1(mz_audit_log::IdNameV1 {
+                        id: id.to_string(),
+                        name,
+                    }),
+                )?;
+            }
+            Op::DropBranch { id } => {
+                tx.remove_branch(id)?;
+                CatalogState::add_to_audit_log(
+                    &state.system_configuration,
+                    oracle_write_ts,
+                    session,
+                    tx,
+                    audit_events,
+                    EventType::Drop,
+                    ObjectType::Cluster,
+                    EventDetails::IdNameV1(mz_audit_log::IdNameV1 {
+                        id: id.to_string(),
+                        name: id.to_string(),
+                    }),
+                )?;
             }
             Op::CreateNetworkPolicy {
                 rules,

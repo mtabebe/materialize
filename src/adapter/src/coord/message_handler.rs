@@ -159,6 +159,9 @@ impl Coordinator {
             } => {
                 self.commit_staged_batches(conn_id, table_id, batches);
             }
+            Message::ExpireBranches => {
+                self.expire_branches().boxed_local().await;
+            }
             Message::StorageUsageSchedule => {
                 self.schedule_storage_usage_collection().boxed_local().await;
             }

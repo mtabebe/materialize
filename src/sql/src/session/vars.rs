@@ -1226,6 +1226,8 @@ impl SystemVars {
             &MAX_SOURCES,
             &MAX_SINKS,
             &MAX_MATERIALIZED_VIEWS,
+            &BRANCH_PER_OWNER_QUOTA,
+            &BRANCH_DEFAULT_EXPIRES,
             &MAX_CLUSTERS,
             &MAX_REPLICAS_PER_CLUSTER,
             &MAX_CREDIT_CONSUMPTION_RATE,
@@ -1743,6 +1745,18 @@ impl SystemVars {
     }
 
     /// Returns the value of the `max_clusters` configuration parameter.
+    /// Returns the value of the `branch_per_owner_quota` configuration
+    /// parameter.
+    pub fn branch_per_owner_quota(&self) -> u32 {
+        *self.expect_value(&BRANCH_PER_OWNER_QUOTA)
+    }
+
+    /// Returns the value of the `branch_default_expires` configuration
+    /// parameter.
+    pub fn branch_default_expires(&self) -> Duration {
+        *self.expect_value(&BRANCH_DEFAULT_EXPIRES)
+    }
+
     pub fn max_clusters(&self) -> u32 {
         *self.expect_value(&MAX_CLUSTERS)
     }

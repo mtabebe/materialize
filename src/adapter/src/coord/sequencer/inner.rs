@@ -21,6 +21,7 @@ use itertools::Itertools;
 use mz_adapter_types::compaction::CompactionWindow;
 use mz_adapter_types::connection::ConnectionId;
 use mz_adapter_types::dyncfgs::{ENABLE_PASSWORD_AUTH, READ_THEN_WRITE_MAX_DEPENDENCIES};
+use mz_catalog::durable::objects::{BranchClusterMap, BranchTimestamp};
 use mz_catalog::memory::error::ErrorKind;
 use mz_catalog::memory::objects::{
     CatalogItem, Connection, DataSourceDesc, Sink, Source, Table, TableDataSource, Type,
@@ -36,6 +37,7 @@ use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{assert_none, instrument};
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::mz_acl_item::{MzAclItem, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::explain::ExprHumanizer;
 use mz_repr::explain::json::json_string;
 use mz_repr::role_id::RoleId;
@@ -90,7 +92,7 @@ use mz_storage_client::controller::ExportDescription;
 use mz_storage_types::AlterCompatible;
 use mz_storage_types::connections::inline::IntoInlineConnection;
 use mz_storage_types::controller::StorageError;
-use mz_storage_types::sources::SourceConnection;
+use mz_storage_types::sources::{SourceConnection, Timeline};
 use mz_transform::dataflow::DataflowMetainfo;
 use mz_transform::notice::{OptimizerNotice, RawOptimizerNotice};
 use smallvec::SmallVec;
@@ -1852,6 +1854,130 @@ impl Coordinator {
         Ok(Self::send_immediate_rows(rows))
     }
 
+    #[instrument]
+    pub(super) async fn sequence_create_branch(
+        &mut self,
+        session: &Session,
+        plan::CreateBranchPlan {
+            name,
+            cluster_maps,
+            expires_in,
+        }: plan::CreateBranchPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let owner_id = *session.current_role_id();
+
+        // The quota bounds two things a branch is expensive in: read holds on
+        // hot shared shards, and pressure on the single DDL sequencer.
+        let quota = self.catalog().system_config().branch_per_owner_quota();
+        let held = self.catalog().state().get_branches(Some(owner_id)).count();
+        if u32::try_from(held).unwrap_or(u32::MAX) >= quota {
+            return Err(AdapterError::Unstructured(anyhow!(
+                "branch quota of {quota} reached; drop a branch first"
+            )));
+        }
+
+        // One oracle read fixes the branch point on every input in the
+        // timeline. A single-cluster branch's inputs are all on
+        // `EpochMilliseconds`; a branch spanning timelines takes one read per
+        // timeline.
+        let branch_ts = self.get_local_read_ts().await;
+        let branch_ts = vec![BranchTimestamp {
+            timeline: Timeline::EpochMilliseconds.to_string(),
+            ts: branch_ts,
+        }];
+
+        let expires_in =
+            expires_in.unwrap_or_else(|| self.catalog().system_config().branch_default_expires());
+        let expires_ts = u64::try_from(expires_in.as_millis())
+            .ok()
+            .and_then(|millis| (self.now()).checked_add(millis));
+
+        let op = catalog::Op::CreateBranch {
+            name,
+            owner_id,
+            expires_ts,
+            cluster_maps: cluster_maps
+                .into_iter()
+                .map(|map| BranchClusterMap {
+                    prod_cluster_id: map.prod_cluster_id,
+                    branch_cluster_id: map.branch_cluster_id,
+                })
+                .collect(),
+            branch_ts,
+        };
+        self.catalog_transact_with_context(Some(session.conn_id()), None, vec![op])
+            .await
+            .map(|_| ExecuteResponse::CreatedBranch)
+    }
+
+    #[instrument]
+    pub(super) async fn sequence_drop_branch(
+        &mut self,
+        session: &Session,
+        plan::DropBranchPlan { name, if_exists }: plan::DropBranchPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        // A role only ever sees or drops its own branches, so a name it does
+        // not own is indistinguishable from one that does not exist.
+        let owner = (!session.is_superuser()).then(|| *session.current_role_id());
+        let branch = self
+            .catalog()
+            .state()
+            .get_branches(owner)
+            .find(|branch| branch.name == name)
+            .map(|branch| branch.id);
+        let Some(branch_id) = branch else {
+            if if_exists {
+                return Ok(ExecuteResponse::DroppedBranch);
+            }
+            return Err(AdapterError::Catalog(
+                mz_catalog::memory::error::Error::new(mz_catalog::memory::error::ErrorKind::Sql(
+                    CatalogError::UnknownBranch(name),
+                )),
+            ));
+        };
+
+        self.catalog_transact_with_context(
+            Some(session.conn_id()),
+            None,
+            vec![catalog::Op::DropBranch { id: branch_id }],
+        )
+        .await?;
+        self.teardown_branch(branch_id);
+        Ok(ExecuteResponse::DroppedBranch)
+    }
+
+    /// Tears down every branch whose `EXPIRES` has lapsed, so an abandoned
+    /// branch stops costing production.
+    pub(crate) async fn expire_branches(&mut self) {
+        let now = self.now();
+        let expired: Vec<_> = self
+            .catalog()
+            .state()
+            .get_branches(None)
+            .filter(|branch| branch.expires_ts.is_some_and(|expires| expires <= now))
+            .map(|branch| (branch.id, branch.name.clone()))
+            .collect();
+        for (branch_id, name) in expired {
+            let op = catalog::Op::DropBranch { id: branch_id };
+            match self
+                .catalog_transact_with_context(None, None, vec![op])
+                .await
+            {
+                Ok(_) => self.teardown_branch(branch_id),
+                // Losing a race with an explicit `DROP BRANCH` is the expected
+                // way this fails; the next tick retries anything else.
+                Err(err) => tracing::warn!(%name, %err, "failed to expire branch"),
+            }
+        }
+    }
+
+    /// Releases everything a branch holds. Shared by `DROP BRANCH`, expiry, and
+    /// eviction, because a teardown that only hides a branch would leak its
+    /// read holds and its fork's retain reference.
+    pub(super) fn teardown_branch(&mut self, branch_id: BranchId) {
+        self.release_branch_read_holds(branch_id);
+    }
+
     /// Lists the branches visible to `session`: its own, or every branch for a
     /// superuser.
     pub(super) fn sequence_show_branches(
@@ -1868,8 +1994,8 @@ impl Coordinator {
                 let clusters = branch
                     .cluster_maps
                     .iter()
-                    .map(|map| format!("{} -> {}", map.prod_cluster_id, map.branch_cluster_id))
-                    .join(", ");
+                    .map(|map| format!("{}->{}", map.prod_cluster_id, map.branch_cluster_id))
+                    .join(",");
                 let expires = match branch.expires_ts {
                     Some(ts) => Datum::TimestampTz(
                         mz_ore::now::to_datetime(ts).try_into().expect("must fit"),

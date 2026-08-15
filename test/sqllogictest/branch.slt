@@ -73,12 +73,10 @@ GRANT CREATEBRANCH ON SYSTEM TO branchless
 ----
 COMPLETE 0
 
-# Past RBAC, planning succeeds and the statement fails at sequencing, where the
-# branch lifecycle is not built yet.
 simple conn=branchless,user=branchless
 CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER bc
 ----
-db error: ERROR: CREATE/DROP BRANCH are not supported
+COMPLETE 0
 
 # Plan-time validation runs before that.
 statement error cluster quickstart cannot be both the source and the target of a branch
@@ -97,9 +95,119 @@ CREATE INDEX t_idx ON t (a)
 statement error cluster quickstart is not empty
 CREATE BRANCH b FROM CLUSTER bc IN CLUSTER quickstart
 
+# An expiry is wall-clock, so normalize it. `replace` applies to `query`
+# records, which is why the listings below use one.
+replace \d{4}-\d{2}-\d{2} [0-9:.]+\+00  <EXPIRES>
+
+# `SHOW BRANCHES` is owner-scoped: `materialize` does not see `branchless`'s
+# branch, and cannot drop it by name.
 query TTT
 SHOW BRANCHES
 ----
+
+statement error unknown branch 'b'
+DROP BRANCH b
+
+statement ok
+DROP BRANCH IF EXISTS b
+
+# `materialize` is a superuser here, so grant itself nothing and just create
+# its own branch to see the listing.
+statement ok
+CREATE CLUSTER bc2 SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE BRANCH mine FROM CLUSTER quickstart IN CLUSTER bc2
+
+query TTT
+SHOW BRANCHES
+----
+mine  u1->u3  <EXPIRES>
+
+# `EXPIRES IN` overrides the 24h default; the branch still lists.
+statement ok
+DROP BRANCH mine
+
+statement ok
+CREATE BRANCH mine FROM CLUSTER quickstart IN CLUSTER bc2 WITH (EXPIRES IN '1h')
+
+query TTT
+SHOW BRANCHES
+----
+mine  u1->u3  <EXPIRES>
+
+statement ok
+DROP BRANCH mine
+
+# A branch spanning several clusters takes one branch point for all of them.
+statement ok
+CREATE CLUSTER bc3 SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE CLUSTER bc4 SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE BRANCH multi FROM CLUSTER quickstart IN CLUSTER bc3, FROM CLUSTER bc2 IN CLUSTER bc4
+
+query TTT
+SHOW BRANCHES
+----
+multi  u1->u4,u3->u5  <EXPIRES>
+
+statement error cluster bc3 is the target of more than one map
+CREATE BRANCH multi2 FROM CLUSTER quickstart IN CLUSTER bc3, FROM CLUSTER bc2 IN CLUSTER bc3
+
+statement ok
+DROP BRANCH multi
+
+# Entering a branch, then refusing to nest.
+simple conn=branchless,user=branchless
+SET branch = b
+----
+COMPLETE 0
+
+simple conn=branchless,user=branchless
+SHOW branch
+----
+b
+COMPLETE 1
+
+simple conn=branchless,user=branchless
+SET branch = b
+----
+db error: ERROR: cannot enter a branch from within a branch; RESET branch first
+
+simple conn=branchless,user=branchless
+CREATE BRANCH b2 FROM CLUSTER quickstart IN CLUSTER bc
+----
+db error: ERROR: cannot create a branch from within a branch; RESET branch first
+
+simple conn=branchless,user=branchless
+RESET branch
+----
+COMPLETE 0
+
+# The per-owner quota bounds how many branches one role can hold.
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET branch_per_owner_quota = 1
+----
+COMPLETE 0
+
+simple conn=branchless,user=branchless
+CREATE BRANCH b2 FROM CLUSTER quickstart IN CLUSTER bc
+----
+db error: ERROR: branch quota of 1 reached; drop a branch first
+
+# A superuser drops a branch it does not own.
+simple conn=mz_system,user=mz_system
+DROP BRANCH b
+----
+COMPLETE 0
+
+simple conn=branchless,user=branchless
+SHOW BRANCHES
+----
+COMPLETE 0
 
 statement error SHOW BRANCHES with a filter not yet supported
 SHOW BRANCHES LIKE 'b%'
@@ -109,7 +217,3 @@ SHOW BRANCH CHANGES b
 
 statement error EXPLAIN CREATE BRANCH not yet supported
 EXPLAIN CREATE BRANCH FROM CLUSTER quickstart IN CLUSTER bc
-
-# `SET branch` names a branch that exists, so with no branches yet the only
-# observable policy is the refusal above. Once a branch exists, entering one
-# from within another is refused too; see the sequencer phase.

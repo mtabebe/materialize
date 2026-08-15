@@ -518,6 +518,20 @@ pub static MAX_MATERIALIZED_VIEWS: VarDefinition = VarDefinition::new(
     true,
 );
 
+pub static BRANCH_PER_OWNER_QUOTA: VarDefinition = VarDefinition::new(
+    "branch_per_owner_quota",
+    value!(u32; 5),
+    "The maximum number of branches a single role may hold (Materialize).",
+    true,
+);
+
+pub static BRANCH_DEFAULT_EXPIRES: VarDefinition = VarDefinition::new(
+    "branch_default_expires",
+    value!(Duration; Duration::from_secs(24 * 60 * 60)),
+    "How long a branch lives when CREATE BRANCH omits EXPIRES IN (Materialize).",
+    true,
+);
+
 pub static MAX_CLUSTERS: VarDefinition = VarDefinition::new(
     "max_clusters",
     value!(u32; 25),

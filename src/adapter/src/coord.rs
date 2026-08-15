@@ -329,6 +329,13 @@ pub struct ArrangementSizeRecord {
     pub hydration_complete: bool,
 }
 
+/// How often the coordinator looks for lapsed branches.
+///
+/// Expiry is a cleanup bound, not a deadline: a branch living a minute past its
+/// `EXPIRES` costs a minute of read holds, so a coarse interval is cheaper than
+/// a precise one.
+const BRANCH_EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(Debug)]
 pub enum Message {
     Command(OpenTelemetryContext, Command),
@@ -369,6 +376,8 @@ pub enum Message {
     },
     DeferredStatementReady,
     AdvanceTimelines,
+    /// Tears down every branch whose `EXPIRES` has lapsed.
+    ExpireBranches,
     ClusterEvent(ClusterEvent),
     CancelPendingPeeks {
         conn_id: ConnectionId,
@@ -525,6 +534,7 @@ impl Message {
             Message::GroupCommitInitiate(..) => "group_commit_initiate",
             Message::GroupCommitApplied { .. } => "group_commit_applied",
             Message::AdvanceTimelines => "advance_timelines",
+            Message::ExpireBranches => "expire_branches",
             Message::ClusterEvent(_) => "cluster_event",
             Message::CancelPendingPeeks { .. } => "cancel_pending_peeks",
             Message::LinearizeReads => "linearize_reads",
@@ -2111,6 +2121,13 @@ pub struct Coordinator {
     /// For non-realtime timelines, nothing pushes the timestamps forward, so we must do
     /// it manually.
     advance_timelines_interval: Interval,
+
+    /// How often to look for branches whose `EXPIRES` has lapsed.
+    ///
+    /// Expiry runs the same teardown as `DROP BRANCH`: a branch that were only
+    /// hidden would keep its read holds and its fork's retain reference, which
+    /// is exactly the production cost the expiry exists to bound.
+    branch_expiry_interval: Interval,
 
     /// Serialized DDL. DDL must be serialized because:
     /// - Many of them do off-thread work and need to verify the catalog is in a valid state, but
@@ -4040,6 +4057,9 @@ impl Coordinator {
                     // `tick()` on `Interval` is cancel-safe:
                     // https://docs.rs/tokio/1.19.2/tokio/time/struct.Interval.html#cancel-safety
                     // Receive a single command.
+                    _ = self.branch_expiry_interval.tick() => {
+                        messages.push(Message::ExpireBranches);
+                    },
                     _ = self.advance_timelines_interval.tick() => {
                         // Writable keepalives use the committer to advance tables and read holds.
                         // Its permit coalesces ticks behind a slow oracle. Read-only mode advances
@@ -4950,6 +4970,8 @@ pub fn serve(
         let coord_now = now.clone();
         let advance_timelines_interval =
             tokio::time::interval(catalog.system_config().default_timestamp_interval());
+        let mut branch_expiry_interval = tokio::time::interval(BRANCH_EXPIRY_CHECK_INTERVAL);
+        branch_expiry_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let clusters_caught_up_check_interval = if read_only_controllers {
             let dyncfgs = catalog.system_config().dyncfgs();
@@ -5134,6 +5156,7 @@ pub fn serve(
                     occ_write_semaphore: Arc::new(Semaphore::new(max_concurrent_occ_writes)),
                     frontend_read_then_write_enabled,
                     advance_timelines_interval,
+                    branch_expiry_interval,
                     secrets_controller,
                     caching_secrets_reader,
                     cloud_resource_controller,
