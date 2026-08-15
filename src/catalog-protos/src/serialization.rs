@@ -19,6 +19,7 @@ use mz_compute_types::config::ComputeReplicaLogging;
 use mz_controller_types::ReplicaId;
 use mz_proto::{ProtoMapEntry, ProtoType, RustType, TryFromProtoError};
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem};
+use mz_repr::branch_id::BranchId;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
 use mz_repr::{CatalogItemId, GlobalId, RelationVersion};
@@ -190,6 +191,16 @@ impl RustType<crate::objects::RoleVars> for RoleVars {
             .collect::<Result<_, _>>()?;
 
         Ok(RoleVars { map })
+    }
+}
+
+impl RustType<crate::objects::BranchId> for BranchId {
+    fn into_proto(&self) -> crate::objects::BranchId {
+        crate::objects::BranchId { id: self.0 }
+    }
+
+    fn from_proto(proto: crate::objects::BranchId) -> Result<Self, TryFromProtoError> {
+        Ok(BranchId(proto.id))
     }
 }
 

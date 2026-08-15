@@ -57,7 +57,8 @@ use mz_sql_parser::ast::{
     ClusterAlterOptionValue, ClusterAlterUntilReadyOption, ClusterAlterUntilReadyOptionName,
     ClusterAutoScalingStrategyOptionValue, ClusterFeature, ClusterFeatureName, ClusterOption,
     ClusterOptionName, ClusterScheduleOptionValue, ColumnDef, ColumnOption, CommentObjectType,
-    CommentStatement, ConnectionOption, ConnectionOptionName, CreateClusterReplicaStatement,
+    CommentStatement, ConnectionOption, ConnectionOptionName, CreateBranchOption,
+    CreateBranchOptionName, CreateBranchStatement, CreateClusterReplicaStatement,
     CreateClusterStatement, CreateConnectionOption, CreateConnectionOptionName,
     CreateConnectionStatement, CreateConnectionType, CreateDatabaseStatement, CreateIndexStatement,
     CreateMaterializedViewStatement, CreateNetworkPolicyStatement, CreateRoleStatement,
@@ -69,9 +70,9 @@ use mz_sql_parser::ast::{
     CreateTypeMapOption, CreateTypeMapOptionName, CreateTypeStatement, CreateViewStatement,
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
-    DocOnIdentifier, DocOnSchema, DropObjectsStatement, DropOwnedStatement, Expr, Format,
-    FormatSpecifier, GlueAvroOption, GlueAvroOptionName, IcebergSinkConfigOption, Ident,
-    IfExistsBehavior, IndexOption, IndexOptionName, KafkaSinkConfigOption, KeyConstraint,
+    DocOnIdentifier, DocOnSchema, DropBranchStatement, DropObjectsStatement, DropOwnedStatement,
+    Expr, Format, FormatSpecifier, GlueAvroOption, GlueAvroOptionName, IcebergSinkConfigOption,
+    Ident, IfExistsBehavior, IndexOption, IndexOptionName, KafkaSinkConfigOption, KeyConstraint,
     LoadGeneratorOption, LoadGeneratorOptionName, MaterializedViewOption,
     MaterializedViewOptionName, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption,
     NetworkPolicyOptionName, NetworkPolicyRuleDefinition, NetworkPolicyRuleOption,
@@ -154,13 +155,13 @@ use crate::plan::{
     AlterOptionParameter, AlterRetainHistoryPlan, AlterRolePlan, AlterSchemaRenamePlan,
     AlterSchemaSwapPlan, AlterSecretPlan, AlterSetClusterPlan, AlterSinkPlan,
     AlterSourceTimestampIntervalPlan, AlterSystemResetAllPlan, AlterSystemResetPlan,
-    AlterSystemSetPlan, AlterTablePlan, AutoScalingStrategy, ClusterSchedule, CommentPlan,
-    ComputeReplicaConfig, ComputeReplicaIntrospectionConfig, ConnectionDetails,
-    CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
+    AlterSystemSetPlan, AlterTablePlan, AutoScalingStrategy, BranchClusterMap, ClusterSchedule,
+    CommentPlan, ComputeReplicaConfig, ComputeReplicaIntrospectionConfig, ConnectionDetails,
+    CreateBranchPlan, CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
     CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
     CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
     CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan,
-    CreateTypePlan, CreateViewPlan, DataSourceDesc, DropObjectsPlan, DropOwnedPlan,
+    CreateTypePlan, CreateViewPlan, DataSourceDesc, DropBranchPlan, DropObjectsPlan, DropOwnedPlan,
     HirRelationExpr, Index, MaterializedView, NetworkPolicyRule, NetworkPolicyRuleAction,
     NetworkPolicyRuleDirection, OnHydration, Plan, PlanClusterOption, PlanNotice, PolicyAddress,
     QueryContext, ReplicaConfig, Secret, Sink, Source, Table, TableDataSource, Type, VariableValue,
@@ -2807,6 +2808,20 @@ pub fn describe_create_materialized_view(
     Ok(StatementDesc::new(None))
 }
 
+pub fn describe_create_branch(
+    _: &StatementContext,
+    _: CreateBranchStatement<Aug>,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
+pub fn describe_drop_branch(
+    _: &StatementContext,
+    _: DropBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(None))
+}
+
 pub fn describe_create_network_policy(
     _: &StatementContext,
     _: CreateNetworkPolicyStatement<Aug>,
@@ -4715,6 +4730,73 @@ pub fn plan_create_role(
     Ok(Plan::CreateRole(CreateRolePlan {
         name: normalize::ident(name),
         attributes: attributes.into(),
+    }))
+}
+
+generate_extracted_config!(CreateBranchOption, (ExpiresIn, Duration));
+
+pub fn plan_create_branch(
+    scx: &StatementContext,
+    CreateBranchStatement {
+        name,
+        cluster_maps,
+        options,
+    }: CreateBranchStatement<Aug>,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+
+    let CreateBranchOptionExtracted {
+        seen: _,
+        expires_in,
+    } = options.try_into()?;
+
+    let mut resolved = Vec::with_capacity(cluster_maps.len());
+    let mut branch_clusters = BTreeSet::new();
+    for map in cluster_maps {
+        let prod = scx
+            .catalog
+            .resolve_cluster(Some(map.prod_cluster.as_str()))?;
+        let branch = scx
+            .catalog
+            .resolve_cluster(Some(map.branch_cluster.as_str()))?;
+        if prod.id() == branch.id() {
+            sql_bail!(
+                "cluster {} cannot be both the source and the target of a branch",
+                prod.name()
+            );
+        }
+        // A branch renders its dataflows onto the branch cluster, so anything
+        // already bound there would share replicas with branch objects.
+        if !branch.bound_objects().is_empty() {
+            sql_bail!("cluster {} is not empty", branch.name());
+        }
+        if !branch_clusters.insert(branch.id()) {
+            sql_bail!(
+                "cluster {} is the target of more than one map",
+                branch.name()
+            );
+        }
+        resolved.push(BranchClusterMap {
+            prod_cluster_id: prod.id(),
+            branch_cluster_id: branch.id(),
+        });
+    }
+
+    Ok(Plan::CreateBranch(CreateBranchPlan {
+        name: normalize::ident(name),
+        cluster_maps: resolved,
+        expires_in,
+    }))
+}
+
+pub fn plan_drop_branch(
+    scx: &StatementContext,
+    DropBranchStatement { name, if_exists }: DropBranchStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+    Ok(Plan::DropBranch(DropBranchPlan {
+        name: normalize::ident(name),
+        if_exists,
     }))
 }
 

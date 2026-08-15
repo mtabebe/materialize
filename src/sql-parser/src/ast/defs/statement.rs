@@ -64,6 +64,9 @@ pub enum Statement<T: AstInfo> {
     CreateClusterReplica(CreateClusterReplicaStatement<T>),
     CreateSecret(CreateSecretStatement<T>),
     CreateNetworkPolicy(CreateNetworkPolicyStatement<T>),
+    CreateBranch(CreateBranchStatement<T>),
+    DropBranch(DropBranchStatement),
+    ExplainCreateBranch(ExplainCreateBranchStatement),
     AlterCluster(AlterClusterStatement<T>),
     AlterOwner(AlterOwnerStatement<T>),
     AlterObjectRename(AlterObjectRenameStatement),
@@ -143,6 +146,9 @@ impl<T: AstInfo> AstDisplay for Statement<T> {
             Statement::CreateCluster(stmt) => f.write_node(stmt),
             Statement::CreateClusterReplica(stmt) => f.write_node(stmt),
             Statement::CreateNetworkPolicy(stmt) => f.write_node(stmt),
+            Statement::CreateBranch(stmt) => f.write_node(stmt),
+            Statement::DropBranch(stmt) => f.write_node(stmt),
+            Statement::ExplainCreateBranch(stmt) => f.write_node(stmt),
             Statement::AlterCluster(stmt) => f.write_node(stmt),
             Statement::AlterNetworkPolicy(stmt) => f.write_node(stmt),
             Statement::AlterOwner(stmt) => f.write_node(stmt),
@@ -250,6 +256,9 @@ pub fn statement_kind_label_value(kind: StatementKind) -> &'static str {
         StatementKind::CreateClusterReplica => "create_cluster_replica",
         StatementKind::CreateSecret => "create_secret",
         StatementKind::CreateNetworkPolicy => "create_network_policy",
+        StatementKind::CreateBranch => "create_branch",
+        StatementKind::DropBranch => "drop_branch",
+        StatementKind::ExplainCreateBranch => "explain_create_branch",
         StatementKind::AlterCluster => "alter_cluster",
         StatementKind::AlterObjectRename => "alter_object_rename",
         StatementKind::AlterRetainHistory => "alter_retain_history",
@@ -3346,6 +3355,151 @@ impl AstDisplay for DiscardTarget {
 }
 impl_display!(DiscardTarget);
 
+/// One `FROM CLUSTER <prod> IN CLUSTER <branch>` clause of `CREATE BRANCH`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BranchClusterMap {
+    /// The production cluster being branched.
+    pub prod_cluster: Ident,
+    /// The cluster the branch's dataflows run on.
+    pub branch_cluster: Ident,
+}
+
+impl AstDisplay for BranchClusterMap {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("FROM CLUSTER ");
+        f.write_node(&self.prod_cluster);
+        f.write_str(" IN CLUSTER ");
+        f.write_node(&self.branch_cluster);
+    }
+}
+impl_display!(BranchClusterMap);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CreateBranchOptionName {
+    ExpiresIn,
+}
+
+impl WithOptionName for CreateBranchOptionName {
+    /// # WARNING
+    ///
+    /// Whenever implementing this trait consider very carefully whether or not
+    /// this value could contain sensitive user data. If you're uncertain, err
+    /// on the conservative side and return `true`.
+    fn redact_value(&self) -> bool {
+        match self {
+            CreateBranchOptionName::ExpiresIn => false,
+        }
+    }
+}
+
+impl AstDisplay for CreateBranchOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        match self {
+            CreateBranchOptionName::ExpiresIn => f.write_str("EXPIRES IN"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CreateBranchOption<T: AstInfo> {
+    pub name: CreateBranchOptionName,
+    pub value: Option<WithOptionValue<T>>,
+}
+impl_display_for_with_option!(CreateBranchOption);
+
+/// `CREATE BRANCH ... FROM CLUSTER ... IN CLUSTER ...`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CreateBranchStatement<T: AstInfo> {
+    pub name: Ident,
+    /// The `prod -> branch` cluster maps the branch spans. A single-cluster
+    /// branch has exactly one; phase 08 admits several.
+    pub cluster_maps: Vec<BranchClusterMap>,
+    pub options: Vec<CreateBranchOption<T>>,
+}
+
+impl<T: AstInfo> AstDisplay for CreateBranchStatement<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("CREATE BRANCH ");
+        f.write_node(&self.name);
+        f.write_str(" ");
+        f.write_node(&display::comma_separated(&self.cluster_maps));
+        if !self.options.is_empty() {
+            f.write_str(" WITH (");
+            f.write_node(&display::comma_separated(&self.options));
+            f.write_str(")");
+        }
+    }
+}
+impl_display_t!(CreateBranchStatement);
+
+/// `DROP BRANCH ...`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DropBranchStatement {
+    pub name: Ident,
+    pub if_exists: bool,
+}
+
+impl AstDisplay for DropBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("DROP BRANCH ");
+        if self.if_exists {
+            f.write_str("IF EXISTS ");
+        }
+        f.write_node(&self.name);
+    }
+}
+impl_display!(DropBranchStatement);
+
+/// `SHOW BRANCHES`
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShowBranchesStatement<T: AstInfo> {
+    pub filter: Option<ShowStatementFilter<T>>,
+}
+
+impl<T: AstInfo> AstDisplay for ShowBranchesStatement<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("SHOW BRANCHES");
+        if let Some(filter) = &self.filter {
+            f.write_str(" ");
+            f.write_node(filter);
+        }
+    }
+}
+impl_display_t!(ShowBranchesStatement);
+
+/// `SHOW BRANCH CHANGES ... [AS SQL]`
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShowBranchChangesStatement {
+    pub name: Ident,
+    /// Whether to re-serialize the diff as runnable DDL rather than list it.
+    pub as_sql: bool,
+}
+
+impl AstDisplay for ShowBranchChangesStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("SHOW BRANCH CHANGES ");
+        f.write_node(&self.name);
+        if self.as_sql {
+            f.write_str(" AS SQL");
+        }
+    }
+}
+impl_display!(ShowBranchChangesStatement);
+
+/// `EXPLAIN CREATE BRANCH FROM CLUSTER ...`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExplainCreateBranchStatement {
+    pub cluster_maps: Vec<BranchClusterMap>,
+}
+
+impl AstDisplay for ExplainCreateBranchStatement {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("EXPLAIN CREATE BRANCH ");
+        f.write_node(&display::comma_separated(&self.cluster_maps));
+    }
+}
+impl_display!(ExplainCreateBranchStatement);
+
 /// `DROP`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DropObjectsStatement {
@@ -5443,6 +5597,8 @@ pub enum ShowStatement<T: AstInfo> {
     ShowCreateCluster(ShowCreateClusterStatement<T>),
     ShowCreateType(ShowCreateTypeStatement<T>),
     ShowVariable(ShowVariableStatement),
+    ShowBranches(ShowBranchesStatement<T>),
+    ShowBranchChanges(ShowBranchChangesStatement),
     InspectShard(InspectShardStatement),
 }
 
@@ -5461,6 +5617,8 @@ impl<T: AstInfo> AstDisplay for ShowStatement<T> {
             ShowStatement::ShowCreateCluster(stmt) => f.write_node(stmt),
             ShowStatement::ShowCreateType(stmt) => f.write_node(stmt),
             ShowStatement::ShowVariable(stmt) => f.write_node(stmt),
+            ShowStatement::ShowBranches(stmt) => f.write_node(stmt),
+            ShowStatement::ShowBranchChanges(stmt) => f.write_node(stmt),
             ShowStatement::InspectShard(stmt) => f.write_node(stmt),
         }
     }
@@ -5517,6 +5675,7 @@ pub enum Privilege {
     CREATEDB,
     CREATECLUSTER,
     CREATENETWORKPOLICY,
+    CREATEBRANCH,
 }
 
 impl AstDisplay for Privilege {
@@ -5532,6 +5691,7 @@ impl AstDisplay for Privilege {
             Privilege::CREATEDB => "CREATEDB",
             Privilege::CREATECLUSTER => "CREATECLUSTER",
             Privilege::CREATENETWORKPOLICY => "CREATENETWORKPOLICY",
+            Privilege::CREATEBRANCH => "CREATEBRANCH",
         });
     }
 }

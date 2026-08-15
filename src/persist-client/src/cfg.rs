@@ -308,6 +308,7 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&crate::cfg::CRDB_KEEPALIVES_IDLE)
         .add(&crate::cfg::CRDB_KEEPALIVES_INTERVAL)
         .add(&crate::cfg::CRDB_KEEPALIVES_RETRIES)
+        .add(&crate::cfg::ENABLE_BRANCHING)
         .add(&crate::cfg::USE_CRITICAL_SINCE_TXN)
         .add(&crate::cfg::USE_CRITICAL_SINCE_CATALOG)
         .add(&crate::cfg::USE_CRITICAL_SINCE_SOURCE)
@@ -475,6 +476,17 @@ pub const USE_CRITICAL_SINCE_TXN: Config<bool> = Config::new(
     "persist_use_critical_since_txn",
     true,
     "Use the critical since (instead of the overall since) when initializing a subscribe.",
+);
+
+/// Gates the copy-on-write fork primitive that backs cluster branches.
+///
+/// Mirrors the adapter's `enable_branching` flag. It is a separate dyncfg so
+/// persist can refuse to create *new* forks and retain-only references while
+/// still releasing the ones that already exist.
+pub const ENABLE_BRANCHING: Config<bool> = Config::new(
+    "persist_enable_branching",
+    false,
+    "Allow creating copy-on-write fork shards and retain-only references.",
 );
 
 /// Migrate the catalog to use the critical since when opening a new read handle.

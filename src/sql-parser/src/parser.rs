@@ -2063,6 +2063,9 @@ impl<'a> Parser<'a> {
         } else if self.peek_keyword(SINK) {
             self.parse_create_sink()
                 .map_parser_err(StatementKind::CreateSink)
+        } else if self.peek_keyword(BRANCH) {
+            self.parse_create_branch()
+                .map_parser_err(StatementKind::CreateBranch)
         } else if self.peek_keyword(TYPE) {
             self.parse_create_type()
                 .map_parser_err(StatementKind::CreateType)
@@ -4973,6 +4976,9 @@ impl<'a> Parser<'a> {
         if self.parse_keyword(OWNED) {
             self.parse_drop_owned()
                 .map_parser_err(StatementKind::DropOwned)
+        } else if self.peek_keyword(BRANCH) {
+            self.parse_drop_branch()
+                .map_parser_err(StatementKind::DropBranch)
         } else {
             self.parse_drop_objects()
                 .map_parser_err(StatementKind::DropObjects)
@@ -5134,6 +5140,57 @@ impl<'a> Parser<'a> {
         Ok(Statement::AlterNetworkPolicy(AlterNetworkPolicyStatement {
             name,
             options,
+        }))
+    }
+
+    fn parse_create_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let name = self.parse_identifier()?;
+        let cluster_maps = self.parse_branch_cluster_maps()?;
+        let options = if self.parse_keyword(WITH) {
+            self.expect_token(&Token::LParen)?;
+            let options = self.parse_comma_separated(Parser::parse_create_branch_option)?;
+            self.expect_token(&Token::RParen)?;
+            options
+        } else {
+            vec![]
+        };
+        Ok(Statement::CreateBranch(CreateBranchStatement {
+            name,
+            cluster_maps,
+            options,
+        }))
+    }
+
+    fn parse_branch_cluster_maps(&mut self) -> Result<Vec<BranchClusterMap>, ParserError> {
+        self.parse_comma_separated(|parser| {
+            parser.expect_keywords(&[FROM, CLUSTER])?;
+            let prod_cluster = parser.parse_identifier()?;
+            parser.expect_keywords(&[IN, CLUSTER])?;
+            let branch_cluster = parser.parse_identifier()?;
+            Ok(BranchClusterMap {
+                prod_cluster,
+                branch_cluster,
+            })
+        })
+    }
+
+    fn parse_create_branch_option(&mut self) -> Result<CreateBranchOption<Raw>, ParserError> {
+        self.expect_keywords(&[EXPIRES, IN])?;
+        let _ = self.consume_token(&Token::Eq);
+        Ok(CreateBranchOption {
+            name: CreateBranchOptionName::ExpiresIn,
+            value: Some(WithOptionValue::Value(self.parse_value()?)),
+        })
+    }
+
+    fn parse_drop_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keyword(BRANCH)?;
+        let if_exists = self.parse_if_exists()?;
+        let name = self.parse_identifier()?;
+        Ok(Statement::DropBranch(DropBranchStatement {
+            name,
+            if_exists,
         }))
     }
 
@@ -8214,6 +8271,16 @@ impl<'a> Parser<'a> {
         }
         if self.parse_one_of_keywords(&[COLUMNS, FIELDS]).is_some() {
             self.parse_show_columns()
+        } else if self.parse_keyword(BRANCHES) {
+            Ok(ShowStatement::ShowBranches(ShowBranchesStatement {
+                filter: self.parse_show_statement_filter()?,
+            }))
+        } else if self.parse_keywords(&[BRANCH, CHANGES]) {
+            let name = self.parse_identifier()?;
+            let as_sql = self.parse_keywords(&[AS, SQL]);
+            Ok(ShowStatement::ShowBranchChanges(
+                ShowBranchChangesStatement { name, as_sql },
+            ))
         } else if self.parse_keyword(OBJECTS) {
             let from = if self.parse_keywords(&[FROM]) {
                 Some(self.parse_schema_name()?)
@@ -9124,10 +9191,22 @@ impl<'a> Parser<'a> {
         } else if self.peek_keyword(KEY) || self.peek_keyword(VALUE) {
             self.parse_explain_schema()
                 .map_parser_err(StatementKind::ExplainSinkSchema)
+        } else if self.peek_keywords(&[CREATE, BRANCH]) {
+            self.parse_explain_create_branch()
+                .map_parser_err(StatementKind::ExplainCreateBranch)
         } else {
             self.parse_explain_plan()
                 .map_parser_err(StatementKind::ExplainPlan)
         }
+    }
+
+    fn parse_explain_create_branch(&mut self) -> Result<Statement<Raw>, ParserError> {
+        self.expect_keywords(&[CREATE, BRANCH])?;
+        Ok(Statement::ExplainCreateBranch(
+            ExplainCreateBranchStatement {
+                cluster_maps: self.parse_branch_cluster_maps()?,
+            },
+        ))
     }
 
     fn parse_explainee(&mut self) -> Result<Explainee<Raw>, ParserError> {
@@ -10248,6 +10327,7 @@ impl<'a> Parser<'a> {
                 CREATEDB,
                 CREATECLUSTER,
                 CREATENETWORKPOLICY,
+                CREATEBRANCH,
             ])? {
                 INSERT => Privilege::INSERT,
                 SELECT => Privilege::SELECT,
@@ -10259,6 +10339,7 @@ impl<'a> Parser<'a> {
                 CREATEDB => Privilege::CREATEDB,
                 CREATECLUSTER => Privilege::CREATECLUSTER,
                 CREATENETWORKPOLICY => Privilege::CREATENETWORKPOLICY,
+                CREATEBRANCH => Privilege::CREATEBRANCH,
                 _ => unreachable!(),
             },
         )

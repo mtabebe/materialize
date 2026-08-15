@@ -298,6 +298,13 @@ impl Coordinator {
                         .await;
                     ctx.retire(result);
                 }
+                Plan::ShowBranches(plan::ShowBranchesPlan) => {
+                    let res = self.sequence_show_branches(ctx.session());
+                    ctx.retire(res);
+                }
+                Plan::CreateBranch(_) | Plan::DropBranch(_) => {
+                    ctx.retire(Err(AdapterError::Unsupported("CREATE/DROP BRANCH")));
+                }
                 Plan::CreateNetworkPolicy(plan) => {
                     let res = self
                         .sequence_create_network_policy(ctx.session(), plan)

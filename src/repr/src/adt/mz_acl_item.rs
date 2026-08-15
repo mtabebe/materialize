@@ -56,6 +56,8 @@ const CREATE_DB_CHAR: char = 'B';
 const CREATE_CLUSTER_CHAR: char = 'N';
 // compute network Policy
 const CREATE_NETWORK_POLICY_CHAR: char = 'P';
+// brancH
+const CREATE_BRANCH_CHAR: char = 'H';
 
 const INSERT_STR: &str = "INSERT";
 const SELECT_STR: &str = "SELECT";
@@ -67,6 +69,7 @@ const CREATE_ROLE_STR: &str = "CREATEROLE";
 const CREATE_DB_STR: &str = "CREATEDB";
 const CREATE_CLUSTER_STR: &str = "CREATECLUSTER";
 const CREATE_NETWORK_POLICY_STR: &str = "CREATENETWORKPOLICY";
+const CREATE_BRANCH_STR: &str = "CREATEBRANCH";
 
 /// The OID used to represent the PUBLIC role. See:
 /// <https://github.com/postgres/postgres/blob/29a0ccbce97978e5d65b8f96c85a00611bb403c4/src/include/utils/acl.h#L46>
@@ -101,6 +104,7 @@ bitflags! {
         const CREATE_DB = 1 << 30;
         const CREATE_ROLE = 1 << 31;
         const CREATE_NETWORK_POLICY = 1 << 32;
+        const CREATE_BRANCH = 1 << 33;
 
         // No additional privileges should be defined at a bit larger than 1 << 31. Those bits are
         // reserved for grant options.
@@ -120,6 +124,7 @@ impl AclMode {
             CREATE_DB_STR => Ok(AclMode::CREATE_DB),
             CREATE_CLUSTER_STR => Ok(AclMode::CREATE_CLUSTER),
             CREATE_NETWORK_POLICY_STR => Ok(AclMode::CREATE_NETWORK_POLICY),
+            CREATE_BRANCH_STR => Ok(AclMode::CREATE_BRANCH),
             _ => Err(anyhow!("{}", s.quoted())),
         }
     }
@@ -169,6 +174,9 @@ impl AclMode {
         if self.contains(AclMode::CREATE_NETWORK_POLICY) {
             privileges.push(CREATE_NETWORK_POLICY_STR);
         }
+        if self.contains(AclMode::CREATE_BRANCH) {
+            privileges.push(CREATE_BRANCH_STR);
+        }
         privileges
     }
 }
@@ -190,6 +198,7 @@ impl FromStr for AclMode {
                 CREATE_DB_CHAR => acl_mode.bitor_assign(AclMode::CREATE_DB),
                 CREATE_CLUSTER_CHAR => acl_mode.bitor_assign(AclMode::CREATE_CLUSTER),
                 CREATE_NETWORK_POLICY_CHAR => acl_mode.bitor_assign(AclMode::CREATE_NETWORK_POLICY),
+                CREATE_BRANCH_CHAR => acl_mode.bitor_assign(AclMode::CREATE_BRANCH),
                 _ => return Err(anyhow!("invalid privilege '{c}' in acl mode '{s}'")),
             }
         }
@@ -230,6 +239,9 @@ impl fmt::Display for AclMode {
         }
         if self.contains(AclMode::CREATE_NETWORK_POLICY) {
             write!(f, "{CREATE_NETWORK_POLICY_CHAR}")?;
+        }
+        if self.contains(AclMode::CREATE_BRANCH) {
+            write!(f, "{CREATE_BRANCH_CHAR}")?;
         }
         Ok(())
     }

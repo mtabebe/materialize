@@ -347,6 +347,10 @@ impl CatalogState {
             StateUpdateKind::NetworkPolicy(network_policy) => {
                 self.apply_network_policy_update(network_policy, diff, retractions);
             }
+            StateUpdateKind::BranchDescriptor(branch) => {
+                let id = branch.id;
+                apply_inverted_lookup(&mut self.branches_by_id, &id, branch, diff);
+            }
             StateUpdateKind::IntrospectionSourceIndex(introspection_source_index) => {
                 self.apply_introspection_source_index_update(
                     introspection_source_index,
@@ -1492,6 +1496,7 @@ impl CatalogState {
             StateUpdateKind::Database(_)
             | StateUpdateKind::Schema(_)
             | StateUpdateKind::NetworkPolicy(_)
+            | StateUpdateKind::BranchDescriptor(_)
             | StateUpdateKind::StorageCollectionMetadata(_)
             | StateUpdateKind::UnfinalizedShard(_) => Vec::new(),
         }
@@ -2239,7 +2244,8 @@ fn sort_updates(updates: Vec<StateUpdate>) -> Vec<StateUpdate> {
             | StateUpdateKind::DefaultPrivilege(_)
             | StateUpdateKind::SystemPrivilege(_)
             | StateUpdateKind::SystemConfiguration(_)
-            | StateUpdateKind::NetworkPolicy(_) => push_update(
+            | StateUpdateKind::NetworkPolicy(_)
+            | StateUpdateKind::BranchDescriptor(_) => push_update(
                 update,
                 diff,
                 &mut pre_cluster_retractions,
@@ -2496,6 +2502,7 @@ impl ApplyState {
             | ReplicaSystemConfiguration(_)
             | Cluster(_)
             | NetworkPolicy(_)
+            | BranchDescriptor(_)
             | ClusterReplica(_)
             | SourceReferences(_)
             | Comment(_)

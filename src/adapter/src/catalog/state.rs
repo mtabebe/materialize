@@ -27,6 +27,7 @@ use mz_catalog::builtin::{
     BUILTINS, Builtin, BuiltinCluster, BuiltinLog, BuiltinSource, BuiltinTable, BuiltinType,
 };
 use mz_catalog::config::{AwsPrincipalContext, ClusterReplicaSizeMap};
+use mz_catalog::durable::objects::BranchDescriptor;
 use mz_catalog::expr_cache::LocalExpressions;
 use mz_catalog::memory::error::{Error, ErrorKind};
 use mz_catalog::memory::objects::{
@@ -47,6 +48,7 @@ use mz_ore::soft_assert_no_log;
 use mz_ore::str::StrExt;
 use mz_pgrepr::oid::INVALID_OID;
 use mz_repr::adt::mz_acl_item::PrivilegeMap;
+use mz_repr::branch_id::BranchId;
 use mz_repr::namespaces::{
     INFORMATION_SCHEMA, MZ_CATALOG_SCHEMA, MZ_CATALOG_UNSTABLE_SCHEMA, MZ_INTERNAL_SCHEMA,
     MZ_INTROSPECTION_SCHEMA, MZ_TEMP_SCHEMA, MZ_UNSAFE_SCHEMA, PG_CATALOG_SCHEMA, SYSTEM_SCHEMAS,
@@ -135,6 +137,8 @@ pub struct CatalogState {
     pub(super) network_policies_by_name: imbl::OrdMap<String, NetworkPolicyId>,
     #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
     pub(super) network_policies_by_id: imbl::OrdMap<NetworkPolicyId, NetworkPolicy>,
+    #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
+    pub(super) branches_by_id: imbl::OrdMap<BranchId, BranchDescriptor>,
     #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
     pub(super) role_auth_by_id: imbl::OrdMap<RoleId, RoleAuth>,
 
@@ -449,6 +453,7 @@ impl CatalogState {
             roles_by_name: Default::default(),
             roles_by_id: Default::default(),
             network_policies_by_id: Default::default(),
+            branches_by_id: Default::default(),
             role_auth_by_id: Default::default(),
             config: CatalogConfig {
                 start_time: Default::default(),
@@ -1177,6 +1182,14 @@ impl CatalogState {
 
     pub fn get_network_policies(&self) -> impl Iterator<Item = &NetworkPolicyId> {
         self.network_policies_by_id.keys()
+    }
+
+    /// Returns the branches owned by `owner`, or every branch when `owner` is
+    /// `None` (superuser).
+    pub fn get_branches(&self, owner: Option<RoleId>) -> impl Iterator<Item = &BranchDescriptor> {
+        self.branches_by_id
+            .values()
+            .filter(move |branch| owner.is_none_or(|owner| branch.owner_id == owner))
     }
 
     /// Returns the URL for POST-ing data to a webhook source, if `id` corresponds to a webhook

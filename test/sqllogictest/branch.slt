@@ -1,0 +1,117 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Plan-time surface of cluster branches: the feature flag, the RBAC gate, and
+# the branch session variable.
+
+mode cockroach
+
+reset-server
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_branching = off
+----
+COMPLETE 0
+
+statement error CREATE BRANCH and the branch session variable is not available
+CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER c
+
+statement error CREATE BRANCH and the branch session variable is not available
+DROP BRANCH b
+
+statement error CREATE BRANCH and the branch session variable is not available
+SHOW BRANCHES
+
+statement error CREATE BRANCH and the branch session variable is not available
+SET branch = b
+
+# `RESET` restores production, so it is allowed with the feature off.
+statement ok
+RESET branch
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_branching = on
+----
+COMPLETE 0
+
+query T
+SHOW branch
+----
+(empty)
+
+statement ok
+SET branch = b
+
+query T
+SHOW branch
+----
+b
+
+statement ok
+RESET branch
+
+statement ok
+CREATE CLUSTER bc SIZE 'scale=1,workers=1'
+
+# The privilege is a system privilege, so a fresh role is denied.
+statement ok
+CREATE ROLE branchless
+
+simple conn=mz_system,user=mz_system
+GRANT CREATECLUSTER ON SYSTEM TO branchless
+----
+COMPLETE 0
+
+simple conn=branchless,user=branchless
+CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER bc
+----
+db error: ERROR: permission denied for SYSTEM
+DETAIL: The 'branchless' role needs CREATEBRANCH privileges on SYSTEM
+
+simple conn=mz_system,user=mz_system
+GRANT CREATEBRANCH ON SYSTEM TO branchless
+----
+COMPLETE 0
+
+# Past RBAC, planning succeeds and the statement fails at sequencing, where the
+# branch lifecycle is not built yet.
+simple conn=branchless,user=branchless
+CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER bc
+----
+db error: ERROR: CREATE/DROP BRANCH are not supported
+
+# Plan-time validation runs before that.
+statement error cluster quickstart cannot be both the source and the target of a branch
+CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER quickstart
+
+statement error unknown cluster 'nope'
+CREATE BRANCH b FROM CLUSTER nope IN CLUSTER bc
+
+# `quickstart` is not empty: an index binds to it.
+statement ok
+CREATE TABLE t (a int)
+
+statement ok
+CREATE INDEX t_idx ON t (a)
+
+statement error cluster quickstart is not empty
+CREATE BRANCH b FROM CLUSTER bc IN CLUSTER quickstart
+
+query TTT
+SHOW BRANCHES
+----
+
+statement error SHOW BRANCHES with a filter not yet supported
+SHOW BRANCHES LIKE 'b%'
+
+statement error SHOW BRANCH CHANGES not yet supported
+SHOW BRANCH CHANGES b
+
+statement error EXPLAIN CREATE BRANCH not yet supported
+EXPLAIN CREATE BRANCH FROM CLUSTER quickstart IN CLUSTER bc

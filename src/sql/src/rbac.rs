@@ -519,6 +519,15 @@ fn generate_rbac_requirements(
                 }
             }
         }
+        Plan::CreateBranch(plan::CreateBranchPlan { .. }) => RbacRequirements {
+            privileges: vec![(SystemObjectId::System, AclMode::CREATE_BRANCH, role_id)],
+            item_usage: &CREATE_ITEM_USAGE,
+            ..Default::default()
+        },
+        // A role only ever sees or drops its own branches, which the sequencer
+        // enforces against the branch's owner; there is no privilege to check.
+        Plan::DropBranch(plan::DropBranchPlan { .. })
+        | Plan::ShowBranches(plan::ShowBranchesPlan) => RbacRequirements::default(),
         Plan::CreateNetworkPolicy(plan::CreateNetworkPolicyPlan { .. }) => RbacRequirements {
             privileges: vec![(
                 SystemObjectId::System,
@@ -1879,7 +1888,8 @@ pub const fn all_object_privileges(object_type: SystemObjectType) -> AclMode {
     const ALL_SYSTEM_PRIVILEGES: AclMode = AclMode::CREATE_ROLE
         .union(AclMode::CREATE_DB)
         .union(AclMode::CREATE_CLUSTER)
-        .union(AclMode::CREATE_NETWORK_POLICY);
+        .union(AclMode::CREATE_NETWORK_POLICY)
+        .union(AclMode::CREATE_BRANCH);
 
     const EMPTY_ACL_MODE: AclMode = AclMode::empty();
     match object_type {

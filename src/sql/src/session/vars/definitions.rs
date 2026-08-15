@@ -302,6 +302,13 @@ pub static CLUSTER: VarDefinition = VarDefinition::new_lazy(
     true,
 );
 
+pub static BRANCH: VarDefinition = VarDefinition::new(
+    "branch",
+    value!(Option<String>; None),
+    "Sets the branch this session resolves names in; unset means production (Materialize).",
+    true,
+);
+
 pub static CLUSTER_REPLICA: VarDefinition = VarDefinition::new(
     "cluster_replica",
     value!(Option<String>; None),
@@ -2242,6 +2249,12 @@ feature_flags!(
     {
         name: enable_alter_table_add_column,
         desc: "Enable ALTER TABLE ... ADD COLUMN ...",
+        default: false,
+        enable_for_item_parsing: false,
+    },
+    {
+        name: enable_branching,
+        desc: "CREATE BRANCH and the branch session variable",
         default: false,
         enable_for_item_parsing: false,
     },

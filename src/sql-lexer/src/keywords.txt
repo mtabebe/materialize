@@ -69,6 +69,8 @@ Body
 Boolean
 Both
 Bpchar
+Branch
+Branches
 Broken
 Broker
 Brokers
@@ -83,6 +85,7 @@ Catalog
 Certificate
 Chain
 Chains
+Changes
 Char
 Character
 Characteristics
@@ -116,6 +119,7 @@ Count
 Counter
 Cpu
 Create
+Createbranch
 Createcluster
 Createdb
 Createnetworkpolicy
@@ -179,6 +183,7 @@ Execute
 Exists
 Expected
 Experimental
+Expires
 Explain
 Expose
 Expressions

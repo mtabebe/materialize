@@ -31,9 +31,10 @@ use mz_adapter_types::bootstrap_builtin_cluster_config::{
 use mz_build_info::{BuildInfo, build_info};
 use mz_catalog::config::{BuiltinItemMigrationConfig, ClusterReplicaSizeMap, StateConfig};
 use mz_catalog::durable::debug::{
-    AuditLogCollection, ClusterCollection, ClusterIntrospectionSourceIndexCollection,
-    ClusterReplicaCollection, ClusterSystemConfigurationCollection, Collection, CollectionTrace,
-    CollectionType, CommentCollection, ConfigCollection, DatabaseCollection, DebugCatalogState,
+    AuditLogCollection, BranchDescriptorCollection, ClusterCollection,
+    ClusterIntrospectionSourceIndexCollection, ClusterReplicaCollection,
+    ClusterSystemConfigurationCollection, Collection, CollectionTrace, CollectionType,
+    CommentCollection, ConfigCollection, DatabaseCollection, DebugCatalogState,
     DefaultPrivilegeCollection, IdAllocatorCollection, ItemCollection, NetworkPolicyCollection,
     ReplicaSystemConfigurationCollection, RoleAuthCollection, RoleCollection, SchemaCollection,
     SettingCollection, SourceReferencesCollection, StorageCollectionMetadataCollection,
@@ -301,6 +302,9 @@ macro_rules! for_collection {
             CollectionType::IdAlloc => $fn::<IdAllocatorCollection>($($arg),*).await?,
             CollectionType::Item => $fn::<ItemCollection>($($arg),*).await?,
             CollectionType::NetworkPolicy => $fn::<NetworkPolicyCollection>($($arg),*).await?,
+            CollectionType::BranchDescriptor => {
+                $fn::<BranchDescriptorCollection>($($arg),*).await?
+            }
             CollectionType::Role => $fn::<RoleCollection>($($arg),*).await?,
             CollectionType::RoleAuth => $fn::<RoleAuthCollection>($($arg),*).await?,
             CollectionType::Schema => $fn::<SchemaCollection>($($arg),*).await?,
@@ -463,6 +467,7 @@ async fn dump(
         id_allocator,
         items,
         network_policies,
+        branches,
         roles,
         role_auth,
         schemas,
@@ -519,6 +524,7 @@ async fn dump(
         stats_only,
         consolidate,
     );
+    dump_col(&mut data, branches, &ignore, stats_only, consolidate);
     dump_col(&mut data, roles, &ignore, stats_only, consolidate);
     dump_col(&mut data, role_auth, &ignore, stats_only, consolidate);
     dump_col(&mut data, schemas, &ignore, stats_only, consolidate);

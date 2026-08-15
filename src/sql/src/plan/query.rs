@@ -2090,6 +2090,10 @@ fn plan_set_expr(
                     show::show_objects(qcx.scx, stmt)?.plan_hir(qcx)
                 }
                 ShowStatement::ShowVariable(_) => bail_unsupported!("SHOW variable in subqueries"),
+                ShowStatement::ShowBranches(_) => bail_unsupported!("SHOW BRANCHES in subqueries"),
+                ShowStatement::ShowBranchChanges(_) => {
+                    bail_unsupported!("SHOW BRANCH CHANGES in subqueries")
+                }
                 ShowStatement::InspectShard(_) => sql_bail!("unsupported INSPECT statement"),
             }
         }

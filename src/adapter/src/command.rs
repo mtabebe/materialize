@@ -713,6 +713,10 @@ pub enum ExecuteResponse {
     CreatedType,
     /// The requested network policy was created.
     CreatedNetworkPolicy,
+    /// The requested branch was created.
+    CreatedBranch,
+    /// The requested branch was dropped.
+    DroppedBranch,
     /// The requested prepared statement was removed.
     Deallocate { all: bool },
     /// The requested cursor was declared.
@@ -879,6 +883,8 @@ impl TryInto<ExecuteResponse> for ExecuteResponseKind {
                 Ok(ExecuteResponse::CreatedMaterializedView)
             }
             ExecuteResponseKind::CreatedNetworkPolicy => Ok(ExecuteResponse::CreatedNetworkPolicy),
+            ExecuteResponseKind::CreatedBranch => Ok(ExecuteResponse::CreatedBranch),
+            ExecuteResponseKind::DroppedBranch => Ok(ExecuteResponse::DroppedBranch),
             ExecuteResponseKind::CreatedType => Ok(ExecuteResponse::CreatedType),
             ExecuteResponseKind::Deallocate => Err(()),
             ExecuteResponseKind::DeclaredCursor => Ok(ExecuteResponse::DeclaredCursor),
@@ -942,6 +948,8 @@ impl ExecuteResponse {
             CreatedMaterializedView { .. } => Some("CREATE MATERIALIZED VIEW".into()),
             CreatedType => Some("CREATE TYPE".into()),
             CreatedNetworkPolicy => Some("CREATE NETWORKPOLICY".into()),
+            CreatedBranch => Some("CREATE BRANCH".into()),
+            DroppedBranch => Some("DROP BRANCH".into()),
             Deallocate { all } => Some(format!("DEALLOCATE{}", if *all { " ALL" } else { "" })),
             DeclaredCursor => Some("DECLARE CURSOR".into()),
             Deleted(n) => Some(format!("DELETE {}", n)),
@@ -1035,6 +1043,9 @@ impl ExecuteResponse {
             CreateType => &[CreatedType],
             PlanKind::Deallocate => &[ExecuteResponseKind::Deallocate],
             CreateNetworkPolicy => &[CreatedNetworkPolicy],
+            PlanKind::CreateBranch => &[ExecuteResponseKind::CreatedBranch],
+            PlanKind::DropBranch => &[ExecuteResponseKind::DroppedBranch],
+            PlanKind::ShowBranches => &[SendingRowsImmediate],
             Declare => &[DeclaredCursor],
             DiscardTemp => &[DiscardedTemp],
             DiscardAll => &[DiscardedAll],

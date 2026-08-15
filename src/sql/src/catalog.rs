@@ -1413,6 +1413,8 @@ pub enum CatalogError {
     RoleAlreadyExists(String),
     /// Network Policy already exists.
     NetworkPolicyAlreadyExists(String),
+    /// Branch already exists.
+    BranchAlreadyExists(String),
     /// Unknown cluster.
     UnknownCluster(String),
     /// Unexpected builtin cluster.
@@ -1447,6 +1449,8 @@ pub enum CatalogError {
     UnknownConnection(String),
     /// Unknown network policy.
     UnknownNetworkPolicy(String),
+    /// Unknown branch.
+    UnknownBranch(String),
     /// Expected the catalog item to have the given type, but it did not.
     UnexpectedType {
         /// The item's name.
@@ -1487,8 +1491,10 @@ impl fmt::Display for CatalogError {
             Self::NetworkPolicyAlreadyExists(name) => {
                 write!(f, "network policy '{name}' already exists")
             }
+            Self::BranchAlreadyExists(name) => write!(f, "branch '{name}' already exists"),
             Self::UnknownCluster(name) => write!(f, "unknown cluster '{}'", name),
             Self::UnknownNetworkPolicy(name) => write!(f, "unknown network policy '{}'", name),
+            Self::UnknownBranch(name) => write!(f, "unknown branch '{}'", name),
             Self::UnexpectedBuiltinCluster(name) => {
                 write!(f, "Unexpected builtin cluster '{}'", name)
             }

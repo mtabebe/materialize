@@ -34,8 +34,8 @@ privileges  mz_aclitem  false
 query T rowsort
 SELECT privileges::text FROM mz_system_privileges
 ----
-materialize=RBNP/mz_system
-mz_system=RBNP/mz_system
+materialize=RBNPH/mz_system
+mz_system=RBNPH/mz_system
 
 # --- OID stability ------------------------------------------------------------
 
@@ -61,8 +61,8 @@ COMPLETE 0
 query T
 SELECT privileges::text FROM mz_system_privileges ORDER BY 1
 ----
-materialize=RBNP/mz_system
-mz_system=RBNP/mz_system
+materialize=RBNPH/mz_system
+mz_system=RBNPH/mz_system
 r_sys=R/mz_system
 
 # --- AclItem round-trip via mz_aclitem_* helpers -----------------------------
@@ -142,8 +142,8 @@ COMPLETE 0
 query T rowsort
 SELECT privileges::text FROM mz_system_privileges
 ----
-materialize=RBNP/mz_system
-mz_system=RBNP/mz_system
+materialize=RBNPH/mz_system
+mz_system=RBNPH/mz_system
 
 # --- NOT NULL invariant -------------------------------------------------------
 

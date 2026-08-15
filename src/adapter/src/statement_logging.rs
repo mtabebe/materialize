@@ -239,6 +239,8 @@ impl From<&ExecuteResponse> for StatementEndedExecutionReason {
             | ExecuteResponse::CreatedMaterializedView
             | ExecuteResponse::CreatedType
             | ExecuteResponse::CreatedNetworkPolicy
+            | ExecuteResponse::CreatedBranch
+            | ExecuteResponse::DroppedBranch
             | ExecuteResponse::Deallocate { .. }
             | ExecuteResponse::DeclaredCursor
             | ExecuteResponse::Deleted(_)

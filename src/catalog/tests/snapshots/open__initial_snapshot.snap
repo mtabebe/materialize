@@ -666,6 +666,7 @@ Snapshot {
             oid: 17048,
         },
     },
+    branches: {},
     cluster_replicas: {
         ClusterReplicaKey {
             id: User(
@@ -708,6 +709,11 @@ Snapshot {
             name: "auditlog",
         }: IdAllocValue {
             next_id: 13,
+        },
+        IdAllocKey {
+            name: "branch",
+        }: IdAllocValue {
+            next_id: 1,
         },
         IdAllocKey {
             name: "database",
@@ -851,7 +857,7 @@ Snapshot {
             ),
         }: SystemPrivilegesValue {
             acl_mode: AclMode {
-                bitflags: 8053063680,
+                bitflags: 16642998272,
             },
         },
     },

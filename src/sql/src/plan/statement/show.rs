@@ -31,9 +31,9 @@ use query::QueryContext;
 use crate::ast::display::escaped_string_literal;
 use crate::ast::visit_mut::VisitMut;
 use crate::ast::{
-    SelectStatement, ShowColumnsStatement, ShowCreateIndexStatement, ShowCreateSinkStatement,
-    ShowCreateSourceStatement, ShowCreateTableStatement, ShowCreateViewStatement,
-    ShowObjectsStatement, ShowStatementFilter, Statement, Value,
+    SelectStatement, ShowBranchesStatement, ShowColumnsStatement, ShowCreateIndexStatement,
+    ShowCreateSinkStatement, ShowCreateSourceStatement, ShowCreateTableStatement,
+    ShowCreateViewStatement, ShowObjectsStatement, ShowStatementFilter, Statement, Value,
 };
 use crate::catalog::{CatalogItemType, SessionCatalog};
 use crate::names::{
@@ -45,8 +45,10 @@ use crate::plan::scope::Scope;
 use crate::plan::statement::ddl::unplan_create_cluster;
 use crate::plan::statement::{StatementContext, StatementDesc, dml};
 use crate::plan::{
-    HirRelationExpr, Params, Plan, PlanError, ShowColumnsPlan, ShowCreatePlan, query, transform_ast,
+    HirRelationExpr, Params, Plan, PlanError, ShowBranchesPlan, ShowColumnsPlan, ShowCreatePlan,
+    query, transform_ast,
 };
+use crate::session::vars;
 
 pub fn describe_show_create_view(
     _: &StatementContext,
@@ -370,6 +372,33 @@ fn ensure_no_from<T>(from: Option<T>) -> Result<(), PlanError> {
         bail_internal!("FROM not supported for this SHOW command");
     }
     Ok(())
+}
+
+pub fn describe_show_branches(
+    _: &StatementContext,
+    _: ShowBranchesStatement<Aug>,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("name", SqlScalarType::String.nullable(false))
+            .with_column("clusters", SqlScalarType::String.nullable(false))
+            .with_column(
+                "expires",
+                SqlScalarType::TimestampTz { precision: None }.nullable(true),
+            )
+            .finish(),
+    )))
+}
+
+pub fn plan_show_branches(
+    scx: &StatementContext,
+    ShowBranchesStatement { filter }: ShowBranchesStatement<Aug>,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+    if filter.is_some() {
+        bail_unsupported!("SHOW BRANCHES with a filter");
+    }
+    Ok(Plan::ShowBranches(ShowBranchesPlan))
 }
 
 pub fn show_objects<'a>(

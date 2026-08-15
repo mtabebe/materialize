@@ -1852,6 +1852,40 @@ impl Coordinator {
         Ok(Self::send_immediate_rows(rows))
     }
 
+    /// Lists the branches visible to `session`: its own, or every branch for a
+    /// superuser.
+    pub(super) fn sequence_show_branches(
+        &self,
+        session: &Session,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let owner = (!session.is_superuser()).then(|| *session.current_role_id());
+        let mut branches: Vec<_> = self.catalog().state().get_branches(owner).collect();
+        branches.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let rows: Vec<_> = branches
+            .into_iter()
+            .map(|branch| {
+                let clusters = branch
+                    .cluster_maps
+                    .iter()
+                    .map(|map| format!("{} -> {}", map.prod_cluster_id, map.branch_cluster_id))
+                    .join(", ");
+                let expires = match branch.expires_ts {
+                    Some(ts) => Datum::TimestampTz(
+                        mz_ore::now::to_datetime(ts).try_into().expect("must fit"),
+                    ),
+                    None => Datum::Null,
+                };
+                Row::pack_slice(&[
+                    Datum::String(&branch.name),
+                    Datum::String(&clusters),
+                    expires,
+                ])
+            })
+            .collect();
+        Ok(Self::send_immediate_rows(rows))
+    }
+
     pub(super) fn sequence_show_variable(
         &self,
         session: &Session,

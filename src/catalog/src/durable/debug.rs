@@ -64,6 +64,7 @@ pub enum CollectionType {
     IdAlloc,
     Item,
     NetworkPolicy,
+    BranchDescriptor,
     Role,
     RoleAuth,
     Schema,
@@ -201,6 +202,14 @@ collection_impl!({
     collection_type: CollectionType::Item,
     trace_field: items,
     update: StateUpdateKind::Item,
+});
+collection_impl!({
+    name: BranchDescriptorCollection,
+    key: proto::BranchDescriptorKey,
+    value: proto::BranchDescriptorValue,
+    collection_type: CollectionType::BranchDescriptor,
+    trace_field: branches,
+    update: StateUpdateKind::BranchDescriptor,
 });
 collection_impl!({
     name: NetworkPolicyCollection,
@@ -357,6 +366,7 @@ pub struct Trace {
     pub id_allocator: CollectionTrace<IdAllocatorCollection>,
     pub items: CollectionTrace<ItemCollection>,
     pub network_policies: CollectionTrace<NetworkPolicyCollection>,
+    pub branches: CollectionTrace<BranchDescriptorCollection>,
     pub roles: CollectionTrace<RoleCollection>,
     pub role_auth: CollectionTrace<RoleAuthCollection>,
     pub schemas: CollectionTrace<SchemaCollection>,
@@ -386,6 +396,7 @@ impl Trace {
             id_allocator: CollectionTrace::new(),
             items: CollectionTrace::new(),
             network_policies: CollectionTrace::new(),
+            branches: CollectionTrace::new(),
             roles: CollectionTrace::new(),
             role_auth: CollectionTrace::new(),
             schemas: CollectionTrace::new(),
@@ -415,6 +426,7 @@ impl Trace {
             id_allocator,
             items,
             network_policies,
+            branches,
             roles,
             role_auth,
             schemas,
@@ -440,6 +452,7 @@ impl Trace {
         id_allocator.sort();
         items.sort();
         network_policies.sort();
+        branches.sort();
         roles.sort();
         role_auth.sort();
         schemas.sort();

@@ -22,7 +22,7 @@ use mz_adapter_types::dyncfgs::ENABLE_BACKGROUND_ALTER_CLUSTER;
 use mz_orchestrator_tracing::{StaticTracingConfig, TracingCliArgs};
 use mz_ore::cli::{self, CliConfig, KeyValueArg};
 use mz_ore::metrics::MetricsRegistry;
-use mz_sql::session::vars::{ENABLE_LOGICAL_COMPACTION_WINDOW, Var, VarInput};
+use mz_sql::session::vars::{ENABLE_BRANCHING, ENABLE_LOGICAL_COMPACTION_WINDOW, Var, VarInput};
 use mz_sqllogictest::runner::{self, Outcomes, RunConfig, Runner, WriteFmt};
 use mz_sqllogictest::util;
 use mz_tracing::CloneableEnvFilter;
@@ -182,6 +182,13 @@ async fn main() -> ExitCode {
     // wins.
     system_parameter_defaults
         .entry(ENABLE_BACKGROUND_ALTER_CLUSTER.name().to_string())
+        .or_insert_with(|| "true".to_string());
+
+    // Branching defaults off in production, on for the suites, so the branch
+    // paths are exercised before the feature earns trust. A caller-provided
+    // value wins.
+    system_parameter_defaults
+        .entry(ENABLE_BRANCHING.flag.name().to_string())
         .or_insert_with(|| "true".to_string());
 
     let config = RunConfig {

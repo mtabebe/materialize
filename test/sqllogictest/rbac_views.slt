@@ -98,6 +98,7 @@ SELECT * FROM mz_internal.mz_show_system_privileges ORDER BY grantee
 mz_system  PUBLIC       CREATECLUSTER
 mz_system  materialize  CREATEDB
 mz_system  materialize  CREATEROLE
+mz_system  materialize  CREATEBRANCH
 mz_system  materialize  CREATECLUSTER
 mz_system  materialize  CREATENETWORKPOLICY
 mz_system  r1           CREATEDB
@@ -320,6 +321,7 @@ materialize  r5           materialize  NULL    s            schema  CREATE
 mz_system    PUBLIC       NULL         NULL    NULL         system    CREATECLUSTER
 mz_system    materialize  NULL         NULL    NULL         system    CREATEDB
 mz_system    materialize  NULL         NULL    NULL         system    CREATEROLE
+mz_system    materialize  NULL         NULL    NULL         system    CREATEBRANCH
 mz_system    materialize  NULL         NULL    NULL         system    CREATECLUSTER
 mz_system    materialize  NULL         NULL    NULL         system    CREATENETWORKPOLICY
 mz_system    r1           NULL         NULL    NULL         system    CREATEDB
@@ -403,6 +405,7 @@ materialize  r5           materialize  NULL    s            schema  CREATE
 mz_system    PUBLIC       NULL         NULL    NULL         system    CREATECLUSTER
 mz_system    materialize  NULL         NULL    NULL         system    CREATEDB
 mz_system    materialize  NULL         NULL    NULL         system    CREATEROLE
+mz_system    materialize  NULL         NULL    NULL         system    CREATEBRANCH
 mz_system    materialize  NULL         NULL    NULL         system    CREATECLUSTER
 mz_system    materialize  NULL         NULL    NULL         system    CREATENETWORKPOLICY
 mz_system    r1           NULL         NULL    NULL         system    CREATEDB

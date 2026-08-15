@@ -14,11 +14,12 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 
 use crate::durable::objects::state_update::StateUpdateKindJson;
 use crate::durable::objects::{
-    AuditLogKey, ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue,
-    ClusterKey, ClusterReplicaKey, ClusterReplicaValue, ClusterSystemConfigurationKey,
-    ClusterSystemConfigurationValue, ClusterValue, CommentKey, CommentValue, ConfigKey,
-    ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey, DefaultPrivilegesValue,
-    GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
+    AuditLogKey, BranchClusterMap, BranchDescriptorKey, BranchDescriptorValue, BranchForkRef,
+    BranchObjectIdentity, BranchSnapshotItem, BranchTimestamp, ClusterIntrospectionSourceIndexKey,
+    ClusterIntrospectionSourceIndexValue, ClusterKey, ClusterReplicaKey, ClusterReplicaValue,
+    ClusterSystemConfigurationKey, ClusterSystemConfigurationValue, ClusterValue, CommentKey,
+    CommentValue, ConfigKey, ConfigValue, DatabaseKey, DatabaseValue, DefaultPrivilegesKey,
+    DefaultPrivilegesValue, GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
     IntrospectionSourceIndexCatalogItemId, IntrospectionSourceIndexGlobalId, ItemKey, ItemValue,
     NetworkPolicyKey, NetworkPolicyValue, ReplicaSystemConfigurationKey,
     ReplicaSystemConfigurationValue, RoleKey, RoleValue, SchemaKey, SchemaValue,
@@ -698,6 +699,140 @@ impl RustType<proto::RoleAuthValue> for RoleAuthValue {
         Ok(RoleAuthValue {
             password_hash: proto.password_hash,
             updated_at: proto.updated_at.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchDescriptorKey> for BranchDescriptorKey {
+    fn into_proto(&self) -> proto::BranchDescriptorKey {
+        proto::BranchDescriptorKey {
+            id: self.id.into_proto(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchDescriptorKey) -> Result<Self, TryFromProtoError> {
+        Ok(BranchDescriptorKey {
+            id: proto.id.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchDescriptorValue> for BranchDescriptorValue {
+    fn into_proto(&self) -> proto::BranchDescriptorValue {
+        proto::BranchDescriptorValue {
+            name: self.name.to_string(),
+            owner_role_id: self.owner_id.into_proto(),
+            created_ts: self.created_ts.into_proto(),
+            expires_ts: self.expires_ts.into_proto(),
+            cluster_maps: self.cluster_maps.into_proto(),
+            branch_ts: self.branch_ts.into_proto(),
+            branch_point_snapshot: self.branch_point_snapshot.into_proto(),
+            object_identities: self.object_identities.into_proto(),
+            fork_refs: self.fork_refs.into_proto(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchDescriptorValue) -> Result<Self, TryFromProtoError> {
+        Ok(BranchDescriptorValue {
+            name: proto.name,
+            owner_id: proto.owner_role_id.into_rust()?,
+            created_ts: proto.created_ts.into_rust()?,
+            expires_ts: proto.expires_ts.into_rust()?,
+            cluster_maps: proto.cluster_maps.into_rust()?,
+            branch_ts: proto.branch_ts.into_rust()?,
+            branch_point_snapshot: proto.branch_point_snapshot.into_rust()?,
+            object_identities: proto.object_identities.into_rust()?,
+            fork_refs: proto.fork_refs.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchClusterMap> for BranchClusterMap {
+    fn into_proto(&self) -> proto::BranchClusterMap {
+        proto::BranchClusterMap {
+            prod_cluster_id: self.prod_cluster_id.into_proto(),
+            branch_cluster_id: self.branch_cluster_id.into_proto(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchClusterMap) -> Result<Self, TryFromProtoError> {
+        Ok(BranchClusterMap {
+            prod_cluster_id: proto.prod_cluster_id.into_rust()?,
+            branch_cluster_id: proto.branch_cluster_id.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchTimestamp> for BranchTimestamp {
+    fn into_proto(&self) -> proto::BranchTimestamp {
+        proto::BranchTimestamp {
+            timeline: self.timeline.to_string(),
+            ts: self.ts.into(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchTimestamp) -> Result<Self, TryFromProtoError> {
+        Ok(BranchTimestamp {
+            timeline: proto.timeline,
+            ts: proto.ts.into(),
+        })
+    }
+}
+
+impl RustType<proto::BranchObjectIdentity> for BranchObjectIdentity {
+    fn into_proto(&self) -> proto::BranchObjectIdentity {
+        proto::BranchObjectIdentity {
+            prod_global_id: self.prod_global_id.into_proto(),
+            branch_global_id: self.branch_global_id.into_proto(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchObjectIdentity) -> Result<Self, TryFromProtoError> {
+        Ok(BranchObjectIdentity {
+            prod_global_id: proto.prod_global_id.into_rust()?,
+            branch_global_id: proto.branch_global_id.into_rust()?,
+        })
+    }
+}
+
+impl RustType<proto::BranchForkRef> for BranchForkRef {
+    fn into_proto(&self) -> proto::BranchForkRef {
+        proto::BranchForkRef {
+            branch_table_global_id: self.branch_table_global_id.into_proto(),
+            fork_shard_id: self.fork_shard_id.to_string(),
+            source_shard_id: self.source_shard_id.to_string(),
+            retain_ref_token: self.retain_ref_token.to_string(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchForkRef) -> Result<Self, TryFromProtoError> {
+        Ok(BranchForkRef {
+            branch_table_global_id: proto.branch_table_global_id.into_rust()?,
+            fork_shard_id: proto
+                .fork_shard_id
+                .parse()
+                .map_err(|_| TryFromProtoError::InvalidShardId(proto.fork_shard_id.clone()))?,
+            source_shard_id: proto
+                .source_shard_id
+                .parse()
+                .map_err(|_| TryFromProtoError::InvalidShardId(proto.source_shard_id.clone()))?,
+            retain_ref_token: proto.retain_ref_token,
+        })
+    }
+}
+
+impl RustType<proto::BranchSnapshotItem> for BranchSnapshotItem {
+    fn into_proto(&self) -> proto::BranchSnapshotItem {
+        proto::BranchSnapshotItem {
+            global_id: self.global_id.into_proto(),
+            create_sql: self.create_sql.to_string(),
+        }
+    }
+
+    fn from_proto(proto: proto::BranchSnapshotItem) -> Result<Self, TryFromProtoError> {
+        Ok(BranchSnapshotItem {
+            global_id: proto.global_id.into_rust()?,
+            create_sql: proto.create_sql,
         })
     }
 }

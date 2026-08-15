@@ -366,7 +366,7 @@ Trace {
                                         object_id: "SYSTEM",
                                         grantee_id: "s1",
                                         grantor_id: "s1",
-                                        privileges: "RBNP",
+                                        privileges: "RBNPH",
                                     },
                                 ),
                             },
@@ -699,6 +699,20 @@ Trace {
             (
                 (
                     IdAllocKey {
+                        name: "branch",
+                    },
+                    IdAllocValue {
+                        next_id: 1,
+                    },
+                ),
+                2,
+                Overflowing(
+                    1,
+                ),
+            ),
+            (
+                (
+                    IdAllocKey {
                         name: "database",
                     },
                     IdAllocValue {
@@ -913,6 +927,9 @@ Trace {
                 ),
             ),
         ],
+    },
+    branches: CollectionTrace {
+        values: [],
     },
     roles: CollectionTrace {
         values: [
@@ -1613,7 +1630,7 @@ Trace {
                     },
                     SystemPrivilegesValue {
                         acl_mode: AclMode {
-                            bitflags: 8053063680,
+                            bitflags: 16642998272,
                         },
                     },
                 ),

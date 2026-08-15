@@ -45,7 +45,7 @@ use mz_sql::session::user::{MZ_SUPPORT_ROLE_ID, MZ_SYSTEM_ROLE_ID};
 use crate::builtin::BUILTIN_ROLES;
 use crate::durable::upgrade::CATALOG_VERSION;
 use crate::durable::{
-    AUDIT_LOG_ID_ALLOC_KEY, BUILTIN_MIGRATION_SHARD_KEY, BootstrapArgs,
+    AUDIT_LOG_ID_ALLOC_KEY, BRANCH_ID_ALLOC_KEY, BUILTIN_MIGRATION_SHARD_KEY, BootstrapArgs,
     CATALOG_CONTENT_VERSION_KEY, CatalogError, ClusterConfig, ClusterVariant,
     ClusterVariantManaged, DATABASE_ID_ALLOC_KEY, DefaultPrivilege, EXPRESSION_CACHE_SHARD_KEY,
     MOCK_AUTHENTICATION_NONCE_KEY, OID_ALLOC_KEY, ReplicaConfig, ReplicaLocation, Role,
@@ -265,6 +265,7 @@ pub(crate) async fn initialize(
             USER_NETWORK_POLICY_ID_ALLOC_KEY.to_string(),
             DEFAULT_ALLOCATOR_ID,
         ),
+        (BRANCH_ID_ALLOC_KEY.to_string(), DEFAULT_ALLOCATOR_ID),
         (AUDIT_LOG_ID_ALLOC_KEY.to_string(), DEFAULT_ALLOCATOR_ID),
         (STORAGE_USAGE_ID_ALLOC_KEY.to_string(), DEFAULT_ALLOCATOR_ID),
         (OID_ALLOC_KEY.to_string(), FIRST_USER_OID.into()),

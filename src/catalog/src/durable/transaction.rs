@@ -20,6 +20,7 @@ use mz_compute_client::logging::{ComputeLog, DifferentialLog, LogVariant, Timely
 use mz_controller_types::{ClusterId, ReplicaId};
 use mz_ore::cast::{u64_to_usize, usize_to_u64};
 use mz_ore::collections::{CollectionExt, HashSet};
+use mz_ore::now::EpochMillis;
 use mz_ore::now::SYSTEM_TIME;
 use mz_ore::vec::VecExt;
 use mz_ore::{soft_assert_no_log, soft_assert_or_log, soft_panic_or_log};
@@ -27,6 +28,7 @@ use mz_persist_types::ShardId;
 use mz_pgrepr::oid::FIRST_USER_OID;
 use mz_proto::{RustType, TryFromProtoError};
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem};
+use mz_repr::branch_id::BranchId;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
 use mz_repr::{CatalogItemId, Diff, GlobalId, RelationVersion};
@@ -49,7 +51,8 @@ use crate::durable::initialize::{
 };
 use crate::durable::objects::serialization::proto;
 use crate::durable::objects::{
-    AuditLogKey, Cluster, ClusterConfig, ClusterIntrospectionSourceIndexKey,
+    AuditLogKey, BranchClusterMap, BranchDescriptor, BranchDescriptorKey, BranchDescriptorValue,
+    BranchTimestamp, Cluster, ClusterConfig, ClusterIntrospectionSourceIndexKey,
     ClusterIntrospectionSourceIndexValue, ClusterKey, ClusterReplica, ClusterReplicaKey,
     ClusterReplicaValue, ClusterSystemConfiguration, ClusterSystemConfigurationKey,
     ClusterSystemConfigurationValue, ClusterValue, CommentKey, CommentValue, Config, ConfigKey,
@@ -64,12 +67,13 @@ use crate::durable::objects::{
     SystemPrivilegesKey, SystemPrivilegesValue, TxnWalShardValue, UnfinalizedShardKey,
 };
 use crate::durable::{
-    AUDIT_LOG_ID_ALLOC_KEY, BUILTIN_MIGRATION_SHARD_KEY, CATALOG_CONTENT_VERSION_KEY, CatalogError,
-    DATABASE_ID_ALLOC_KEY, DefaultPrivilege, DurableCatalogError, DurableCatalogState,
-    EXPRESSION_CACHE_SHARD_KEY, MOCK_AUTHENTICATION_NONCE_KEY, NetworkPolicy, OID_ALLOC_KEY,
-    SCHEMA_ID_ALLOC_KEY, SYSTEM_CLUSTER_ID_ALLOC_KEY, SYSTEM_ITEM_ALLOC_KEY,
-    SYSTEM_REPLICA_ID_ALLOC_KEY, Snapshot, SystemConfiguration, USER_ITEM_ALLOC_KEY,
-    USER_NETWORK_POLICY_ID_ALLOC_KEY, USER_ROLE_ID_ALLOC_KEY,
+    AUDIT_LOG_ID_ALLOC_KEY, BRANCH_ID_ALLOC_KEY, BUILTIN_MIGRATION_SHARD_KEY,
+    CATALOG_CONTENT_VERSION_KEY, CatalogError, DATABASE_ID_ALLOC_KEY, DefaultPrivilege,
+    DurableCatalogError, DurableCatalogState, EXPRESSION_CACHE_SHARD_KEY,
+    MOCK_AUTHENTICATION_NONCE_KEY, NetworkPolicy, OID_ALLOC_KEY, SCHEMA_ID_ALLOC_KEY,
+    SYSTEM_CLUSTER_ID_ALLOC_KEY, SYSTEM_ITEM_ALLOC_KEY, SYSTEM_REPLICA_ID_ALLOC_KEY, Snapshot,
+    SystemConfiguration, USER_ITEM_ALLOC_KEY, USER_NETWORK_POLICY_ID_ALLOC_KEY,
+    USER_ROLE_ID_ALLOC_KEY,
 };
 use crate::memory::objects::{StateDiff, StateUpdate, StateUpdateKind};
 
@@ -109,6 +113,7 @@ pub struct Transaction<'a> {
     source_references: TableTransaction<SourceReferencesKey, SourceReferencesValue>,
     system_privileges: TableTransaction<SystemPrivilegesKey, SystemPrivilegesValue>,
     network_policies: TableTransaction<NetworkPolicyKey, NetworkPolicyValue>,
+    branches: TableTransaction<BranchDescriptorKey, BranchDescriptorValue>,
     storage_collection_metadata:
         TableTransaction<StorageCollectionMetadataKey, StorageCollectionMetadataValue>,
     unfinalized_shards: TableTransaction<UnfinalizedShardKey, ()>,
@@ -162,6 +167,7 @@ impl<'a> Transaction<'a> {
             comments,
             clusters,
             network_policies,
+            branches,
             cluster_replicas,
             introspection_sources,
             id_allocator,
@@ -190,6 +196,10 @@ impl<'a> Transaction<'a> {
         let cluster_unique_fn: fn(&ClusterValue, &ClusterValue) -> bool = |a, b| a.name == b.name;
         let network_policy_unique_fn: fn(&NetworkPolicyValue, &NetworkPolicyValue) -> bool =
             |a, b| a.name == b.name;
+        // Branch names are scoped to their owner, so two roles may each have a
+        // branch called `b`.
+        let branch_unique_fn: fn(&BranchDescriptorValue, &BranchDescriptorValue) -> bool =
+            |a, b| a.owner_id == b.owner_id && a.name == b.name;
         let cluster_replica_unique_fn: fn(&ClusterReplicaValue, &ClusterReplicaValue) -> bool =
             |a, b| a.cluster_id == b.cluster_id && a.name == b.name;
 
@@ -244,6 +254,11 @@ impl<'a> Transaction<'a> {
                 network_policies,
                 network_policy_unique_fn,
                 network_policy_unique_fn,
+            )?,
+            branches: TableTransaction::new_with_uniqueness_fn(
+                branches,
+                branch_unique_fn,
+                branch_unique_fn,
             )?,
             cluster_replicas: TableTransaction::new_with_uniqueness_fn(
                 cluster_replicas,
@@ -1115,6 +1130,7 @@ impl<'a> Transaction<'a> {
             comments: self.comments.current_items_proto(),
             clusters: self.clusters.current_items_proto(),
             network_policies: self.network_policies.current_items_proto(),
+            branches: self.branches.current_items_proto(),
             cluster_replicas: self.cluster_replicas.current_items_proto(),
             introspection_sources: self.introspection_sources.current_items_proto(),
             id_allocator: self.id_allocator.current_items_proto(),
@@ -2354,6 +2370,55 @@ impl<'a> Transaction<'a> {
             .map(|(k, v)| DurableType::from_key_value(k.clone(), v.clone()))
     }
 
+    /// Inserts a new branch, allocating its id.
+    pub fn insert_branch(
+        &mut self,
+        name: String,
+        owner_id: RoleId,
+        created_ts: EpochMillis,
+        expires_ts: Option<EpochMillis>,
+        cluster_maps: Vec<BranchClusterMap>,
+        branch_ts: Vec<BranchTimestamp>,
+    ) -> Result<BranchId, CatalogError> {
+        let id = BranchId(self.get_and_increment_id(BRANCH_ID_ALLOC_KEY.to_string())?);
+        let branch = BranchDescriptor {
+            id,
+            name: name.clone(),
+            owner_id,
+            created_ts,
+            expires_ts,
+            cluster_maps,
+            branch_ts,
+            branch_point_snapshot: Vec::new(),
+            object_identities: Vec::new(),
+            fork_refs: Vec::new(),
+        };
+        let (key, value) = branch.into_key_value();
+        match self.branches.insert(key, value, self.op_id) {
+            Ok(_) => Ok(id),
+            Err(_) => Err(SqlCatalogError::BranchAlreadyExists(name).into()),
+        }
+    }
+
+    /// Removes the branch with `id`.
+    pub fn remove_branch(&mut self, id: BranchId) -> Result<(), CatalogError> {
+        let prev = self
+            .branches
+            .set(BranchDescriptorKey { id }, None, self.op_id)?;
+        if prev.is_some() {
+            Ok(())
+        } else {
+            Err(SqlCatalogError::UnknownBranch(id.to_string()).into())
+        }
+    }
+
+    pub fn get_branches(&self) -> impl Iterator<Item = BranchDescriptor> + use<'_> {
+        self.branches
+            .items()
+            .into_iter()
+            .map(|(k, v)| DurableType::from_key_value(k.clone(), v.clone()))
+    }
+
     pub fn get_network_policies(&self) -> impl Iterator<Item = NetworkPolicy> + use<'_> {
         self.network_policies
             .items()
@@ -2492,6 +2557,7 @@ impl<'a> Transaction<'a> {
             role_auth,
             clusters,
             network_policies,
+            branches,
             cluster_replicas,
             introspection_sources,
             system_gid_mapping,
@@ -2568,6 +2634,11 @@ impl<'a> Transaction<'a> {
             .chain(get_collection_op_updates(
                 network_policies,
                 StateUpdateKind::NetworkPolicy,
+                self.op_id,
+            ))
+            .chain(get_collection_op_updates(
+                branches,
+                StateUpdateKind::BranchDescriptor,
                 self.op_id,
             ))
             .chain(get_collection_op_updates(
@@ -2677,6 +2748,7 @@ impl<'a> Transaction<'a> {
             clusters: self.clusters.pending(),
             cluster_replicas: self.cluster_replicas.pending(),
             network_policies: self.network_policies.pending(),
+            branches: self.branches.pending(),
             introspection_sources: self.introspection_sources.pending(),
             id_allocator: self.id_allocator.pending(),
             configs: self.configs.pending(),
@@ -2730,6 +2802,7 @@ impl<'a> Transaction<'a> {
             clusters,
             cluster_replicas,
             network_policies,
+            branches,
             introspection_sources,
             id_allocator,
             configs,
@@ -2759,6 +2832,7 @@ impl<'a> Transaction<'a> {
         differential_dataflow::consolidation::consolidate_updates(clusters);
         differential_dataflow::consolidation::consolidate_updates(cluster_replicas);
         differential_dataflow::consolidation::consolidate_updates(network_policies);
+        differential_dataflow::consolidation::consolidate_updates(branches);
         differential_dataflow::consolidation::consolidate_updates(introspection_sources);
         differential_dataflow::consolidation::consolidate_updates(id_allocator);
         differential_dataflow::consolidation::consolidate_updates(configs);
@@ -2954,6 +3028,11 @@ pub struct TransactionBatch {
     pub(crate) clusters: Vec<(proto::ClusterKey, proto::ClusterValue, Diff)>,
     pub(crate) cluster_replicas: Vec<(proto::ClusterReplicaKey, proto::ClusterReplicaValue, Diff)>,
     pub(crate) network_policies: Vec<(proto::NetworkPolicyKey, proto::NetworkPolicyValue, Diff)>,
+    pub(crate) branches: Vec<(
+        proto::BranchDescriptorKey,
+        proto::BranchDescriptorValue,
+        Diff,
+    )>,
     pub(crate) introspection_sources: Vec<(
         proto::ClusterIntrospectionSourceIndexKey,
         proto::ClusterIntrospectionSourceIndexValue,
@@ -3020,6 +3099,7 @@ impl TransactionBatch {
             clusters,
             cluster_replicas,
             network_policies,
+            branches,
             introspection_sources,
             id_allocator,
             configs,
@@ -3047,6 +3127,7 @@ impl TransactionBatch {
             && clusters.is_empty()
             && cluster_replicas.is_empty()
             && network_policies.is_empty()
+            && branches.is_empty()
             && introspection_sources.is_empty()
             && id_allocator.is_empty()
             && configs.is_empty()
@@ -3116,6 +3197,7 @@ mod unique_name {
         DatabaseValue,
         ItemValue,
         NetworkPolicyValue,
+        BranchDescriptorValue,
         RoleValue,
         SchemaValue,
     }

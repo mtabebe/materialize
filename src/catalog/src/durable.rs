@@ -68,6 +68,7 @@ pub const SYSTEM_REPLICA_ID_ALLOC_KEY: &str = "system_replica";
 pub const AUDIT_LOG_ID_ALLOC_KEY: &str = "auditlog";
 pub const STORAGE_USAGE_ID_ALLOC_KEY: &str = "storage_usage";
 pub const USER_NETWORK_POLICY_ID_ALLOC_KEY: &str = "user_network_policy";
+pub const BRANCH_ID_ALLOC_KEY: &str = "branch";
 pub const OID_ALLOC_KEY: &str = "oid";
 pub(crate) const CATALOG_CONTENT_VERSION_KEY: &str = "catalog_content_version";
 pub const BUILTIN_MIGRATION_SHARD_KEY: &str = "builtin_migration_shard";

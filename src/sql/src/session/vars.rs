@@ -459,6 +459,7 @@ impl SessionVars {
             &EMIT_INTROSPECTION_QUERY_NOTICE,
             &UNSAFE_NEW_TRANSACTION_WALL_TIME,
             &WELCOME_MESSAGE,
+            &BRANCH,
         ]
         .into_iter()
         .chain(SESSION_SYSTEM_VARS.iter().map(|(_name, var)| *var))
@@ -612,6 +613,11 @@ impl SessionVars {
         let (name, input) = compat_translate(name, input);
 
         check_transaction_isolation_feature_flag(name, input, system_vars)?;
+        // Gate `branch` at the one choke point every assignment syntax shares:
+        // `SET`, `ALTER ROLE ... SET`, and connection options.
+        if UncasedStr::new(name) == UncasedStr::new(BRANCH.name()) {
+            ENABLE_BRANCHING.require(system_vars)?;
+        }
 
         let name = UncasedStr::new(name);
         self.check_read_only(name)?;
@@ -773,6 +779,14 @@ impl SessionVars {
     /// Returns the value of the `cluster` configuration parameter.
     pub fn cluster(&self) -> &str {
         self.expect_value::<String>(&CLUSTER).as_str()
+    }
+
+    /// Returns the branch this session resolves names in, or `None` for
+    /// production.
+    pub fn branch(&self) -> Option<&str> {
+        self.expect_value::<Option<String>>(&BRANCH)
+            .as_ref()
+            .map(|s| s.as_str())
     }
 
     /// Returns the value of the `cluster_replica` configuration parameter.

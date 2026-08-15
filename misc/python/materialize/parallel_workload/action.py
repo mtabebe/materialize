@@ -3095,6 +3095,10 @@ class FlipFlagsAction(Action):
             # for the running process.
             "enable_adapter_frontend_occ_read_then_write",
             "enable_compute_half_join2",
+            # Gates fork-shard creation, which parallel workload cannot yet
+            # exercise; flipping it off mid-run would only mask the paths that
+            # do exist.
+            "persist_enable_branching",
             "enable_mz_join_core",
             "enable_compute_correction_v2",
             "linear_join_yielding",

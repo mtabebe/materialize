@@ -646,6 +646,7 @@ fn privilege_to_acl_mode(privilege: Privilege) -> AclMode {
         Privilege::CREATEDB => AclMode::CREATE_DB,
         Privilege::CREATECLUSTER => AclMode::CREATE_CLUSTER,
         Privilege::CREATENETWORKPOLICY => AclMode::CREATE_NETWORK_POLICY,
+        Privilege::CREATEBRANCH => AclMode::CREATE_BRANCH,
     }
 }
 

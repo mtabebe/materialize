@@ -35,11 +35,13 @@ use std::time::Duration;
 use mz_audit_log::VersionedEvent;
 use mz_controller::clusters::ReplicaLogging;
 use mz_controller_types::{ClusterId, ReplicaId};
+use mz_ore::now::EpochMillis;
 use mz_persist_types::ShardId;
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem};
+use mz_repr::branch_id::BranchId;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
-use mz_repr::{CatalogItemId, GlobalId, RelationVersion};
+use mz_repr::{CatalogItemId, GlobalId, RelationVersion, Timestamp};
 use mz_sql::catalog::{
     CatalogItemType, DefaultPrivilegeAclItem, DefaultPrivilegeObject, ObjectType, RoleAttributes,
     RoleMembership, RoleVars,
@@ -48,6 +50,7 @@ use mz_sql::names::{CommentObjectId, DatabaseId, SchemaId};
 use mz_sql::plan::{AutoScalingStrategy, ClusterSchedule, NetworkPolicyRule, OnTimeoutAction};
 #[cfg(test)]
 use proptest_derive::Arbitrary;
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::builtin::RUNTIME_ALTERABLE_FINGERPRINT_SENTINEL;
@@ -254,6 +257,105 @@ impl DurableType for RoleAuth {
         RoleAuthKey {
             role_id: self.role_id,
         }
+    }
+}
+
+/// One `prod -> branch` cluster mapping a branch spans.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchClusterMap {
+    pub prod_cluster_id: ClusterId,
+    pub branch_cluster_id: ClusterId,
+}
+
+/// The timestamp a branch forked its inputs at, on one timeline.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchTimestamp {
+    pub timeline: String,
+    pub ts: Timestamp,
+}
+
+/// The branch's own identity for one production object.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchObjectIdentity {
+    pub prod_global_id: GlobalId,
+    pub branch_global_id: GlobalId,
+}
+
+/// The durable handle on one copy-on-write fork: the branch's shard, the
+/// production shard it inherits blobs from, and the token identifying the
+/// retain-only reference pinning those blobs against GC.
+///
+/// Teardown and bootstrap both find the retain-only reference through this
+/// record, so it is what keeps inherited blobs alive across a restart.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchForkRef {
+    pub branch_table_global_id: GlobalId,
+    pub fork_shard_id: ShardId,
+    pub source_shard_id: ShardId,
+    pub retain_ref_token: String,
+}
+
+/// One item of the catalog snapshot taken at the branch point.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchSnapshotItem {
+    pub global_id: GlobalId,
+    pub create_sql: String,
+}
+
+/// A branch: a copy-on-write fork of one or more clusters.
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+pub struct BranchDescriptor {
+    pub id: BranchId,
+    pub name: String,
+    pub owner_id: RoleId,
+    pub created_ts: EpochMillis,
+    pub expires_ts: Option<EpochMillis>,
+    pub cluster_maps: Vec<BranchClusterMap>,
+    pub branch_ts: Vec<BranchTimestamp>,
+    /// What `SHOW BRANCH CHANGES` diffs the branch's catalog against.
+    pub branch_point_snapshot: Vec<BranchSnapshotItem>,
+    pub object_identities: Vec<BranchObjectIdentity>,
+    pub fork_refs: Vec<BranchForkRef>,
+}
+
+impl DurableType for BranchDescriptor {
+    type Key = BranchDescriptorKey;
+    type Value = BranchDescriptorValue;
+
+    fn into_key_value(self) -> (Self::Key, Self::Value) {
+        (
+            BranchDescriptorKey { id: self.id },
+            BranchDescriptorValue {
+                name: self.name,
+                owner_id: self.owner_id,
+                created_ts: self.created_ts,
+                expires_ts: self.expires_ts,
+                cluster_maps: self.cluster_maps,
+                branch_ts: self.branch_ts,
+                branch_point_snapshot: self.branch_point_snapshot,
+                object_identities: self.object_identities,
+                fork_refs: self.fork_refs,
+            },
+        )
+    }
+
+    fn from_key_value(key: Self::Key, value: Self::Value) -> Self {
+        Self {
+            id: key.id,
+            name: value.name,
+            owner_id: value.owner_id,
+            created_ts: value.created_ts,
+            expires_ts: value.expires_ts,
+            cluster_maps: value.cluster_maps,
+            branch_ts: value.branch_ts,
+            branch_point_snapshot: value.branch_point_snapshot,
+            object_identities: value.object_identities,
+            fork_refs: value.fork_refs,
+        }
+    }
+
+    fn key(&self) -> Self::Key {
+        BranchDescriptorKey { id: self.id }
     }
 }
 
@@ -1339,6 +1441,7 @@ pub struct Snapshot {
     pub comments: BTreeMap<proto::CommentKey, proto::CommentValue>,
     pub clusters: BTreeMap<proto::ClusterKey, proto::ClusterValue>,
     pub network_policies: BTreeMap<proto::NetworkPolicyKey, proto::NetworkPolicyValue>,
+    pub branches: BTreeMap<proto::BranchDescriptorKey, proto::BranchDescriptorValue>,
     pub cluster_replicas: BTreeMap<proto::ClusterReplicaKey, proto::ClusterReplicaValue>,
     pub introspection_sources: BTreeMap<
         proto::ClusterIntrospectionSourceIndexKey,
@@ -1593,6 +1696,24 @@ pub struct RoleValue {
     pub(crate) membership: RoleMembership,
     pub(crate) vars: RoleVars,
     pub(crate) oid: u32,
+}
+
+#[derive(Clone, PartialOrd, PartialEq, Eq, Ord, Hash, Debug)]
+pub struct BranchDescriptorKey {
+    pub(crate) id: BranchId,
+}
+
+#[derive(Clone, PartialOrd, PartialEq, Eq, Ord, Debug)]
+pub struct BranchDescriptorValue {
+    pub(crate) name: String,
+    pub(crate) owner_id: RoleId,
+    pub(crate) created_ts: EpochMillis,
+    pub(crate) expires_ts: Option<EpochMillis>,
+    pub(crate) cluster_maps: Vec<BranchClusterMap>,
+    pub(crate) branch_ts: Vec<BranchTimestamp>,
+    pub(crate) branch_point_snapshot: Vec<BranchSnapshotItem>,
+    pub(crate) object_identities: Vec<BranchObjectIdentity>,
+    pub(crate) fork_refs: Vec<BranchForkRef>,
 }
 
 #[derive(Clone, PartialOrd, PartialEq, Eq, Ord, Hash, Debug)]

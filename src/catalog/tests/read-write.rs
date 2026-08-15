@@ -16,11 +16,14 @@ use insta::assert_debug_snapshot;
 use itertools::Itertools;
 use mz_audit_log::{EventDetails, EventType, EventV1, IdNameV1, VersionedEvent};
 use mz_catalog::durable::objects::serialization::proto;
-use mz_catalog::durable::objects::{DurableType, IdAlloc};
+use mz_catalog::durable::objects::{
+    BranchClusterMap, BranchDescriptor, BranchTimestamp, DurableType, IdAlloc,
+};
 use mz_catalog::durable::{
     CatalogError, Database, DurableCatalogError, FenceError, Item, Metrics,
     TestCatalogStateBuilder, USER_ITEM_ALLOC_KEY, test_bootstrap_args,
 };
+use mz_controller_types::ClusterId;
 use mz_ore::assert_ok;
 use mz_ore::collections::HashSet;
 use mz_ore::metrics::MetricsRegistry;
@@ -969,4 +972,90 @@ async fn test_persist_sync_snapshot_stays_bounded_under_churn() {
 
     Box::new(writer).expire().await;
     Box::new(reader).expire().await;
+}
+
+#[mz_ore::test(tokio::test)]
+#[cfg_attr(miri, ignore)] //  unsupported operation: can't call foreign function `TLS_client_method` on OS `linux`
+async fn test_persist_branch_round_trip() {
+    let persist_client = PersistClient::new_for_tests().await;
+    let state_builder =
+        TestCatalogStateBuilder::new(persist_client).with_default_deploy_generation();
+    let mut state = state_builder
+        .unwrap_build()
+        .await
+        .open(SYSTEM_TIME().into(), &test_bootstrap_args())
+        .await
+        .unwrap();
+    let _ = state
+        .sync_to_current_updates()
+        .await
+        .expect("unable to sync");
+
+    let cluster_maps = vec![BranchClusterMap {
+        prod_cluster_id: ClusterId::User(1),
+        branch_cluster_id: ClusterId::User(2),
+    }];
+    let branch_ts = vec![BranchTimestamp {
+        timeline: "EpochMilliseconds".to_string(),
+        ts: 42.into(),
+    }];
+
+    let mut txn = state.transaction().await.unwrap();
+    let id = txn
+        .insert_branch(
+            "b".to_string(),
+            RoleId::User(1),
+            1000,
+            Some(2000),
+            cluster_maps.clone(),
+            branch_ts.clone(),
+        )
+        .unwrap();
+    // A second branch with the same name and owner conflicts.
+    assert!(
+        txn.insert_branch(
+            "b".to_string(),
+            RoleId::User(1),
+            1000,
+            None,
+            cluster_maps.clone(),
+            branch_ts.clone(),
+        )
+        .is_err()
+    );
+    let _ = txn.get_and_commit_op_updates();
+    let commit_ts = txn.upper();
+    txn.commit(commit_ts).await.unwrap();
+
+    let txn = state.transaction().await.unwrap();
+    let branches: Vec<_> = txn.get_branches().collect();
+    assert_eq!(
+        branches,
+        vec![BranchDescriptor {
+            id,
+            name: "b".to_string(),
+            owner_id: RoleId::User(1),
+            created_ts: 1000,
+            expires_ts: Some(2000),
+            cluster_maps,
+            branch_ts,
+            branch_point_snapshot: Vec::new(),
+            object_identities: Vec::new(),
+            fork_refs: Vec::new(),
+        }]
+    );
+    drop(txn);
+
+    let mut txn = state.transaction().await.unwrap();
+    txn.remove_branch(id).unwrap();
+    assert!(txn.remove_branch(id).is_err());
+    let _ = txn.get_and_commit_op_updates();
+    let commit_ts = txn.upper();
+    txn.commit(commit_ts).await.unwrap();
+
+    let txn = state.transaction().await.unwrap();
+    assert_eq!(txn.get_branches().count(), 0);
+    drop(txn);
+
+    Box::new(state).expire().await;
 }

@@ -826,6 +826,9 @@ impl<U: ApplyUpdate<StateUpdateKind>> PersistHandle<StateUpdateKind, U> {
                     StateUpdateKind::NetworkPolicy(key, value) => {
                         apply(&mut snapshot.network_policies, key, value, diff);
                     }
+                    StateUpdateKind::BranchDescriptor(key, value) => {
+                        apply(&mut snapshot.branches, key, value, diff);
+                    }
                     StateUpdateKind::Role(key, value) => {
                         apply(&mut snapshot.roles, key, value, diff);
                     }
@@ -2123,6 +2126,9 @@ impl Trace {
                     trace.introspection_sources.values.push(((k, v), ts, diff))
                 }
                 StateUpdateKind::Item(k, v) => trace.items.values.push(((k, v), ts, diff)),
+                StateUpdateKind::BranchDescriptor(k, v) => {
+                    trace.branches.values.push(((k, v), ts, diff))
+                }
                 StateUpdateKind::NetworkPolicy(k, v) => {
                     trace.network_policies.values.push(((k, v), ts, diff))
                 }

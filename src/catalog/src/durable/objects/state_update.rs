@@ -141,6 +141,7 @@ impl StateUpdate {
             clusters,
             cluster_replicas,
             network_policies,
+            branches,
             introspection_sources,
             id_allocator,
             configs,
@@ -168,6 +169,7 @@ impl StateUpdate {
         let clusters = from_batch(clusters, StateUpdateKind::Cluster);
         let cluster_replicas = from_batch(cluster_replicas, StateUpdateKind::ClusterReplica);
         let network_policies = from_batch(network_policies, StateUpdateKind::NetworkPolicy);
+        let branches = from_batch(branches, StateUpdateKind::BranchDescriptor);
         let introspection_sources = from_batch(
             introspection_sources,
             StateUpdateKind::IntrospectionSourceIndex,
@@ -207,6 +209,7 @@ impl StateUpdate {
             .chain(clusters)
             .chain(cluster_replicas)
             .chain(network_policies)
+            .chain(branches)
             .chain(introspection_sources)
             .chain(id_allocators)
             .chain(configs)
@@ -247,6 +250,7 @@ pub enum StateUpdateKind {
     ),
     Item(proto::ItemKey, proto::ItemValue),
     NetworkPolicy(proto::NetworkPolicyKey, proto::NetworkPolicyValue),
+    BranchDescriptor(proto::BranchDescriptorKey, proto::BranchDescriptorValue),
     Role(proto::RoleKey, proto::RoleValue),
     RoleAuth(proto::RoleAuthKey, proto::RoleAuthValue),
     Schema(proto::SchemaKey, proto::SchemaValue),
@@ -291,6 +295,7 @@ impl StateUpdateKind {
             }
             StateUpdateKind::Item(_, _) => Some(CollectionType::Item),
             StateUpdateKind::NetworkPolicy(_, _) => Some(CollectionType::NetworkPolicy),
+            StateUpdateKind::BranchDescriptor(_, _) => Some(CollectionType::BranchDescriptor),
             StateUpdateKind::Role(_, _) => Some(CollectionType::Role),
             StateUpdateKind::RoleAuth(_, _) => Some(CollectionType::RoleAuth),
             StateUpdateKind::Schema(_, _) => Some(CollectionType::Schema),
@@ -495,6 +500,10 @@ impl TryFrom<&StateUpdateKind> for Option<memory::objects::StateUpdateKind> {
                 let policy = into_durable(key, value)?;
                 Some(memory::objects::StateUpdateKind::NetworkPolicy(policy))
             }
+            StateUpdateKind::BranchDescriptor(key, value) => {
+                let branch = into_durable(key, value)?;
+                Some(memory::objects::StateUpdateKind::BranchDescriptor(branch))
+            }
             StateUpdateKind::Role(key, value) => {
                 let role = into_durable(key, value)?;
                 Some(memory::objects::StateUpdateKind::Role(role))
@@ -658,6 +667,9 @@ impl RustType<proto::StateUpdateKind> for StateUpdateKind {
             StateUpdateKind::NetworkPolicy(key, value) => {
                 proto::StateUpdateKind::NetworkPolicy(proto::NetworkPolicy { key, value })
             }
+            StateUpdateKind::BranchDescriptor(key, value) => {
+                proto::StateUpdateKind::BranchDescriptor(proto::BranchDescriptor { key, value })
+            }
             StateUpdateKind::Role(key, value) => {
                 proto::StateUpdateKind::Role(proto::Role { key, value })
             }
@@ -792,6 +804,9 @@ impl RustType<proto::StateUpdateKind> for StateUpdateKind {
             }
             proto::StateUpdateKind::NetworkPolicy(proto::NetworkPolicy { key, value }) => {
                 StateUpdateKind::NetworkPolicy(key, value)
+            }
+            proto::StateUpdateKind::BranchDescriptor(proto::BranchDescriptor { key, value }) => {
+                StateUpdateKind::BranchDescriptor(key, value)
             }
         })
     }

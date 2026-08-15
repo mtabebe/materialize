@@ -165,6 +165,8 @@ pub fn describe(
             ddl::describe_create_materialized_view(&scx, stmt)?
         }
         Statement::CreateNetworkPolicy(stmt) => ddl::describe_create_network_policy(&scx, stmt)?,
+        Statement::CreateBranch(stmt) => ddl::describe_create_branch(&scx, stmt)?,
+        Statement::DropBranch(stmt) => ddl::describe_drop_branch(&scx, stmt)?,
         Statement::DropObjects(stmt) => ddl::describe_drop_objects(&scx, stmt)?,
         Statement::DropOwned(stmt) => ddl::describe_drop_owned(&scx, stmt)?,
 
@@ -213,6 +215,13 @@ pub fn describe(
         Statement::Show(ShowStatement::ShowObjects(stmt)) => {
             show::show_objects(&scx, stmt)?.describe()?
         }
+        Statement::Show(ShowStatement::ShowBranches(stmt)) => {
+            show::describe_show_branches(&scx, stmt)?
+        }
+        // Planned in a later phase; the grammar exists so the surface is
+        // fixed, but neither statement has a plan yet.
+        Statement::Show(ShowStatement::ShowBranchChanges(_))
+        | Statement::ExplainCreateBranch(_) => StatementDesc::new(None),
 
         // SCL statements.
         Statement::Close(stmt) => scl::describe_close(&scx, stmt)?,
@@ -366,6 +375,8 @@ pub fn plan(
         Statement::CreateView(stmt) => ddl::plan_create_view(scx, stmt),
         Statement::CreateMaterializedView(stmt) => ddl::plan_create_materialized_view(scx, stmt),
         Statement::CreateNetworkPolicy(stmt) => ddl::plan_create_network_policy(scx, stmt),
+        Statement::CreateBranch(stmt) => ddl::plan_create_branch(scx, stmt),
+        Statement::DropBranch(stmt) => ddl::plan_drop_branch(scx, stmt),
         Statement::DropObjects(stmt) => ddl::plan_drop_objects(scx, stmt),
         Statement::DropOwned(stmt) => ddl::plan_drop_owned(scx, stmt),
 
@@ -426,6 +437,11 @@ pub fn plan(
             show::plan_show_create_type(scx, stmt).map(Plan::ShowCreate)
         }
         Statement::Show(ShowStatement::ShowObjects(stmt)) => show::show_objects(scx, stmt)?.plan(),
+        Statement::Show(ShowStatement::ShowBranches(stmt)) => show::plan_show_branches(scx, stmt),
+        Statement::Show(ShowStatement::ShowBranchChanges(_)) => {
+            bail_unsupported!("SHOW BRANCH CHANGES")
+        }
+        Statement::ExplainCreateBranch(_) => bail_unsupported!("EXPLAIN CREATE BRANCH"),
 
         // SCL statements.
         Statement::Close(stmt) => scl::plan_close(scx, stmt),
@@ -1089,6 +1105,8 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::CreateView(_) => DDL,
             Statement::CreateMaterializedView(_) => DDL,
             Statement::CreateNetworkPolicy(_) => DDL,
+            Statement::CreateBranch(_) => DDL,
+            Statement::DropBranch(_) => DDL,
             Statement::DropObjects(_) => DDL,
             Statement::DropOwned(_) => DDL,
 
@@ -1127,6 +1145,9 @@ impl<T: mz_sql_parser::ast::AstInfo> From<&Statement<T>> for StatementClassifica
             Statement::Show(ShowStatement::ShowCreateMaterializedView(_)) => Show,
             Statement::Show(ShowStatement::ShowCreateType(_)) => Show,
             Statement::Show(ShowStatement::ShowObjects(_)) => Show,
+            Statement::Show(ShowStatement::ShowBranches(_)) => Show,
+            Statement::Show(ShowStatement::ShowBranchChanges(_)) => Show,
+            Statement::ExplainCreateBranch(_) => Show,
 
             // SCL statements.
             Statement::Close(_) => SCL,

@@ -146,6 +146,9 @@ pub enum Plan {
     CreateView(CreateViewPlan),
     CreateMaterializedView(CreateMaterializedViewPlan),
     CreateNetworkPolicy(CreateNetworkPolicyPlan),
+    CreateBranch(CreateBranchPlan),
+    DropBranch(DropBranchPlan),
+    ShowBranches(ShowBranchesPlan),
     CreateIndex(CreateIndexPlan),
     CreateType(CreateTypePlan),
     Comment(CommentPlan),
@@ -275,6 +278,10 @@ impl Plan {
             StatementKind::CreateDatabase => &[PlanKind::CreateDatabase],
             StatementKind::CreateIndex => &[PlanKind::CreateIndex],
             StatementKind::CreateNetworkPolicy => &[PlanKind::CreateNetworkPolicy],
+            StatementKind::CreateBranch => &[PlanKind::CreateBranch],
+            StatementKind::DropBranch => &[PlanKind::DropBranch],
+            // Planned in a later phase; parses today, refused at plan time.
+            StatementKind::ExplainCreateBranch => &[],
             StatementKind::CreateMaterializedView => &[PlanKind::CreateMaterializedView],
             StatementKind::CreateRole => &[PlanKind::CreateRole],
             StatementKind::CreateSchema => &[PlanKind::CreateSchema],
@@ -322,6 +329,7 @@ impl Plan {
                 PlanKind::ShowColumns,
                 PlanKind::ShowAllVariables,
                 PlanKind::InspectShard,
+                PlanKind::ShowBranches,
             ],
             StatementKind::StartTransaction => &[PlanKind::StartTransaction],
             StatementKind::Subscribe => &[PlanKind::Subscribe],
@@ -351,6 +359,9 @@ impl Plan {
             Plan::CreateIndex(_) => "create index",
             Plan::CreateType(_) => "create type",
             Plan::CreateNetworkPolicy(_) => "create network policy",
+            Plan::CreateBranch(_) => "create branch",
+            Plan::DropBranch(_) => "drop branch",
+            Plan::ShowBranches(_) => "show branches",
             Plan::Comment(_) => "comment",
             Plan::DiscardTemp => "discard temp",
             Plan::DiscardAll => "discard all",
@@ -789,6 +800,31 @@ pub struct CreateMaterializedViewPlan {
     /// ambiguous. For example `NATURAL JOIN` or `SELECT *`.
     pub ambiguous_columns: bool,
 }
+
+/// The `prod -> branch` cluster mapping of one `CREATE BRANCH` clause, resolved.
+#[derive(Debug, Clone)]
+pub struct BranchClusterMap {
+    pub prod_cluster_id: ClusterId,
+    pub branch_cluster_id: ClusterId,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateBranchPlan {
+    pub name: String,
+    pub cluster_maps: Vec<BranchClusterMap>,
+    /// How long past creation the branch lives. `None` means the system
+    /// default; the absolute expiry is stamped when the branch is sequenced.
+    pub expires_in: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DropBranchPlan {
+    pub name: String,
+    pub if_exists: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowBranchesPlan;
 
 #[derive(Debug, Clone)]
 pub struct CreateNetworkPolicyPlan {
