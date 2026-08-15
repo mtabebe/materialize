@@ -47,10 +47,11 @@ use crate::internal::state::{
     ProtoEncodedSchemas, ProtoHandleDebugState, ProtoHollowBatch, ProtoHollowBatchPart,
     ProtoHollowRollup, ProtoHollowRun, ProtoHollowRunRef, ProtoIdHollowBatch, ProtoIdMerge,
     ProtoIdSpineBatch, ProtoInlineBatchPart, ProtoInlinedDiffs, ProtoLeasedReaderState, ProtoMerge,
-    ProtoRollup, ProtoRunMeta, ProtoRunOrder, ProtoSpineBatch, ProtoSpineId, ProtoStateDiff,
-    ProtoStateField, ProtoStateFieldDiffType, ProtoStateFieldDiffs, ProtoTrace, ProtoU64Antichain,
-    ProtoU64Description, ProtoVersionedData, ProtoWriterState, RunId, RunMeta, RunOrder, RunPart,
-    State, StateCollections, TypedState, WriterState, proto_hollow_batch_part,
+    ProtoRetainedPartsState, ProtoRollup, ProtoRunMeta, ProtoRunOrder, ProtoSpineBatch,
+    ProtoSpineId, ProtoStateDiff, ProtoStateField, ProtoStateFieldDiffType, ProtoStateFieldDiffs,
+    ProtoTrace, ProtoU64Antichain, ProtoU64Description, ProtoVersionedData, ProtoWriterState,
+    RetainedPartsState, RunId, RunMeta, RunOrder, RunPart, State, StateCollections, TypedState,
+    WriterState, proto_hollow_batch_part,
 };
 use crate::internal::state_diff::{
     ProtoStateFieldDiff, ProtoStateFieldDiffsWriter, StateDiff, StateFieldDiff, StateFieldValDiff,
@@ -59,6 +60,7 @@ use crate::internal::trace::{
     ActiveCompaction, FlatTrace, SpineId, ThinMerge, ThinSpineBatch, Trace,
 };
 use crate::read::{LeasedReaderId, READER_LEASE_DURATION};
+use crate::retain::RetainId;
 use crate::{PersistConfig, ShardId, WriterId, cfg};
 
 /// A key and value `Schema` of data written to a batch or shard.
@@ -443,6 +445,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoStateDiff> for StateDiff<T> {
             last_gc_req,
             leased_readers,
             critical_readers,
+            retained_parts,
             writers,
             schemas,
             since,
@@ -468,6 +471,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoStateDiff> for StateDiff<T> {
             critical_readers,
             &mut writer,
         );
+        field_diffs_into_proto(ProtoStateField::RetainedParts, retained_parts, &mut writer);
         field_diffs_into_proto(ProtoStateField::Writers, writers, &mut writer);
         field_diffs_into_proto(ProtoStateField::Schemas, schemas, &mut writer);
         field_diffs_into_proto(ProtoStateField::Since, since, &mut writer);
@@ -583,6 +587,14 @@ impl<T: Timestamp + Codec64> RustType<ProtoStateDiff> for StateDiff<T> {
                         field_diff_into_rust::<String, ProtoCriticalReaderState, _, _, _, _>(
                             diff,
                             &mut state_diff.critical_readers,
+                            |k| k.into_rust(),
+                            |v| v.into_rust(),
+                        )?
+                    }
+                    ProtoStateField::RetainedParts => {
+                        field_diff_into_rust::<String, ProtoRetainedPartsState, _, _, _, _>(
+                            diff,
+                            &mut state_diff.retained_parts,
                             |k| k.into_rust(),
                             |v| v.into_rust(),
                         )?
@@ -1002,6 +1014,14 @@ impl<T: Timestamp + Lattice + Codec64> RustType<ProtoRollup> for Rollup<T> {
                 .iter()
                 .map(|(id, state)| (id.into_proto(), state.into_proto()))
                 .collect(),
+            retained_parts: self
+                .state
+                .state
+                .collections
+                .retained_parts
+                .iter()
+                .map(|(id, state)| (id.into_proto(), state.into_proto()))
+                .collect(),
             writers: self
                 .state
                 .state
@@ -1059,6 +1079,10 @@ impl<T: Timestamp + Lattice + Codec64> RustType<ProtoRollup> for Rollup<T> {
         for (id, state) in x.critical_readers {
             critical_readers.insert(id.into_rust()?, state.into_rust()?);
         }
+        let mut retained_parts = BTreeMap::new();
+        for (id, state) in x.retained_parts {
+            retained_parts.insert(id.into_rust()?, state.into_rust()?);
+        }
         let mut writers = BTreeMap::new();
         for (id, state) in x.writers {
             writers.insert(id.into_rust()?, state.into_rust()?);
@@ -1080,6 +1104,7 @@ impl<T: Timestamp + Lattice + Codec64> RustType<ProtoRollup> for Rollup<T> {
             last_gc_req: x.last_gc_req.into_rust()?,
             leased_readers,
             critical_readers,
+            retained_parts,
             writers,
             schemas,
             trace: x.trace.into_rust_if_some("trace")?,
@@ -1376,6 +1401,39 @@ impl<T: Timestamp + Codec64> RustType<ProtoCriticalReaderState> for CriticalRead
     }
 }
 
+impl RustType<ProtoRetainedPartsState> for RetainedPartsState {
+    fn into_proto(&self) -> ProtoRetainedPartsState {
+        ProtoRetainedPartsState {
+            keys: self.keys.iter().map(|k| k.into_proto()).collect(),
+            debug: Some(self.debug.into_proto()),
+        }
+    }
+
+    fn from_proto(proto: ProtoRetainedPartsState) -> Result<Self, TryFromProtoError> {
+        Ok(RetainedPartsState {
+            keys: proto
+                .keys
+                .into_iter()
+                .map(|k| k.into_rust())
+                .collect::<Result<_, _>>()?,
+            debug: proto.debug.unwrap_or_default().into_rust()?,
+        })
+    }
+}
+
+impl RustType<String> for RetainId {
+    fn into_proto(&self) -> String {
+        self.to_string()
+    }
+
+    fn from_proto(proto: String) -> Result<Self, TryFromProtoError> {
+        match proto.parse() {
+            Ok(x) => Ok(x),
+            Err(_) => Err(TryFromProtoError::InvalidShardId(proto)),
+        }
+    }
+}
+
 impl<T: Timestamp + Codec64> RustType<ProtoWriterState> for WriterState<T> {
     fn into_proto(&self) -> ProtoWriterState {
         ProtoWriterState {
@@ -1480,6 +1538,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatch> for HollowBatch<T> {
                 format: None,
                 schema_id: None,
                 deprecated_schema_id: None,
+                source_shard: None,
             }))
         }));
         // We discard default metadatas from the proto above; re-add them here.
@@ -1574,6 +1633,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchPart> for HollowRunRef<T> 
                 key: self.key.into_proto(),
                 max_part_bytes: self.max_part_bytes.into_proto(),
             })),
+            source_shard: self.source_shard.as_ref().map(|s| s.into_proto()),
             encoded_size_bytes: self.hollow_bytes.into_proto(),
             key_lower: Bytes::copy_from_slice(&self.key_lower),
             diffs_sum: self.diffs_sum.map(i64::from_le_bytes),
@@ -1602,6 +1662,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchPart> for HollowRunRef<T> 
             key_lower: proto.key_lower.to_vec(),
             structured_key_lower: proto.structured_key_lower.into_rust()?,
             diffs_sum: proto.diffs_sum.as_ref().map(|x| i64::to_le_bytes(*x)),
+            source_shard: proto.source_shard.map(|s| s.into_rust()).transpose()?,
             _phantom_data: Default::default(),
         })
     }
@@ -1622,6 +1683,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchPart> for BatchPart<T> {
                 schema_id: x.schema_id.into_proto(),
                 deprecated_schema_id: x.deprecated_schema_id.into_proto(),
                 metadata: BTreeMap::default(),
+                source_shard: x.source_shard.as_ref().map(|s| s.into_proto()),
             },
             BatchPart::Inline {
                 updates,
@@ -1640,6 +1702,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchPart> for BatchPart<T> {
                 schema_id: schema_id.into_proto(),
                 deprecated_schema_id: deprecated_schema_id.into_proto(),
                 metadata: BTreeMap::default(),
+                source_shard: None,
             },
         }
     }
@@ -1665,6 +1728,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchPart> for BatchPart<T> {
                     format: proto.format.map(|f| f.into_rust()).transpose()?,
                     schema_id,
                     deprecated_schema_id,
+                    source_shard: proto.source_shard.map(|s| s.into_rust()).transpose()?,
                 }))
             }
             Some(proto_hollow_batch_part::Kind::Inline(x)) => {
@@ -2135,6 +2199,7 @@ mod tests {
                 format: None,
                 schema_id: None,
                 deprecated_schema_id: None,
+                source_shard: None,
             }))],
             4,
         );
@@ -2163,6 +2228,7 @@ mod tests {
                 format: None,
                 schema_id: None,
                 deprecated_schema_id: None,
+                source_shard: None,
             })));
         assert_eq!(<HollowBatch<u64>>::from_proto(old).unwrap(), expected);
     }

@@ -29,12 +29,13 @@ use crate::critical::CriticalReaderId;
 use crate::internal::paths::PartialRollupKey;
 use crate::internal::state::{
     CriticalReaderState, EncodedSchemas, HollowBatch, HollowBlobRef, HollowRollup,
-    LeasedReaderState, ProtoStateField, ProtoStateFieldDiffType, ProtoStateFieldDiffs, RunPart,
-    State, StateCollections, WriterState,
+    LeasedReaderState, ProtoStateField, ProtoStateFieldDiffType, ProtoStateFieldDiffs,
+    RetainedPartsState, RunPart, State, StateCollections, WriterState,
 };
 use crate::internal::trace::CompactionInput;
 use crate::internal::trace::{FueledMergeRes, SpineId, ThinMerge, ThinSpineBatch, Trace};
 use crate::read::LeasedReaderId;
+use crate::retain::RetainId;
 use crate::write::WriterId;
 use crate::{Metrics, PersistConfig, ShardId};
 
@@ -83,6 +84,7 @@ pub struct StateDiff<T> {
     pub(crate) last_gc_req: Vec<StateFieldDiff<(), SeqNo>>,
     pub(crate) leased_readers: Vec<StateFieldDiff<LeasedReaderId, LeasedReaderState<T>>>,
     pub(crate) critical_readers: Vec<StateFieldDiff<CriticalReaderId, CriticalReaderState<T>>>,
+    pub(crate) retained_parts: Vec<StateFieldDiff<RetainId, RetainedPartsState>>,
     pub(crate) writers: Vec<StateFieldDiff<WriterId, WriterState<T>>>,
     pub(crate) schemas: Vec<StateFieldDiff<SchemaId, EncodedSchemas>>,
     pub(crate) since: Vec<StateFieldDiff<(), Antichain<T>>>,
@@ -113,6 +115,7 @@ impl<T: Timestamp + Codec64> StateDiff<T> {
             last_gc_req: Vec::default(),
             leased_readers: Vec::default(),
             critical_readers: Vec::default(),
+            retained_parts: Vec::default(),
             writers: Vec::default(),
             schemas: Vec::default(),
             since: Vec::default(),
@@ -159,6 +162,7 @@ impl<T: Timestamp + Lattice + Codec64> StateDiff<T> {
                     active_gc: from_active_gc,
                     leased_readers: from_leased_readers,
                     critical_readers: from_critical_readers,
+                    retained_parts: from_retained_parts,
                     writers: from_writers,
                     schemas: from_schemas,
                     trace: from_trace,
@@ -178,6 +182,7 @@ impl<T: Timestamp + Lattice + Codec64> StateDiff<T> {
                     active_gc: to_active_gc,
                     leased_readers: to_leased_readers,
                     critical_readers: to_critical_readers,
+                    retained_parts: to_retained_parts,
                     writers: to_writers,
                     schemas: to_schemas,
                     trace: to_trace,
@@ -215,6 +220,11 @@ impl<T: Timestamp + Lattice + Codec64> StateDiff<T> {
             from_critical_readers.iter(),
             to_critical_readers,
             &mut diffs.critical_readers,
+        );
+        diff_field_sorted_iter(
+            from_retained_parts.iter(),
+            to_retained_parts,
+            &mut diffs.retained_parts,
         );
         diff_field_sorted_iter(from_writers.iter(), to_writers, &mut diffs.writers);
         diff_field_sorted_iter(from_schemas.iter(), to_schemas, &mut diffs.schemas);
@@ -426,6 +436,7 @@ impl<T: Timestamp + Lattice + Codec64> State<T> {
             last_gc_req: diff_last_gc_req,
             leased_readers: diff_leased_readers,
             critical_readers: diff_critical_readers,
+            retained_parts: diff_retained_parts,
             writers: diff_writers,
             schemas: diff_schemas,
             since: diff_since,
@@ -464,6 +475,7 @@ impl<T: Timestamp + Lattice + Codec64> State<T> {
             active_gc,
             leased_readers,
             critical_readers,
+            retained_parts,
             writers,
             schemas,
             trace,
@@ -476,6 +488,7 @@ impl<T: Timestamp + Lattice + Codec64> State<T> {
         apply_diffs_single_option("active_gc", diff_active_gc, active_gc)?;
         apply_diffs_map("leased_readers", diff_leased_readers, leased_readers)?;
         apply_diffs_map("critical_readers", diff_critical_readers, critical_readers)?;
+        apply_diffs_map("retained_parts", diff_retained_parts, retained_parts)?;
         apply_diffs_map("writers", diff_writers, writers)?;
         apply_diffs_map("schemas", diff_schemas, schemas)?;
 

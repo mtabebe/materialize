@@ -101,10 +101,12 @@ pub(crate) async fn restore_blob(
             match part {
                 RunPart::Single(BatchPart::Inline { .. }) => {}
                 RunPart::Single(BatchPart::Hollow(part)) => {
-                    let key = part.key.complete(&shard_id);
+                    // An inherited part lives under the shard that wrote it.
+                    let key = part.key.complete(&part.shard_id(shard_id));
                     check_restored(&key, blob.restore(&key).await);
                 }
                 RunPart::Many(runs) => {
+                    let shard_id = runs.source_shard.unwrap_or(shard_id);
                     let key = runs.key.complete(&shard_id);
                     check_restored(&key, blob.restore(&key).await);
                     let runs = runs

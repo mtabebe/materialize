@@ -543,6 +543,23 @@ where
                 }
             });
 
+            // Blobs a retain-only reference pins are not this shard's to
+            // delete, even though its own trace no longer references them. The
+            // reference names exact keys, so retention is bounded by the fork
+            // point rather than by this shard's churn. Whoever holds the
+            // reference deletes them on release: the diffs recording their
+            // removal are truncated below, so a later GC could not find them.
+            let retained = states.state().collections.retained_parts.values().fold(
+                BTreeSet::new(),
+                |mut acc, state| {
+                    acc.extend(state.keys.iter().cloned());
+                    acc
+                },
+            );
+            if !retained.is_empty() {
+                batch_parts_to_delete.retain(|key| !retained.contains(key));
+            }
+
             gc_results.truncated_consensus_to.push(truncate_lt);
             gc_results.batch_parts_deleted_from_blob += batch_parts_to_delete.len();
             gc_results.rollups_deleted_from_blob += rollups_to_delete.len();

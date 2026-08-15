@@ -24,6 +24,11 @@ pub enum InvalidUsage<T> {
         /// The version of the metadata.
         version: semver::Version,
     },
+    /// A feature-gated operation was attempted while its gate was off.
+    Disabled {
+        /// The name of the dyncfg gating the operation.
+        config: &'static str,
+    },
     /// Append bounds were invalid
     InvalidBounds {
         /// The given lower bound
@@ -91,6 +96,9 @@ impl<T: Debug> std::fmt::Display for InvalidUsage<T> {
         match self {
             InvalidUsage::IncompatibleVersion { version } => {
                 write!(f, "incompatible with data version {}", version)
+            }
+            InvalidUsage::Disabled { config } => {
+                write!(f, "disabled by {}", config)
             }
             InvalidUsage::InvalidBounds { lower, upper } => {
                 write!(f, "invalid bounds [{:?}, {:?})", lower, upper)

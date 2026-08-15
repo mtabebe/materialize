@@ -114,6 +114,7 @@ impl<'a> DirectiveArgs<'a> {
                         format: None,
                         schema_id: None,
                         deprecated_schema_id: None,
+                        source_shard: None,
                     }))
                 })
                 .collect(),
@@ -261,7 +262,9 @@ mod tests {
                                 "register-leased-reader" => {
                                     machine_dd::register_leased_reader(&mut state, args).await
                                 }
+                                "release-parts" => machine_dd::release_parts(&state, args).await,
                                 "restore-blob" => machine_dd::restore_blob(&state, args).await,
+                                "retain-parts" => machine_dd::retain_parts(&mut state, args).await,
                                 "rewrite-ts" => machine_dd::rewrite_ts(&mut state, args).await,
                                 "set-batch-parts-size" => {
                                     machine_dd::set_batch_parts_size(&mut state, args).await

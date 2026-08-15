@@ -1312,6 +1312,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
             ts_rewrite,
             diffs_sum: Some(diffs_sum),
             format: Some(BatchColumnarFormat::Structured),
+            source_shard: None,
             schema_id,
             // Field has been deprecated but kept around to roundtrip state.
             deprecated_schema_id: None,
@@ -1430,9 +1431,15 @@ impl<T> Default for PartDeletes<T> {
 impl<T: Timestamp> PartDeletes<T> {
     // Adds the part to the set to be deleted and returns true if it was newly
     // inserted.
+    //
+    // A part inherited from another shard is skipped: its blob belongs to that
+    // shard and is kept alive by a retain-only reference there, so the shard
+    // that merely references it must never delete it.
     pub fn add(&mut self, part: &RunPart<T>) -> bool {
         match part {
+            RunPart::Many(r) if r.source_shard.is_some() => true,
             RunPart::Many(r) => self.hollow_runs.insert(r.key.clone(), r.clone()).is_none(),
+            RunPart::Single(BatchPart::Hollow(x)) if x.source_shard.is_some() => true,
             RunPart::Single(BatchPart::Hollow(x)) => self.blob_keys.insert(x.key.clone()),
             RunPart::Single(BatchPart::Inline { .. }) => {
                 // Nothing to delete.
@@ -1447,6 +1454,14 @@ impl<T: Timestamp> PartDeletes<T> {
             RunPart::Single(BatchPart::Hollow(x)) => self.blob_keys.contains(&x.key),
             RunPart::Single(BatchPart::Inline { .. }) => false,
         }
+    }
+
+    /// Drops every entry whose blob key `keep` rejects.
+    ///
+    /// Used by GC to skip blobs a retain-only reference pins.
+    pub fn retain(&mut self, keep: impl Fn(&PartialBatchKey) -> bool) {
+        self.blob_keys.retain(|key| keep(key));
+        self.hollow_runs.retain(|key, _| keep(key));
     }
 
     pub fn is_empty(&self) -> bool {

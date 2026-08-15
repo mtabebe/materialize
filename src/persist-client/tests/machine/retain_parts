@@ -1,0 +1,121 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# A retain-only reference pins specific blobs against GC without holding a
+# `since`. This mirrors `machine/gc`, which is the same sequence without the
+# pin: there, GC deletes b0 and b1 once nothing references them.
+
+# Disable inline writes so interesting things happen in Blob.
+dyncfg
+persist_inline_writes_single_max_bytes 0
+persist_inline_writes_total_max_bytes 0
+----
+ok
+
+write-batch output=b0 lower=0 upper=1
+k1 0 1
+----
+parts=1 len=1
+
+write-batch output=b1 lower=1 upper=2
+k2 1 -1
+k3 1 1
+----
+parts=1 len=2
+
+write-batch output=b2 lower=2 upper=3
+k3 2 -1
+k4 2 1
+----
+parts=1 len=2
+
+compare-and-append input=b0 writer_id=w11111111-1111-1111-1111-111111111111
+----
+v2 [1]
+
+compare-and-append input=b1 writer_id=w11111111-1111-1111-1111-111111111111
+----
+v3 [2]
+
+# Pin b0's blob, as a fork inheriting it would. b1 is left unpinned so the same
+# GC run shows both outcomes.
+retain-parts retain_id=t11111111-1111-1111-1111-111111111111 batches=(b0)
+----
+v4 ok
+
+write-rollup output=v4
+----
+state=v4 diffs=[v1, v5)
+
+add-rollup input=v4
+----
+v5
+
+gc to_seqno=v5
+----
+v6 batch_parts=0 rollups=0 truncated=v4 state_rollups=v0
+
+compare-and-append input=b2 writer_id=w11111111-1111-1111-1111-111111111111
+----
+v7 [3]
+
+# Compact b0 and b1 away, so the shard's own trace no longer references either.
+compact output=b0_1 inputs=(b0,b1) lower=0 upper=2 since=0
+----
+parts=1 len=3
+
+apply-merge-res input=b0_1 writer_id=w11111111-1111-1111-1111-111111111111
+----
+v8 true
+
+write-rollup output=v8
+----
+state=v8 diffs=[v5, v9)
+
+add-rollup input=v8
+----
+v9
+
+# GC past the last state referencing b0 and b1. Only b1 is deleted: b0 is
+# pinned, even though the pin holds no `since` and GC's `since` advanced right
+# past it.
+gc to_seqno=v9
+----
+v10 batch_parts=1 rollups=1 truncated=v8 state_rollups=v4
+
+fetch-batch input=b0
+----
+<part 0>
+k1 0 1
+<run 0>
+part 0
+
+fetch-batch input=b1
+----
+<part 0>
+<empty>
+<run 0>
+part 0
+
+# Releasing the pin deletes the blob it was the last reference to.
+release-parts retain_id=t11111111-1111-1111-1111-111111111111
+----
+v11 batch_parts=1
+
+fetch-batch input=b0
+----
+<part 0>
+<empty>
+<run 0>
+part 0
+
+# Releasing again is a no-op, so teardown is safe to retry.
+release-parts retain_id=t11111111-1111-1111-1111-111111111111
+----
+v11 batch_parts=0

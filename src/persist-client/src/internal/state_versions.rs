@@ -43,6 +43,7 @@ use crate::internal::state::{
     BatchPart, HollowBlobRef, HollowRollup, NoOpStateTransition, RunPart, State, TypedState,
 };
 use crate::internal::state_diff::{StateDiff, StateFieldValDiff};
+use crate::internal::trace::Trace;
 use crate::{Metrics, PersistConfig, ShardId};
 
 /// A durable, truncatable log of versions of [State].
@@ -716,6 +717,55 @@ impl StateVersions {
     // Writes a self-referential rollup to blob storage and returns the diff
     // that should be compare_and_set into consensus to finish initializing the
     // shard.
+    /// Initializes `shard_id` with `trace` as its starting state, for a
+    /// copy-on-write fork.
+    ///
+    /// Mirrors [`Self::maybe_init_shard`], but seeds the first state from a
+    /// caller-built trace instead of an empty one. Returns `None` if the shard
+    /// is already initialized, so a create that crashes mid-flight does not
+    /// clobber a fork that already exists.
+    pub async fn init_forked_shard<K, V, T, D>(
+        &self,
+        shard_metrics: &ShardMetrics,
+        trace: Trace<T>,
+    ) -> Option<TypedState<K, V, T, D>>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64,
+        D: Monoid + Codec64,
+    {
+        let shard_id = shard_metrics.shard_id;
+        let recent_live_diffs = self.fetch_recent_live_diffs::<T>(&shard_id).await;
+        if !recent_live_diffs.0.is_empty() {
+            return None;
+        }
+
+        let (initial_state, initial_diff) = self
+            .write_initial_rollup_with_trace(shard_metrics, trace)
+            .await;
+        let (cas_res, _diff) =
+            retry_external(&self.metrics.retries.external.maybe_init_cas, || async {
+                self.try_compare_and_set_current(
+                    "init_forked_shard",
+                    shard_metrics,
+                    &initial_state,
+                    &initial_diff,
+                )
+                .await
+                .map_err(|err| err.into())
+            })
+            .await;
+        match cas_res {
+            CaSResult::Committed => Some(initial_state),
+            CaSResult::ExpectationMismatch => {
+                let (_, rollup) = initial_state.latest_rollup();
+                self.delete_rollup(&shard_id, &rollup.key).await;
+                None
+            }
+        }
+    }
+
     async fn write_initial_rollup<K, V, T, D>(
         &self,
         shard_metrics: &ShardMetrics,
@@ -754,6 +804,56 @@ impl StateVersions {
             applied,
             "add_and_remove_rollups should apply to the empty state"
         );
+
+        let rollup = self.encode_rollup_blob(
+            shard_metrics,
+            initial_state.clone_for_rollup(),
+            vec![],
+            rollup.key,
+        );
+        let () = self.write_rollup_blob(&rollup).await;
+        assert_eq!(initial_state.seqno, rollup.seqno);
+
+        let diff = StateDiff::from_diff(&empty_state.state, &initial_state.state);
+        (initial_state, diff)
+    }
+
+    /// [`Self::write_initial_rollup`], but with a caller-supplied starting
+    /// trace.
+    async fn write_initial_rollup_with_trace<K, V, T, D>(
+        &self,
+        shard_metrics: &ShardMetrics,
+        trace: Trace<T>,
+    ) -> (TypedState<K, V, T, D>, StateDiff<T>)
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64,
+        D: Monoid + Codec64,
+    {
+        let empty_state = TypedState::new(
+            self.cfg.build_version.clone(),
+            shard_metrics.shard_id,
+            self.cfg.hostname.clone(),
+            (self.cfg.now)(),
+        );
+        let mut initial_state = empty_state.clone_for_rollup();
+        initial_state.state.collections.trace = trace;
+        let rollup_seqno = initial_state.seqno();
+        let rollup = HollowRollup {
+            key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
+            encoded_size_bytes: None,
+        };
+        let applied = match initial_state
+            .collections
+            .add_rollup((rollup_seqno, &rollup))
+        {
+            Continue(x) => x,
+            Break(NoOpStateTransition(_)) => {
+                panic!("initial state transition should not be a no-op")
+            }
+        };
+        assert!(applied, "add_rollup should apply to the initial state");
 
         let rollup = self.encode_rollup_blob(
             shard_metrics,

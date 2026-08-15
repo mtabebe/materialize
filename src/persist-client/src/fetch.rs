@@ -468,7 +468,9 @@ pub(crate) async fn fetch_batch_part_blob<T>(
 ) -> Result<SegmentedBytes, BlobKey> {
     let now = Instant::now();
     let get_span = debug_span!("fetch_batch::get");
-    let blob_key = part.key.complete(shard_id);
+    // An inherited part lives under the shard it was written by, not the fork
+    // that references it.
+    let blob_key = part.key.complete(&part.shard_id(*shard_id));
     let value = retry_external(&metrics.retries.external.fetch_batch_get, || async {
         shard_metrics.blob_gets.inc();
         // Name the blob in the error. A GET stuck retrying forever surfaces only in the retry log

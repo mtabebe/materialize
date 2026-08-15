@@ -60,6 +60,7 @@
       }
     }
   },
+  "retained_parts": {},
   "writers": {
     "w06ba586f-832f-2385-6a45-b78ffc2da5f6": {
       "last_heartbeat_timestamp_ms": 17447626676460577934,
@@ -307,7 +308,7 @@
   },
   "since": [],
   "upper": [
-    15219552958365851283
+    18330011964416322525
   ],
   "batches": [
     {
@@ -315,12 +316,12 @@
         0
       ],
       "upper": [
-        6804750270025273488
+        1575023802391379015
       ],
       "since": [
-        7094175399473318935
+        12123727318320829950
       ],
-      "len": 2,
+      "len": 4,
       "part_runs": [
         [
           {
@@ -328,22 +329,110 @@
             "schema": null,
             "deprecated_schema": null,
             "id": [
-              32,
-              100,
-              195,
-              158,
-              212,
-              7,
-              74,
-              189,
-              155,
-              69,
-              44,
-              85,
-              98,
-              223,
+              122,
+              234,
+              6,
+              216,
+              169,
+              60,
+              19,
+              215,
+              51,
+              115,
+              97,
+              255,
+              103,
               231,
-              163
+              185,
+              46
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": "𐊧ꬪI\\իcXౢ/",
+              "encoded_size_bytes": 4555805418808352289,
+              "key_lower": "fd7db1f045ed49a7bb7b66ada681081c68b2303627202a5cbfcc",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 2287073710767770227,
+                "cols": {
+                  "oRᩨȺQ¥}𒑴਼Wౖ'𐫫𐂳HȺr pP𐢇¥¥\"🕴:𞅎𞥘ਸ𛱴": {
+                    "len": 8761511512699966992,
+                    "{1": {
+                      "kind": "packed-interval",
+                      "lower": "a174e040c27da5ba1b59252879c573c4df",
+                      "upper": "f752876efd348ee07128e285ac3faa0d"
+                    }
+                  },
+                  "¥�𘴀Z;4ü/.𑎎&C,{🃫/$V{𑍄ቘo𑤌ὤo\"{¥༇.𑍟𐢗": {
+                    "len": 9013369932984140558
+                  },
+                  "é:=Q%XѨৢ\\|𑑝>T2⃰jੌ": {
+                    ".u𑋸*ୁMOI'' eE": {
+                      "?ᥖ¥?⿽𖿰𐣴/\\¥ö^Ѩ7ୟ<<$\"O": {
+                        "lower": false,
+                        "upper": true
+                      },
+                      "len": 9651610741215744717
+                    },
+                    "len": 299016289388533620,
+                    "🩪𚿶{¥9QeL:ౣTῼ¥ᡀ୕ῴ2$ዄSL�~'**`S:ힱ=ு": {
+                      "bຂ:$𑏂ോ<ð¥¥<á:l\"Aj.": {
+                        "lower": 233959972255434646,
+                        "upper": 8036818801187566714
+                      },
+                      "len": 10394263226284579450
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -4900545619147838634,
+              "format": "Row",
+              "schema_id": "h13619905076535271115",
+              "deprecated_schema_id": "h1753539598876425092",
+              "source_shard": null
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "lower": [
+        1575023802391379015
+      ],
+      "upper": [
+        8370384414771402488
+      ],
+      "since": [
+        8268173717501905857
+      ],
+      "len": 4,
+      "part_runs": [
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              213,
+              107,
+              225,
+              173,
+              61,
+              147,
+              191,
+              122,
+              226,
+              200,
+              250,
+              215,
+              242,
+              88,
+              128,
+              109
             ],
             "len": null
           },
@@ -357,153 +446,430 @@
               },
               "ts_rewrite": {
                 "elements": [
-                  17576582798852527144
+                  12592863450063520326
                 ]
               },
               "schema_id": null,
               "deprecated_schema_id": null
             },
             {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": "h15907769370316584773",
-              "deprecated_schema_id": null
-            },
-            {
               "type": "Hollow",
-              "key": "{ⶅ3/𐱅ѨȺ�8.c`🮟¥*¥Th:[𖬎%𐹬",
-              "encoded_size_bytes": 11206536215080155221,
-              "key_lower": "795f37abe60c11d2d346a9e95199324280180b170a0ba82526a778369394452d715e46d6be",
+              "key": "𞺚𐍁$𐀖Ѩ'𝼉Ѩ𐫤ം%ዀE🂱$`$ী}K𐢭脳ⶆ𖫕gȺl",
+              "encoded_size_bytes": 4632783517501280311,
+              "key_lower": "e3e05493f6cc04f7e6160c9013941c6c3c9b782631d417cff5321ace6722710a8a159f9b74138cfefd9027529f7e7e55167dab06d1b850751b1da8de9f9c4815713cd5bfabb7231c814b0df0306e2db7ad2fd7",
               "structured_key_lower": null,
               "stats": {
-                "len": 8994579537603764857,
+                "len": 891573746006739573,
                 "cols": {
-                  "$ୈꟓq^`ଈ𞸧$f¥େ/ ꧦ&d:ቚh𞣖#𐽶": {
-                    "len": 5685515304030124791
-                  },
-                  "<!{1\"🕴ஜW": {
-                    "len": 474033783353539906
-                  },
-                  "ￚz𖭟:ra\"D𑄨6𒾰`/𑿙`𐨏'ꧨ𐞄": {
-                    "len": 5542604846377585660,
-                    "ৎy>𓑀߳🕴:$𞥖ୗ\\<z<ⶭKట=%=D𝒥.ලD}RÇ'𐩄?": {
-                      "len": 4451604823420795188,
-                      "🝨𫟚@ꟿ7": {
-                        "lower": 5527151449913550065,
-                        "upper": 8482645618945908265
+                  "<𐖕T<D>a%`<=Ù`ȺAￖ[¹ﭚñI¥:\\\\*:": {
+                    "c*uÿ({🩤🃌d𑜪𐡍𐧀%`$Q𐏊🭑d*d<Mￜ.ᾉQ𑍗𲊍𝓧t": {
+                      "%3ঢ়𛅧wZ7I<𞀕𑥓\"": {
+                        "lower": "'?🕴iѨ?Q½𑊈,ዀ{Ⱥⶾ&\"VȺ:'\"!\\<¡",
+                        "upper": "D𐴛|ンไvK"
+                      },
+                      "len": 17333713883323333158,
+                      "𝒟r𑠗": {
+                        "4�:ዾe`'ጒ:\\Ⱥῧࠄ¥Á\"઼�": {
+                          "len": 1,
+                          "stats": {
+                            "{wg=%*'�¥&=%𞹹ꥰ￨?.@": {
+                              "len": 1,
+                              "stats": "json_nulls"
+                            },
+                            "ம^õጓ𐠈5p𐬗": {
+                              "len": 1,
+                              "stats": "json_mixed"
+                            }
+                          }
+                        },
+                        "ᥰ𝡳𞹗ኍ𞹛{១𐲦:𑵖ⶉ:ৈ$'&:": {
+                          "len": 1,
+                          "stats": {
+                            "lower": false,
+                            "upper": true
+                          }
+                        }
                       }
+                    },
+                    "len": 7077650622060632247
+                  },
+                  "V��¥𑊆ⶰᲝ =3𘢐Ὓ": {
+                    "'ⴭ;?4v'e%<Ⱥ₨['𑽘:Æ?𐌂<y𞹔nõѨ%xÈ'2*": {
+                      "lower": -5873831574473799398,
+                      "upper": 8753822561073124770
+                    },
+                    "len": 17051969892134852533
+                  },
+                  "𞗪Ѩ֍𝒢 ih൱𐁋*=🕴𞹷:=?X/𑪍j𑴀x𐙭'🕴M": {
+                    "len": 11284992880863132304,
+                    "༗*ໂK:.𐞀H⵰Ꟑ𑤖n$𝪡𐠁¥.": {
+                      "len": 11148005495314278606
                     }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7559585738086887740,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h12815853845362522313"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "F𐎚¥e<ಊ<𐊒sὙퟲ`c",
-              "encoded_size_bytes": 1870002598964793794,
-              "key_lower": "db78b3fc30e4c727e96e3104901ea325a3ec06da2c212d52",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 9305609402055163851,
-                "cols": {
-                  "$𐒤🩺/%\"%֏𒾵k𑌡'ⴭ𐁗=𞋬\\&𒾻𞅁ﬗ*J:\"𑜫": {
-                    "len": 17686677685892217873
-                  },
-                  "්>vஇ₽<a|<}ે<Ⱥ$$෴mdⶢ9": {
-                    "len": 6370488384042983123
-                  },
-                  "𞸧𞟣�¡𑌳=ણ)uVળ_Oḵ$*🡮\\%𑶅𞹂wo'{F￼\":": {
-                    "len": 12861721731059486175
                   }
                 }
               },
               "ts_rewrite": {
                 "elements": [
-                  1960325361159039600
+                  3410171686012187450
                 ]
               },
-              "diffs_sum": -8297866983879574377,
+              "diffs_sum": -8444044667618266977,
+              "format": null,
+              "schema_id": "h7031515342263914448",
+              "deprecated_schema_id": null,
+              "source_shard": "s7f651172-1254-4ed9-d26c-38c69fef987c"
+            },
+            {
+              "type": "Hollow",
+              "key": "'CB⭽\"ౕ$*Eⷘ&ుᆙ<🕴",
+              "encoded_size_bytes": 15542803108302904225,
+              "key_lower": "c0a924ac662bca83b1696b85afdbaaa49c0e",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 2728270565973056670,
+                "cols": {
+                  "]ᢏ/wȺෑ᩠﷏D)n*:Q17�&:ኤ𑲮&": {
+                    "lower": "k&%nhO{",
+                    "upper": "ਫ@ࡅ$𐡅Ⱥ%ৗ|ฮ%3[_ᥰ"
+                  },
+                  "h*🫩:݂𝢁⻋ඁY🕴z\"�`લ[/\"": {
+                    "O": {
+                      "lower": -4029471520259908547,
+                      "upper": 155798007450239800
+                    },
+                    "len": 16693610260461112188,
+                    "𞹡�𑰈<q&ꠇ<&𞴮[": {
+                      "len": 17482392705769039218
+                    }
+                  },
+                  "ₛ": {
+                    "<Hz:𐡉7%🯟𐖌.LO�Ѩ𞸢>": {
+                      "lower": -4267830166293788647,
+                      "upper": 8428504953543824795
+                    },
+                    "len": 6937360062312342169,
+                    "{.{𞹇Ѩ𑘃𫞗Y𞹋ೋ¥GvQ/?V*Äೖ": {
+                      "len": 4820010171548918261
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -7299164987137430868,
+              "format": "Row",
+              "schema_id": "h5371282681229453211",
+              "deprecated_schema_id": "h12999842295522372042",
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "@v~𐾷﹫:𑙠{©YჇ0🃣🮙e<*𑌀ਗ਼&?HѨ―¥r0$𑣠Ꟑ",
+              "encoded_size_bytes": 15128923156768281608,
+              "key_lower": "899de51fedbd2125795abb",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 13550544857215896343,
+                "cols": {
+                  "=?ঢ়&𑵗𰧠𑻫dn𑍇u\\`<:/&':": {
+                    "len": 16578211950360034524
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  13362709069786638737
+                ]
+              },
+              "diffs_sum": -6626330159531690979,
               "format": {
-                "Both": 2
+                "Both": 0
+              },
+              "schema_id": "h16190414280712508303",
+              "deprecated_schema_id": "h14390581166815999194",
+              "source_shard": "s42476c1c-74bb-f0cd-5193-db27fb0613aa"
+            },
+            {
+              "type": "Hollow",
+              "key": "iడᤥ:%��0¥:$` 𞹔`𑵀",
+              "encoded_size_bytes": 3577815982492528705,
+              "key_lower": "887467fe6af9ada54daec830abe9415e48e02b5c6599b871db100ef15ebcabc045328c4e",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 2834376385903332353,
+                "cols": {
+                  "jₘ𛅒𐻃ꬮ'\"᪕$G⁻Oᒈ1{,↦%Ѩà:": {
+                    "len": 13945556052578835168
+                  },
+                  "�*ຄ<KlA=": {
+                    "\\+ኊ.�𑵡.{9<m$�": {
+                      "*´𑼩𑏂𝔥/Ѩ/.ዀN6Ѩ,𐃷J𖩝ቔQ𝔉🣀`}ຊ𑤽\"B<𑴦࿁": {
+                        "lower": "159877dcd0639f8add62fd06c5aac860f76597fa24d20a9ad5cf0dbd1c73cd107278da141c099f9af01510b6978515babaa55a2325010a27fe9df5b2ad515473025eef072809",
+                        "upper": "8bd04d63f6c8beabfc7cc91b28192b4259a12071749594a07e5be38fe9"
+                      },
+                      "len": 13430271383510409280
+                    },
+                    "len": 15412118861871394018,
+                    "𑰂/'🇶Oଐ𐴈õഐ\\f": {
+                      "lower": ":/0=?=R&Z&5🜿&ල𝒻Ꮠ𞗓|",
+                      "upper": ";!5𖦠\"`Ⱥ"
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  13745218090091521765
+                ]
+              },
+              "diffs_sum": -2891017978597521568,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h11458268802722071254",
+              "source_shard": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              143,
+              229,
+              8,
+              179,
+              72,
+              124,
+              167,
+              220,
+              57,
+              247,
+              237,
+              149,
+              153,
+              178,
+              40,
+              151
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": "h13642957127639239873",
+              "deprecated_schema_id": "h15135887431800134969"
+            },
+            {
+              "type": "Hollow",
+              "key": "=:j?\\X{🃜့𑿘^:𑤸-rѨV𑍋𛁜🜝t*ৈ]𞋿ࢄⶽ?נּ.$J",
+              "encoded_size_bytes": 6052884998442958984,
+              "key_lower": "26d94117b536875a52ad611bb7bb2acbf5d1cda660",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 5349247000368012377,
+                "cols": {
+                  "ѨD🠟%>": {
+                    "len": 15027090701619012082
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": 6431885897560606708,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "ੀȺȺ'Q=\"𐞕'𞟹￢ৠ&/d*<(\\ਜ਼\"`ѨѨhE𑎃",
+              "encoded_size_bytes": 15582351220731490728,
+              "key_lower": "1bca45fe067e8b13617eb91e326a0304594def79bde379d27c5483995a662dcab46b33fdb65a96ce4da9b70e2a128efa8dc655606530bd39b474f868244df262fed29e42f3d652",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 15636741837850058161,
+                "cols": {
+                  "x𓂈𑎽ஜ𐖭*C&?{Ⱥ𑍧𑴿": {
+                    "len": 1065649098559559400
+                  },
+                  "Þ𑝁𑎎rDl#𞀪": {
+                    "len": 8091324227152004876,
+                    "z:්𑛕\\bË𞹟Oë¥1*=$𑏅": {
+                      "lower": false,
+                      "upper": true
+                    },
+                    "ⶪ?{=બ\\$𞓳:ੴ𑽊¥᳓ຊì!&": {
+                      "len": 3396354318589367124
+                    }
+                  },
+                  "ඁK<𝋨⁸ᣇY𖿤RN^ౙ🕴ýৠ&𖭠X𑊕õ𐏊": {
+                    "*ᤢQ𐴳𮄃?='`_`Sଢ଼/EW3ꡕ:𖫆/\\y&/<ળ{": {
+                      "lower": false,
+                      "upper": true
+                    },
+                    "len": 2355190662061894434
+                  },
+                  "࿒ᾡ|🢗:%2🃡»𐖑ᦸ": {
+                    "*Jc𖪐'$np0?=ᣈa𑥓çk.𞀃🡕1&s<": {
+                      "lower": "60ff4746bc8a",
+                      "upper": "dcb8e317794c908e1026bf4a76833244e8f0303ca805332436b25ba0831139db704e15e76961a4c4b00e35c66025e6a4c860e4b8142968f61646abb518bca16f123b73ca93bbd1934b190978"
+                    },
+                    "len": 7800343974517768775,
+                    "𑇩.ln_\\]�'ؑ3\\%᪨`6sc{n𜼆¥$": {
+                      "lower": 1741111130179172828,
+                      "upper": 4323397751469177344
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -5412110592243647682,
+              "format": null,
+              "schema_id": "h6489570246733041670",
+              "deprecated_schema_id": "h6245186481893059036",
+              "source_shard": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  5574344397571257898
+                ]
               },
               "schema_id": null,
               "deprecated_schema_id": null
             },
             {
               "type": "Hollow",
-              "key": "𑽖:H< 🕴gÉy𞥓ল",
-              "encoded_size_bytes": 15713377631292084138,
-              "key_lower": "0b274144f4544a5582ddca83dff246b1e1d17ce4e7c4c498d4680c87b5aa5110f3f5946378e1b8062397743d3688b1926cf2659fb45b90f29caccbf6c8246e42f428bf407470e0b9197784d4ec50e4b359bf3f6e",
+              "key": "$⁰ῸJ�🫵𞥟𝒥$_𑯖¥±𝕋𐩔",
+              "encoded_size_bytes": 8978964908534141950,
+              "key_lower": "01bcb4b594253c8e6ae13d29b1ad42fac1bc3bfafd49571ee4ca32319d4a07c752804e94753d7fdeae4043c4cab3907fcb4ca41cc93f30b70b42864f",
               "structured_key_lower": null,
               "stats": {
-                "len": 16189573852585314537,
+                "len": 2471914133295902877,
                 "cols": {
-                  "¥*🕴𘎬𖫂qPc\"=b=`𝔾": {
-                    "len": 16263063480092068473,
-                    "g`&/\\\"؉𑩐ු*": {
-                      "lower": "Ⱥ:ൄr𐔸\"𑛢ὐ𐕅s𜹈𞢋🕴<𐊮�</ᜃ🂦@ு*2𑴐&Ѩ`¦'C\\",
-                      "upper": "࿑ȺÌ𞀄𖬴C7🁡&ഋΌѨ෪U**\"\"¥Ⱥ-ম%𝍡*𑫇"
+                  "🕴b<🕴𑠵᧐�%c><c#": {
+                    "\\ኻ&\\𫞽`B⺊𑜡𑌃": {
+                      "len": 10098301824108628510,
+                      "🕴Cຂ𝒻\"𑵖M𑄻.𐃙%": {}
                     },
-                    "𞹡ਲ਼&𞹙</Z𞹋n?[$Ⱥ𑂐=:𐄀=ô🕴b𞀧&": {
-                      "lower": -2071255181095541124,
-                      "upper": 5774668945650349190
-                    }
-                  },
-                  "ਵ\\𞄠?𞸤`ਏU]{%:(": {
-                    "len": 3621431246488448385
-                  },
-                  "�N𛲙࿗%": {
-                    "len": 11815178884443331312,
-                    "?𑌏=$𑊛꣖`%Ѩc.&/:𝌏𑍌֕𑛀H''ફ#{Ѩ🕴&`$&4": {
-                      "lower": -8955117625537915246,
-                      "upper": -2661544572960587099
-                    },
-                    "𑥐𐻂": {
-                      "lower": false,
-                      "upper": true
-                    }
+                    "len": 10804560784599474541
                   }
                 }
               },
+              "ts_rewrite": {
+                "elements": [
+                  12930720775852530989
+                ]
+              },
+              "diffs_sum": -6278236799808458582,
+              "format": "Structured",
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              44,
+              199,
+              121,
+              136,
+              246,
+              87,
+              221,
+              227,
+              61,
+              129,
+              107,
+              188,
+              80,
+              122,
+              69,
+              37
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
               "ts_rewrite": null,
-              "diffs_sum": -3318802261430753925,
-              "format": {
-                "Both": 2
+              "schema_id": "h9647311311348387369",
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h16590811788565165861"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  11669296082844223562
+                ]
               },
               "schema_id": null,
-              "deprecated_schema_id": null
+              "deprecated_schema_id": "h344550794688468741"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  4493723442187789231
+                ]
+              },
+              "schema_id": null,
+              "deprecated_schema_id": "h7010630889674427875"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h14920497858756165566"
             }
           ]
         ]
@@ -511,13 +877,341 @@
     },
     {
       "lower": [
-        6804750270025273488
+        8370384414771402488
       ],
       "upper": [
-        8533421771665316503
+        10085191174805374462
       ],
       "since": [
-        6707987942952584102
+        11836114747525845131
+      ],
+      "len": 6,
+      "part_runs": [
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              128,
+              41,
+              73,
+              52,
+              163,
+              46,
+              82,
+              20,
+              82,
+              227,
+              219,
+              120,
+              224,
+              144,
+              123,
+              176
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": "�",
+              "encoded_size_bytes": 15899912170990735216,
+              "key_lower": "a187cd34edf069c0b8f039f9e45a9140d0cbfc35cf8685f0fd15bb3c2c9f983b8dd89c144cac07097f5556492db86ef713adf6c88289f95beb8b05493a",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 1874359980939791683,
+                "cols": {
+                  "=D|)\"*.$ቘ𐮭භ}/$🠁¥?4": {
+                    "_tȺ\\*A§w௶ᝢa🕴": {
+                      "": {
+                        "lower": "%CB-𞀡'¿`&𐬞Ѩ𐶎%\\𐿨r፱𑥗S\"~/=L/ோＸ0F🕴¥",
+                        "upper": "S໒\"Ⱥ�"
+                      },
+                      "len": 1885993442520542871
+                    },
+                    "len": 17390044397316768244,
+                    "{_𑶆\"𐤧ཹ:5ቚL𐿅G?=$´¥YW'᥀ȺѨ=𑌃¥.`𖬑𜱓Q�": {
+                      "lower": false,
+                      "upper": true
+                    }
+                  },
+                  "i7&ஈ𞡂&𖄩�ૹyfମ%": {
+                    "len": 3294596959489861250
+                  },
+                  "y&%ￚ`ﺆ🕴?𝓠ఐ\\iJ": {
+                    "len": 2104178193246641866
+                  },
+                  "ළ𝒚s¥Tt𐎫\\6𞺳$P?*L?[z,0᫃𝋓": {
+                    "lower": false,
+                    "upper": false
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": 5479834339368541412,
+              "format": {
+                "Both": 2
+              },
+              "schema_id": null,
+              "deprecated_schema_id": "h6135210818875492921",
+              "source_shard": "s592bc33e-a910-57c4-c4e0-3cd6b4b098c9"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h13004230742813348820"
+            },
+            {
+              "type": "Hollow",
+              "key": "𝄣𐶁=:ক&&&X",
+              "encoded_size_bytes": 6460317365753460018,
+              "key_lower": "69f60fe65028b8705283c716a003bfd0dc4f3ccf61e34496ed76bf2836cd363ba09c3366f5bd655b176c3007ea24ba10cbe1ad749de74e617f98",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 826047758400484454,
+                "cols": {
+                  "ͻf𐺨\\t$c𐀩l𑎦ᡈ&Ⱥ>$j𐳻𑌶{b.": {
+                    "len": 18147883930910430140
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  7991430009369630341
+                ]
+              },
+              "diffs_sum": -7067872261814705821,
+              "format": "Row",
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  2647362007254085190
+                ]
+              },
+              "schema_id": "h2737874300488833578",
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": "h5271270403860406371",
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Hollow",
+              "key": ")\"4TB𒑚𐤿'ѨѲೡଗ𝅯-`0",
+              "encoded_size_bytes": 512929440935591541,
+              "key_lower": "1a003e7680c9ceeae58cb92ae85ca8b14733339e93997cf1fa44ddadac3d7b6c329248d52313cd3ccc9925b6af1f72fb1392bea730141f55d54beb1ce6f9855d471894617bf78aa8d0b03715d52123",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 11603326675188439244,
+                "cols": {
+                  "🕴𐓂$<<O&{": {
+                    ":𝍀ૐ𞹔=𝋥🕴c𐶎Ꮁෙ=.ᬟ$:𞀂ూಶ-ᝬ&=C𑊚<Áa": {
+                      "lower": "7%ݕI¥óL𞸧ੌ.𝑧𑶖ౢ@Ⱥ?𜼫🕴Bpண+𝔢\\",
+                      "upper": "🕴𖩠𑛖M𑲩{F೨ය.$"
+                    },
+                    "len": 11837028339273646140
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -1479483769644279454,
+              "format": null,
+              "schema_id": "h383359554363226862",
+              "deprecated_schema_id": "h3188912166979376213",
+              "source_shard": "s9da7c25e-efc8-94af-8a6d-08aa0414c6ec"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": "h7045713038446446755",
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Hollow",
+              "key": "&e",
+              "encoded_size_bytes": 10893512938782873168,
+              "key_lower": "577560b93c98ee664ae48663845fa2a6915faf56991ab10db8afa26d7269c7359bec8b34d267188f3b25ac5363ea81f1d935",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 8091144361187002644,
+                "cols": {
+                  "�Rஜ*\\\\𑦥e%₽1": {
+                    "len": 11677322681789207004
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  169331058192490632
+                ]
+              },
+              "diffs_sum": 1137072285398805269,
+              "format": "Row",
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "Ѩ~Ø/$ðt¥=Ⱥ🫴𖢀#*t=Ⱥⷂ𝕎{<3:xS_*J=\"z",
+              "encoded_size_bytes": 13164622783595778576,
+              "key_lower": "3d862347fd90fcc59799616ec8fb4189d17e790eb1c9ef98edfaf9883bf2f9cd044c75e8ac4233de20f978d6c1cf99f85e260003f3dd6ae20ae2",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 8556204344569972213,
+                "cols": {
+                  "©🕴𐆖�𞺡'ᥫ|n`銅~সEnਂꟓ": {
+                    "len": 8635728196879882251
+                  },
+                  "꓅ফ\\9&&O\"MZవ'K'$ୋ<�=R*.ѨId": {
+                    "len": 16861515332978776366,
+                    "ᾲ*🕴(^𛅥\"*U{&$&/*BW`꧘𖣇Ⱥ𓑁ཀ%Ⱥc=�\\🀫": {
+                      "kind": "uuid",
+                      "lower": "2d93d5061eb86f06afa6711f86a77ce7ae9a67c0b3a2ce371d5a924bbe0f855eccce7a6909fc75223818046d3b2b5c4b5c7f43902251016d926d7286d9b5576d63dd5ce7a217b8389cfd2044f39eba055ee03285",
+                      "upper": "d3a45dccffbc9b7ff8d7fa74e3a1"
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  7663444611981001555
+                ]
+              },
+              "diffs_sum": -4460306272466207833,
+              "format": null,
+              "schema_id": "h8013620596657599",
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "ᤨት᪑`Á{ﶚYᐇꟑ�",
+              "encoded_size_bytes": 13430469719041230399,
+              "key_lower": "78b3dd6bf0ff438c0d2ca0b61cda5d54317247b18bb91ce8b170a7db9f0d3c934240a9d8cfcc18966e6121a2dd8837adb0e9464ddb015029b6",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 14543996894279871015,
+                "cols": {
+                  "$<IG={^|𑌟Ê𐀽": {
+                    "len": 7207764180443008794,
+                    "૿E/𑛅=𞀤f🕴?*𑏈": {
+                      "len": 11891420071625423614,
+                      "{ꬹ🕴%য়nඤⷙnb῁H`ጒ𒔪𞹏,*<CI𐭪ವw`$Ѩ": {
+                        "lower": -3924416419530107396,
+                        "upper": 7839547082155871319
+                      }
+                    }
+                  },
+                  ".`ⅿ🕴🕴.ᬢM𑴃:)?൞�?ꧏ🕴ᰜ𑤸X🕴": {
+                    "&�𑗇𑤉`%r<<x𝐬).Ⱥr": {
+                      "lower": true,
+                      "upper": true
+                    },
+                    "len": 14346401773393680419,
+                    "🉃¥𐫵𑏘l🕴𐢩🕴": {
+                      "lower": "",
+                      "upper": "ஞὰWѨ/𑋰Ko𞺡࿗/\\◥J\\︄=`'&"
+                    }
+                  },
+                  "b=𞥞7೬꣕. %/𐠤?\":": {
+                    "len": 14158052173166745683,
+                    "�$𑥒j\\៳u%_⻪᠏ꔷU�ਫ਼4ѨfꟐ𐩐涅=J/?𞸴🕴=𞂏Ѩ<V": {
+                      "lower": false,
+                      "upper": true
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -1747818278924373725,
+              "format": null,
+              "schema_id": "h14151580849306128247",
+              "deprecated_schema_id": "h3045609227166439389",
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "?🕴+.í/wdvÖꜱ/ｆ&Q",
+              "encoded_size_bytes": 3529612367112683363,
+              "key_lower": "6ad9804bba7db87834f8b2dddf7836db0d83ced270cff1d9ef7c83a2e87d08f75b75292046d4a23d5d9fb3bc43cc310a0fe74eb1af",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 788831360007094337,
+                "cols": {
+                  "؍𞻰y&<B𞟫𑤃S/𐭲": {
+                    "len": 10192653805965234712,
+                    "vc𑯘.&ꪙ '𑱳¥`eEd@$$Ѩ𐡗Q<𑊀%F=𐝏`": {
+                      "lower": "`ὛѨ",
+                      "upper": "ñ𞀄ȺS/&:^𑻬<𐋨'%ὒ᩺?'<🕴*\\**ன𑎢j\\<x𓈸"
+                    },
+                    "ೢé\\v ⁜𜼊<sä`A$𐨗'=": {
+                      "*\"/C𑦤a𑱨$*🛠An": {
+                        "lower": 469033128015695845,
+                        "upper": 7000565454744808315
+                      },
+                      "len": 5724070821901325121,
+                      "Ⱥ𐠣{🫥Ⱥ𐖼\\𜼙%=𞹵𞸡a.ଵউ7ໜ": {
+                        "lower": "¥PwUএ',�i:ⷜ𝋒Q=</ᥨৈ,Ú:r'�𑋳𞸬\\🠊'௭",
+                        "upper": "Ѩꡩ{\"ܝ5எ�:w%𞄋𑙡w+.౷^g𐽼𑏈𑶖𐋍<`:*Ό/\""
+                      }
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  5674504118290241249
+                ]
+              },
+              "diffs_sum": -5405285682137701208,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            }
+          ]
+        ]
+      ]
+    },
+    {
+      "lower": [
+        10085191174805374462
+      ],
+      "upper": [
+        10955774796029448770
+      ],
+      "since": [
+        5599778563759215570
       ],
       "len": 0,
       "part_runs": [
@@ -527,121 +1221,89 @@
             "schema": null,
             "deprecated_schema": null,
             "id": [
-              159,
-              2,
-              33,
-              93,
+              78,
+              112,
+              37,
+              12,
+              99,
+              106,
               215,
-              34,
-              36,
-              152,
-              236,
-              220,
-              143,
-              166,
-              159,
-              15,
-              237,
-              164
+              104,
+              170,
+              204,
+              40,
+              212,
+              73,
+              81,
+              60,
+              152
             ],
             "len": null
           },
           [
             {
               "type": "Hollow",
-              "key": "𐫵&ⷃ\\%𜾖",
-              "encoded_size_bytes": 886760468209360540,
-              "key_lower": "780d01b499c6da1faa3b6d309fc9a762939e2d4205962255d096a718056473adfb04ec9139895bf4f55dad151685acf6174c740ad7f68d7ee85c20b4905e99d574aef0fe0bc30fbf04fa9be5a362ffe858a6a0068a9eca04a623",
+              "key": "𐭼P𐩗{{:ꬤ𑴉?ꬣ𒿛🕴g(𐖒=T𝅰?j𞗳𞸤𑌰>*d:$Ⱥ𐒠",
+              "encoded_size_bytes": 12658432209742454538,
+              "key_lower": "f957bb9a452ebefeee25a8e1c9adc8bfeb37a3f709988fb6127415d329d85b4114f186b4fb",
               "structured_key_lower": null,
               "stats": {
-                "len": 5909088527738196451,
+                "len": 14239367398311386365,
                 "cols": {
-                  "&:𑙗&ຄద4/YÝ>ੇWhk`/ಐ𝄠࿏𑰚᳝u𛅦]𐨸\"ú𑌃&𑙒Ⱥ": {
-                    "len": 5477492597717779929,
-                    "୫w'𑚈VѨ𑏊⽝᪽U..:𖪟Ⱥ{3\\𐵵ᢡ+ῳȺ֮": {
-                      "len": 14277253686767198389,
-                      "y?àꩆꬃ-I?u�𐩮3𖼘︒&*/🕴𐩖ল'𫽲{୕%": {
-                        "lower": "0257e0",
-                        "upper": "db485a85b731ca81d0115e4bb07b23532c3c70"
-                      }
+                  "5.ઁ🕴𐫲𐀺Ѩ?jo?9🉇": {
+                    "bѨ.#Ꝡ𐋦︑.⵰8ᤥ$<?%<𝒢~\"t'mꔖ": {
+                      "lower": -4303519046265858980,
+                      "upper": -2625891082838069830
                     },
-                    "דּ*=": {
-                      "len": 3444573867006667446,
-                      "\"ഄ<ฃgei\\ಕ¥¥`%*=ኊf<]🕴𝒖/﹪?ͺ㈌": {
-                        "lower": "a72467dd25eb5526d4eb571a343bad55a5e764319db9c1a8e819a8e4aa0dda41456cc7e4d2f4f6545b2e49eb4a3ed0c704d7013202d69487b90d0190b5b7b129bc0b3f332ff05e9cfea9864efa3d07f38f0eb6dfd63c277a",
-                        "upper": "cf2df7d708588614fe7f072eafc1c95a0ddb6e48834c7d7b8fc1a3d4935978dc450412915256"
-                      }
+                    "len": 4831627039269051671,
+                    "🕴ૈ§37⁅&T𑬉'🃘,𞟰\\R\\{\"Eೡ$\"'𑰄8Ꮳ": {
+                      "=:{`K.ઐ_ￌ𜽙ቝ🁲&\\𑦤/d&": {
+                        "lower": true,
+                        "upper": true
+                      },
+                      "len": 9881495458059080162
                     }
                   },
-                  "'\\_Ѩrఇ¥🀅-*/%<𑬂": {
-                    "len": 13015606344531187436,
-                    "$<Ⱥ$Ιd໕Ⱥ$�?T": {
-                      "lower": -6931723394594287165,
-                      "upper": -3747979923932888654
-                    }
-                  },
-                  "uJ7rm𞹟&¥vᤦ&?ￊG𐞁Ó": {
-                    "len": 2324923708936847724,
-                    "<)$fX𜺞𑤓.": {
-                      "lower": "1লѨὖ�ß𐌒𒿚﹨`$:PüK\\Æ*🩲૾ףּ$🕴ÿ𑴁j𐞃",
-                      "upper": "𐍡*${Ѩ🆚56{&©\\𝓂$῟*&³"
-                    }
-                  },
-                  "୍¥a𞋿𞸻>�/$B𞀤&¥": {
-                    "len": 6182546456200137287
+                  "ꟙ/ÐѨྦྷி%𞲅ዂ🀏1𝒿\\": {
+                    "len": 2920083003787736724
                   }
                 }
               },
-              "ts_rewrite": {
-                "elements": [
-                  9564074980759863942
-                ]
-              },
-              "diffs_sum": -7449186619299070480,
-              "format": "Structured",
+              "ts_rewrite": null,
+              "diffs_sum": -5556211411967578376,
+              "format": null,
               "schema_id": null,
-              "deprecated_schema_id": "h14624356403981702985"
-            },
-            {
-              "type": "Hollow",
-              "key": "'.𪱼🠕h᭴¥`𐀂%?ѨFV*=",
-              "encoded_size_bytes": 535800190969218355,
-              "key_lower": "766c8ecc2ec950a57e31270fed37d56223a1ac8f31cd087f9f3c746804582c1c45e13848f43ea761515fd5e1f923f4b3e02668a664c7fad55058031e20",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 9965616434464782905,
-                "cols": {
-                  "ോ𑀸<u𑤸¥𑰁\"፭}🕴{_𑶆\"𐤧": {
-                    "len": 1620371584194599915,
-                    "𜼁|dj᥀ȺѨ=𑌃¥.`𖬑𜱓Q�7//𝔫`$h𑏉:΅𞓝ቘ": {
-                      "len": 6348308315569069865
-                    },
-                    "𝋓𝆳/ቚዳ𐠷�𘬻)₅ෝ௵|ꟕ%৴YﭬȺp*": {
-                      "lower": "012f388c592bc33ea91057c4c4e03cd6b4b098c9783188abe386b6bd92b7ba0f21ad088f064b062275107e7d408c4a33a0ab5fc5bf81429c685479ee68da2bc5be77d8a187d9c4dfee286ca9",
-                      "upper": "8f6048e4119320c6f76b39bbce1f2386ef6fb6a1ff956b619494b6ffe1e96006c214b9d06111caec21"
-                    }
-                  },
-                  "�௶ᝢa🕴V?øÌ𑼀Qp𐺱*z'eొuK$$hඐ": {
-                    "len": 17374005835477135896,
-                    "CB-𞀡'¿`&𐬞Ѩ𐶎%\\": {
-                      "lower": 6045697160277039652,
-                      "upper": 8266984905302514449
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  17429408089928769789
-                ]
-              },
-              "diffs_sum": -5281911752679048032,
-              "format": {
-                "Both": 2
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
+              "deprecated_schema_id": "h9927976484705196052",
+              "source_shard": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              237,
+              67,
+              221,
+              81,
+              84,
+              116,
+              42,
+              170,
+              223,
+              29,
+              227,
+              181,
+              192,
+              10,
+              72,
+              135
+            ],
+            "len": null
+          },
+          [
             {
               "type": "Inline",
               "updates": {
@@ -651,35 +1313,51 @@
               },
               "ts_rewrite": {
                 "elements": [
-                  15665203743063091480
+                  3058476686076283088
                 ]
               },
-              "schema_id": "h7716215973009084631",
-              "deprecated_schema_id": "h10911143859121126258"
+              "schema_id": "h14861638004147305212",
+              "deprecated_schema_id": null
             },
             {
               "type": "Hollow",
-              "key": "ௌ\"Z©🕴%T$w\\ ª?\\𑌶'xѨ\"'",
-              "encoded_size_bytes": 6880995449107731641,
-              "key_lower": "75a3024e99693a53a050cb08d16bc51bed64f2707c1a9a323097d017f45b5bc2f8bcbfd95226ada46b101ce62556ba52b11fb687677b90de41393b09",
+              "key": "vÛ¥.)F<&\\<𑴧Ѩ",
+              "encoded_size_bytes": 7130147991343607720,
+              "key_lower": "42c32cb71e6420fb4175cbfe37e9bfb822a121da720e82565e7a8e6e5aa9c4fa228f8740868ea3f3a03bbaa5d75fc200c3a4c06c54f0a3",
               "structured_key_lower": null,
               "stats": {
-                "len": 487942352896812536,
+                "len": 10089038534085763094,
                 "cols": {
-                  "𝋆𓘉¥*<`<🉇𞀪%G𒐚<?Í\\.𑌦Ὑc%{&}ᥐFȺF": {
-                    "len": 3778528521321492020
+                  "i1Ѩ𞺰 K᪆¥mc]𞹗ፓ9𐕵@q {s𐤩𐖼{P𞅎%Ox": {
+                    "0=Μꬊ𞺎": {
+                      "9": {
+                        "lower": false,
+                        "upper": false
+                      },
+                      "len": 3407575800140757185,
+                      "ѨYퟎXѨຄ%�c១𞸵𑐓": {
+                        "lower": "j*¥Ⱥ{\"𐖣WѨI'l:M꥓𞗿x\"¥\"5v*GY",
+                        "upper": "ⶨ*𑅶𗁬"
+                      }
+                    },
+                    "len": 11657373347177016453,
+                    "ᣢx&/.Ⱥ𑍳Z:'<:?᪖𐄥7𑏂{/$*gొዀ\\*C": {
+                      "lower": false,
+                      "upper": true
+                    }
                   }
                 }
               },
               "ts_rewrite": {
                 "elements": [
-                  3380714703645156350
+                  17504832893717250050
                 ]
               },
-              "diffs_sum": -7681108576617415500,
+              "diffs_sum": 4526477780058225751,
               "format": null,
               "schema_id": null,
-              "deprecated_schema_id": "h7824625684187163349"
+              "deprecated_schema_id": "h14303063432724987028",
+              "source_shard": null
             }
           ]
         ],
@@ -690,399 +1368,107 @@
             "deprecated_schema": null,
             "id": [
               179,
-              187,
-              89,
-              41,
-              130,
-              241,
-              192,
-              241,
-              5,
-              253,
-              62,
-              89,
-              90,
-              192,
-              133,
-              11
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Hollow",
-              "key": "\" &'Ѩ🮑3ኲ6",
-              "encoded_size_bytes": 10636719880084566377,
-              "key_lower": "bfe61e87e035d4446767e9b9d1520981d902ae384b3b225328a77e0e",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 14283928114629168068,
-                "cols": {
-                  "ঽ%\\": {
-                    "len": 7008445769124236997,
-                    "𖄄'=lⷕ*ȺL=⺩|'8=ￇ8<ͺ$*ߪdB,{סּ᪉𐳢": {
-                      "lower": true,
-                      "upper": true
-                    },
-                    "𞣐🕴‚?N{¥�𝼏4Á*$\\]ૣ`<VⵏG": {
-                      "lower": "&ଂM*<h",
-                      "upper": "=Z𑍲*<ㄹ<A$ࡘȺR\\"
-                    }
-                  },
-                  "𞺳.🬛േ": {
-                    "່𑎹Xsⴓgl𖿰_אּέE?$¥\"`": {
-                      "len": 1,
-                      "stats": {
-                        "lower": "GMೲº𝔴'𑍈.<Ѩસￍ🫜'nôW'ὧY",
-                        "upper": "𑤉ઞ/&g⒯𑙓=𒾫Ѩ৻/𐓑/🕴Ό೯^$$𐠼t\\𞄶\"¥ࢾF'𑙢𝈸Ὓ"
-                      }
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7175312421489794695,
-              "format": "Row",
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "%M{¥E=.\\9_/%R𚿾Xⶍ<ѨѨÜ_x\\Z$~݂a@",
-              "encoded_size_bytes": 18189919288920537939,
-              "key_lower": "015f90ee769663dbee",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 7727938506784211530,
-                "cols": {
-                  "&$jh)𑊕\"<=\\%$𞹛=KTyl𑰹𑃡𜼀𑃂໙🕴9?@''": {
-                    "len": 16173186611573006674
-                  },
-                  "𑈠c𐞷಼𞀟=𞺖Ὲ='=\\bౌ": {
-                    "len": 783528476474693756
-                  },
-                  "𞸹=ಲ.%Ng$r{𞹙$T.?𐻿େ\\s𐫟EO\"?ᝋV¥=𜼰¥": {
-                    "len": 3642088416737782365,
-                    "$ૅ?JE𞣉᠙lȺ{`/𞹉\"𞹡𞹻HV": {
-                      "len": 13924567322618195561,
-                      "U6𞗖:\"º𑎲d�<+\"꣕": {
-                        "lower": -6590504725855623540,
-                        "upper": -3732892359156684130
-                      }
-                    },
-                    "Y/𛄲.?¦𑍪*%�}\\-2🁚$\"&𰻆𐖕4|.": {
-                      "lower": "\\n&N🕴\\$Ⱥஓ𐼠ඊѨ>S𑤸@𞱱gȺ𝋒}",
-                      "upper": "⸈𑱸𝦃vP%𝪛%"
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7350482776555944496,
-              "format": null,
-              "schema_id": "h7393051444686555556",
-              "deprecated_schema_id": "h12680860052822464105"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  17566912464470084908
-                ]
-              },
-              "schema_id": "h17495719603026032907",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            }
-          ]
-        ],
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              148,
-              233,
-              11,
-              52,
-              146,
-              167,
-              119,
-              101,
-              192,
-              191,
-              121,
-              23,
-              51,
-              217,
-              249,
-              65
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  5521322297891819041
-                ]
-              },
-              "schema_id": "h175247654246629317",
-              "deprecated_schema_id": "h7024113222536561080"
-            },
-            {
-              "type": "Hollow",
-              "key": "wØfꬌ^X𑴀\"𑤖v𝄝7%ݕI¥ó",
-              "encoded_size_bytes": 9635611094551298120,
-              "key_lower": "e7839a7ea80c874c96f7edb8812a8efb2be932d58bea2dbc1d81e0ab109ba75a52b4c808c16ad97e990c957fc1886ff9f0d2a77f056ad46c0ce5d870613c1c5605d20787ac0e00697dbaa960b0186d2c43e7a97a184bd2970b6f66a69e37093280a052",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 17944277219118361684,
-                "cols": {
-                  "ⷐj<𝔗": {
-                    "len": 383359554363226862
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  58695513435884216
-                ]
-              },
-              "diffs_sum": -8775603660096897553,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "V=᜵Ⱥૠ.C𐠂<g=ᣱ\\?Wd�⑇᠕",
-              "encoded_size_bytes": 7181268800323323659,
-              "key_lower": "1d6db381a147fd5db6ab7a2c4996e5fb438bc9cb73d538d47b3a191424fa34dde79dbbe23f2ea316102d3d7b5ac2b188b4b6fe992c18230596a40615",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 1916464215660163361,
-                "cols": {
-                  "6=熜🕴": {
-                    "len": 5271912531438242331
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -4010387079659615244,
-              "format": {
-                "Both": 0
-              },
-              "schema_id": "h16818818107622303083",
-              "deprecated_schema_id": "h5641674656241622883"
-            },
-            {
-              "type": "Hollow",
-              "key": "ቘ0*𑃟{𑍐`duቍྡྷ1𐏒෨૨¥*ȺѨ%&",
-              "encoded_size_bytes": 3099674769081696987,
-              "key_lower": "101b30335562d4773a041f81fcbd5afa87608faea6a2170990f17e7202a671e4b190ff23ff95dcee823157b08c33aae5ae6eeebced283304730269c64f",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 3079354879706067685,
-                "cols": {
-                  ",🠋්}ݶ/𐞁<ৎ4🕴l𐮭><𐕰Ï𪴦`𑶥𑰻&�𑐪=M": {
-                    "len": 8541173716622338389
-                  },
-                  "ek�": {
-                    "len": 1243054687830574997
-                  },
-                  "{ⲫ𑵥<&=ꨴãȺ𐮌": {
-                    "len": 11353839384188928713
-                  },
-                  "🠿֏🕴𑏇Q𑊊¥�/?Âፘ5lÒᎯ3=%Ѩ": {
-                    "len": 18403245835234051145
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  15463704305577581254
-                ]
-              },
-              "diffs_sum": -9116286663180956525,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h15880184466134791007"
-            }
-          ]
-        ],
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              116,
-              48,
-              195,
-              7,
-              117,
-              163,
-              250,
-              53,
-              229,
-              239,
-              110,
-              90,
-              78,
-              78,
-              228,
-              140
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h12686394317568178397"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": "h5452406608956067593",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "<I",
-              "encoded_size_bytes": 13082628995528992173,
-              "key_lower": "e4a9a90dde6c96ae0198384d9d1c746f905f8c0fc3b5883ff50b9b71455e18804b300f13d213147a721275fbe251d5b2969cef943cf80616bc3adaf5beb61a554827703b68750a1a2bc398ce0658a6f7c995aec0",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 11232245943246791889,
-                "cols": {
-                  "$}?*𑏈oc𑧜ㄒT2࡞¿'<:\"&ೖ�Ⴧ𘮹10ῙѨb῁": {
-                    "len": 8119264988258345868
-                  },
-                  "ꬁ𝒞𑽀Ѩ𞸡1<": {
-                    "len": 12347177480687832969,
-                    "{ﻬ`'¥ⷘ🕴ੋ𞥟J¥:<": {
-                      "lower": "'=Ѩ#¥𐎃ㅯ𐭚ে=:ೃ`^🟥ఈ$9Ⱥ$*🛠",
-                      "upper": "🇿Ѩ'>𖪷𑨕𜸗L"
-                    },
-                    "ઃ',ફ¥Ó/𞹪:B{¥ට𖮉𞸻𑌮𐒄%𑛈\\`7Y": {
-                      "len": 11516939853459800217,
-                      "𐭟Ãꥪ</¥𝓴¥Ꮀ𑗉?🕴+.í/wd": {
-                        "lower": ")",
-                        "upper": "🕴6vⶬ?𖮇)K<"
-                      }
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  15690022685655485296
-                ]
-              },
-              "diffs_sum": 2667830514880728779,
-              "format": "Row",
-              "schema_id": null,
-              "deprecated_schema_id": "h5387309311527624635"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h10034681848507218194"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  2893395136066483031
-                ]
-              },
-              "schema_id": null,
-              "deprecated_schema_id": "h11454557441469620221"
-            }
-          ]
-        ]
-      ]
-    },
-    {
-      "lower": [
-        8533421771665316503
-      ],
-      "upper": [
-        11097192288656037474
-      ],
-      "since": [
-        10601936447805286216
-      ],
-      "len": 2,
-      "part_runs": [
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              171,
+              85,
               203,
-              48,
-              164,
-              75,
-              185,
-              212,
-              127,
-              76,
-              171,
+              148,
+              198,
+              166,
+              155,
+              245,
+              210,
+              3,
+              182,
+              243,
+              13,
+              106,
+              249,
+              16
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": "%",
+              "encoded_size_bytes": 12214658800140346164,
+              "key_lower": "a6aabfb5c7a63b9f1603f427ad371d130c56c57b61d15317447688b493b2cb14eeb8029be123b294dd19ce",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 1389972642357623023,
+                "cols": {
+                  "R?𑰇UÖ{C𑴼𐢧`4¸𐖼𐆠ಃ𞄥�T㮝hȺ𞸎/🕴𞹙": {
+                    "fਃ/2ື¥ໟCͽ14֏&6": {
+                      "kind": "packed-numeric",
+                      "lower": "373279b0dedf7d6b6afc3b3178a7c50c2db2dccb",
+                      "upper": "84d2040a1e1c3f1c84e4e711e6823de9241a022717a5767355b59c5d9fc9"
+                    },
+                    "len": 7212807823069446128
+                  },
+                  "𑬁EȺ7": {
+                    "len": 13364204720030069696
+                  },
+                  "𝒫𪯪Uꪕລ𞹻ೞ`ꣳb𑲢ONPዃxD?b": {
+                    "len": 8358633783236560540,
+                    "శ𑎹\"🃍󠇫#jk�õA": {
+                      "": {
+                        "lower": "යrኌ{໗𐣰𜽃ꥁժa",
+                        "upper": "𞣌\"𝕄Ì?𐀊'0"
+                      },
+                      "len": 3302395953630130790,
+                      "ౣ𝒦𐤅><å)=!𐠼?jȺ,氻I?<:𑄱𛲜𐌍?&=𚿰&🕴7🕴": {
+                        "lower": false,
+                        "upper": true
+                      }
+                    }
+                  },
+                  "𝼀ᰁ𖄐꒬𑈸*wଐ%%B:*pඳ": {
+                    "lower": "*ﵕ🇲d'𑋹",
+                    "upper": "𔓿¥Ѩ𑼘01:3"
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -8478742727704226372,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h1513089996909151721",
+              "source_shard": "s7453bd93-5acc-72b0-3b37-bc647e1694d7"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              47,
+              109,
+              240,
+              184,
+              4,
+              176,
               211,
-              118,
-              146,
-              177,
-              208,
-              43
+              225,
+              157,
+              105,
+              27,
+              120,
+              188,
+              90,
+              223,
+              99
             ],
             "len": null
           },
@@ -1095,35 +1481,256 @@
                 "updates[len]": 0
               },
               "ts_rewrite": null,
-              "schema_id": "h1338170792518212396",
-              "deprecated_schema_id": "h6138625980474193906"
+              "schema_id": "h12455020485025164738",
+              "deprecated_schema_id": "h9281035778585185553"
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              20,
+              173,
+              169,
+              116,
+              0,
+              200,
+              84,
+              151,
+              245,
+              111,
+              16,
+              35,
+              17,
+              31,
+              75,
+              6
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": ":ృ",
+              "encoded_size_bytes": 12843028232632109354,
+              "key_lower": "cc",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 12106011159530134347,
+                "cols": {
+                  "ômqmfꢭ𞹶𝞵u)ꬸ`$=꒼": {
+                    "len": 5469145601973848946
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": -5177495290328826663,
+              "format": "Row",
+              "schema_id": "h11663672962728922469",
+              "deprecated_schema_id": "h7706269461274992920",
+              "source_shard": "s3bdf4e88-436f-3d43-430c-53dc87ea5a13"
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  6704415063986124729
+                ]
+              },
+              "schema_id": "h13115640530212923377",
+              "deprecated_schema_id": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              10,
+              121,
+              143,
+              177,
+              72,
+              34,
+              56,
+              136,
+              145,
+              92,
+              55,
+              54,
+              39,
+              250,
+              205,
+              61
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  968697974434406165
+                ]
+              },
+              "schema_id": "h15672983703627817993",
+              "deprecated_schema_id": null
             },
             {
               "type": "Hollow",
-              "key": "Ꟑ.ߢ+",
-              "encoded_size_bytes": 15537085784672454623,
-              "key_lower": "906c29691cc3129fe557a3040919eba0f44a919e83780a53a34ac5f0d9c830f9659899a40213ad955dc377e5b453760169934f37168a705582f68345f170154583e0729942c361b496507b2029a9154b3a0de69a12e79bb0f49f7e4809c262dc330047",
+              "key": "Vh.Ѩ𐒹.ঢ%Ⱥ'େ",
+              "encoded_size_bytes": 12443463899476750410,
+              "key_lower": "49d75af169a3a3a7903e0af8f2db7ce258b9bb5964f0cfd2f80ffa9e3cf7f1ad60652171608d1ca8f957a2eb28d6b8",
               "structured_key_lower": null,
               "stats": {
-                "len": 16979114045497749041,
+                "len": 12370571644450329285,
                 "cols": {
-                  "ೞ𐀆sﮛm?𑘳ㄠ$𐡎?Ⱥ.᰼𓛴ዀ": {
-                    "len": 3663857451615943681,
-                    "*W4\\𛅥ਲE𝓁ýµ.$": {
+                  "6𑆨\\4ෳ𑊈'X>*'5'&=/𞹗": {
+                    "%5🕴𑌬ⴭ«Mu": {
                       "lower": false,
                       "upper": true
                     },
-                    "?૫ª{": {
-                      "lower": -2181811065728189831,
-                      "upper": 3472626223024664537
+                    "len": 5301538641702080756,
+                    "𝪜'0<:'§\"\\/)¸🞞": {
+                      "lower": false,
+                      "upper": false
                     }
+                  },
+                  "G%ZÀ$*e𐬪Ὓ*\\Ѩ🀫𖄑߭qB𐎊xVݢ5ꨞ൏E𞺣s:Ik%G": {
+                    "f�𞹑`ꓲ¥𞸮d?ฮলⴧ;{𐇰<\\\\𐤣/ 𒁭𞹋𝈠ఎ?𐨅PN🉑": {
+                      "Mਐ/Ⱥu'𝒴?Ѩ¥X\\i🢺᧼": {
+                        "lower": 2346528556776012326,
+                        "upper": 6004772573566453486
+                      },
+                      "len": 15148620612681241207,
+                      "~]g𑵭H.ਲ਼𞺫𑐪Vd🃧`&𑤓": {
+                        "lower": -7855649035054398515,
+                        "upper": 2596195350206627559
+                      }
+                    },
+                    "len": 13235682344086711779
+                  },
+                  "ೌᡷ<yrR𞺦🕴\"Ⴧaໆ\"\"Ⱥ.8𑇗$GȀ𑚛^o🪅": {
+                    "C!𝔃=t{ࡨ$𑜼ࡤ`&a/CRf㍨?𐪁🕴ﾥ": {
+                      "lower": false,
+                      "upper": false
+                    },
+                    "len": 3765585520012130482
                   }
                 }
               },
               "ts_rewrite": null,
-              "diffs_sum": -6956191284688380392,
+              "diffs_sum": -7973332590620863943,
               "format": null,
-              "schema_id": "h13882300051221024867",
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              220,
+              209,
+              107,
+              101,
+              189,
+              19,
+              144,
+              242,
+              231,
+              129,
+              218,
+              108,
+              187,
+              143,
+              144,
+              146
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": "0&Գ𐮫`🕴)",
+              "encoded_size_bytes": 957518319085880899,
+              "key_lower": "f4518c42ce14e8872f3787eabc7237d998861a6274b2d2661483c001b12456df210073d3004734b11e766f7280c938fce5aa28f9a9d8f498c019109a6c0fecc153bf2f365f3f5816c7a1",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 1786994650686635134,
+                "cols": {
+                  "𓂏IFM\\Y'<🢷<": {
+                    "len": 11099319144178337893
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  1867025542719666117
+                ]
+              },
+              "diffs_sum": -5018421794297494984,
+              "format": "Structured",
+              "schema_id": "h15889372377627625362",
+              "deprecated_schema_id": null,
+              "source_shard": "s667f74ad-4031-f2a8-1391-a1c66bd1d43c"
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              56,
+              125,
+              202,
+              144,
+              182,
+              215,
+              128,
+              91,
+              214,
+              82,
+              3,
+              180,
+              1,
+              164,
+              152,
+              159
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
               "deprecated_schema_id": null
             },
             {
@@ -1135,11 +1742,148 @@
               },
               "ts_rewrite": {
                 "elements": [
-                  13840766398096160495
+                  2374555973431190833
+                ]
+              },
+              "schema_id": "h14709404672708770696",
+              "deprecated_schema_id": null
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              63,
+              156,
+              255,
+              203,
+              150,
+              223,
+              153,
+              172,
+              188,
+              59,
+              96,
+              156,
+              41,
+              208,
+              90,
+              242
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Hollow",
+              "key": "ᥳ᥀w:?ₐ|𑅵'nD\"𑜪",
+              "encoded_size_bytes": 17883404739512690032,
+              "key_lower": "f73bc3769de7d4670548c2b838d1a263ba59824d887da42219f5ce7638d7d1c0eb5304a98a92b8a9b89a292836e40974df533a88838743d3103a8f67663e9ea560d38262d6b2613f3e883507",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 10032166047113917152,
+                "cols": {
+                  "}𐎡꯳�𑏂🕴+/$`\"\"𞹬4𐞷*\\RÂ𝋪&o𞹪𐵸𐋬": {
+                    "lower": "N<ᏸ/ኜଷ󠅘{�+𞹧w'�!/*ⴌ=.¥¥&mD🛝",
+                    "upper": "i$$ೳි}?/2.ૈu¥Ჳ<:u𜼴🪃¥ഏ<Yຊ"
+                  },
+                  "ଂK𛲗¥'&{x3ͼ@": {
+                    "=𲄲a㈕": {
+                      "lower": true,
+                      "upper": true
+                    },
+                    "len": 17981347685758897718,
+                    "ꟕaѨȺ𝟄<<.5e=<𐮜'kꫝ<ȺG\"Ⱥ*": {
+                      "lower": false,
+                      "upper": true
+                    }
+                  },
+                  "🕴$~°𝕌*Ⲓ\\ଗ.𛅕𐎲ѨZ.pଐT%h⮓᥀�𐽵¥�": {
+                    "len": 18007888235405043198
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  7914649827748031898
+                ]
+              },
+              "diffs_sum": -5965485945943642656,
+              "format": null,
+              "schema_id": "h14915331958914662434",
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  8028993019726467477
                 ]
               },
               "schema_id": null,
-              "deprecated_schema_id": "h16286826531988221045"
+              "deprecated_schema_id": "h4709769664259180507"
+            }
+          ]
+        ],
+        [
+          {
+            "order": null,
+            "schema": null,
+            "deprecated_schema": null,
+            "id": [
+              140,
+              57,
+              237,
+              110,
+              121,
+              189,
+              95,
+              36,
+              102,
+              208,
+              186,
+              200,
+              96,
+              217,
+              205,
+              246
+            ],
+            "len": null
+          },
+          [
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": {
+                "elements": [
+                  10372225922736446232
+                ]
+              },
+              "schema_id": "h11512625276136895558",
+              "deprecated_schema_id": null
             }
           ]
         ]
@@ -1147,7 +1891,7 @@
     },
     {
       "lower": [
-        11097192288656037474
+        10955774796029448770
       ],
       "upper": [
         12058781582860639930
@@ -1155,7 +1899,7 @@
       "since": [
         15842489547996084433
       ],
-      "len": 4,
+      "len": 5,
       "part_runs": [
         [
           {
@@ -1163,22 +1907,22 @@
             "schema": null,
             "deprecated_schema": null,
             "id": [
-              194,
+              0,
+              215,
+              173,
+              34,
+              149,
+              171,
+              138,
+              107,
+              153,
               26,
-              219,
-              119,
-              192,
-              58,
-              135,
-              143,
-              27,
-              59,
-              178,
-              38,
-              9,
-              223,
-              12,
-              173
+              105,
+              93,
+              60,
+              129,
+              180,
+              188
             ],
             "len": null
           },
@@ -1190,126 +1934,9 @@
                 "index": 0,
                 "updates[len]": 0
               },
-              "ts_rewrite": {
-                "elements": [
-                  11710566266168908281
-                ]
-              },
-              "schema_id": "h16661154627303797172",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "%+WIჍ៵D#',\\<:<}&&(#{ೞȺ\\=�I&𞴣E&",
-              "encoded_size_bytes": 3027151125895617545,
-              "key_lower": "c07db792c1d743e0e954018b387611a72eda24ec9429b14d3c114db76e54b933cf1f8bd039a70fdc",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 924894343772944887,
-                "cols": {
-                  " 'o𑼡O𑤸¥¥𞹎Z.ී%CѨ<ੜ<ౣ$": {
-                    "len": 10824001896086681542,
-                    "𑑞*¥Ѩ\"z1%c\\1𫵖`#𑴽�": {
-                      "lower": -5929255319063815324,
-                      "upper": 7966725264298972204
-                    }
-                  },
-                  "M𐕕︨𑼔ꩋQௐ?2𐭲�<𞟣{𑓆8ౖੑԖ": {
-                    "len": 8764176059439781113
-                  },
-                  "Sୈே\"𐖕ආ�Á𑁜z": {
-                    "len": 12699093146647338998
-                  },
-                  "Ꮨ{�𑓗𖩷0🜱k*𘬘ஜ¥𞹉ࡢ𑊈4d=&𞄽Ѩ": {
-                    "len": 6205234372856339253,
-                    "Ѩ/q4𐀹^ȺȺ7\\t\"=W$𝅭ѨѨ$\\𑖔5&&2:�᪠K": {
-                      "lower": false,
-                      "upper": true
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  9225110182815809954
-                ]
-              },
-              "diffs_sum": -9126325184493261096,
-              "format": null,
-              "schema_id": "h11358937112160993603",
-              "deprecated_schema_id": "h16788132645112390851"
-            },
-            {
-              "type": "Hollow",
-              "key": "ѨQ*¥᠗ⷓຄ𛲞",
-              "encoded_size_bytes": 17554815161244716229,
-              "key_lower": "946a4fe9bf",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 4617752067359483216,
-                "cols": {
-                  "": {
-                    "len": 13164430348467834265
-                  },
-                  "{𜼺<,&{ꡰz¹�{טּ$*ୄÅѨS𖭗\"\\¥A🢵jோؖ:7": {
-                    "len": 6940117364676845676,
-                    "Ⱥ\"\"|/X.🕴)ે*;$\\*hѨଐ𮵺ﰳȺ\"Ò[ΠÞ𞹛Ⱥ": {
-                      "lower": false,
-                      "upper": true
-                    },
-                    "തO࿁/𐍉Ù": {
-                      "len": 2381523303859392360,
-                      "RැS𞸻Ѩ<ObCಎਓ𖾙`Í{* i𜵺U꠲'%": {
-                        "lower": -648038398879801328,
-                        "upper": 2156921288510766517
-                      },
-                      "𐝥$x%?=Ⱥ'ZȺ\"ÃΟຝÉ?J5?": {
-                        "lower": false,
-                        "upper": true
-                      }
-                    }
-                  },
-                  "𐀼ꬬÏ𞹎§ৗ": {
-                    "len": 5836065146710803501
-                  }
-                }
-              },
               "ts_rewrite": null,
-              "diffs_sum": -1176153625119949573,
-              "format": "Structured",
               "schema_id": null,
-              "deprecated_schema_id": "h429668735319527760"
-            },
-            {
-              "type": "Hollow",
-              "key": "𐔖0",
-              "encoded_size_bytes": 7136848252608300298,
-              "key_lower": "e54b08",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2058694857679154862,
-                "cols": {
-                  "\"𐁓": {
-                    "len": 938380639484045785,
-                    "}": {
-                      "lower": -8154669314223114235,
-                      "upper": 7743994859421025076
-                    }
-                  },
-                  "^V=Ꜯ2/[🠀ͺc᳂ੴ%𑍗\"𑰸N<𖵍{i/ஷ{": {
-                    "len": 15575433941689790816
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  8353011224443061748
-                ]
-              },
-              "diffs_sum": 8356134730595085499,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h10386503234787960277"
+              "deprecated_schema_id": "h8105113901454615713"
             },
             {
               "type": "Inline",
@@ -1318,13 +1945,57 @@
                 "index": 0,
                 "updates[len]": 0
               },
-              "ts_rewrite": {
-                "elements": [
-                  18155062736826996335
-                ]
-              },
-              "schema_id": "h1717006371364298914",
+              "ts_rewrite": null,
+              "schema_id": "h6044295631498089172",
               "deprecated_schema_id": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": null,
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Inline",
+              "updates": {
+                "desc": null,
+                "index": 0,
+                "updates[len]": 0
+              },
+              "ts_rewrite": null,
+              "schema_id": "h3779703966400999681",
+              "deprecated_schema_id": null
+            },
+            {
+              "type": "Hollow",
+              "key": "",
+              "encoded_size_bytes": 13205194655178098621,
+              "key_lower": "01b3d7def27bffa167ae6d0ea4530486f7685ce6042bebdac89fd9fce7cd5cb6663129764401e3448d162b0031d662df7d7b",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 1083417168633788325,
+                "cols": {
+                  "g𞹢?": {
+                    "\\ⁱ\\�𑽒᥄'1𐳠ꩅ𑜎𝚾": {
+                      "kind": "packed-interval",
+                      "lower": "5fcba3ce20817f8b397e18c6976e19930e6ee32d02fe15fddcd3f3c147d21a25d4",
+                      "upper": "84b8623b9e1e17f1758f3c279638e639351560c8e9ba2bc7dfe32acfe41ab6d433b327feb8ecaa9493803032f9de6d852ae78c4e2461b99afbc66c961faa3cc419c042c1b3ddc75629b7ead50f81430d6e7dc8c2db85"
+                    },
+                    "len": 7280065341023909991
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": 1866130190169463428,
+              "format": null,
+              "schema_id": "h3096068827040660172",
+              "deprecated_schema_id": null,
+              "source_shard": "sd6515e74-5d35-145d-2a36-1541ceb2a298"
             }
           ]
         ]
@@ -1335,630 +2006,10 @@
         12058781582860639930
       ],
       "upper": [
-        12283092202528283739
+        17595842971844993858
       ],
       "since": [
-        9245196773332099580
-      ],
-      "len": 2,
-      "part_runs": [
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              209,
-              55,
-              105,
-              139,
-              7,
-              221,
-              230,
-              122,
-              136,
-              139,
-              132,
-              67,
-              249,
-              96,
-              165,
-              178
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": null,
-              "schema_id": "h17526779522230968674",
-              "deprecated_schema_id": "h13209705797966519990"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  14929587491019173256
-                ]
-              },
-              "schema_id": "h9762000656174456229",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "�ﻇ\"௸o?Mvbh*ஃ𐝊j]t🕴𞸧:'�",
-              "encoded_size_bytes": 6215978486599530179,
-              "key_lower": "909fafa19b627807f6bc8194eb7736813d5d4c546a0d1615d0897843b8b28a85ab149050df05d6058a510831e22479643001affe7c9609a86759acc142d19342da4509f1d47be9eab2dd062114333e0bc58f6523ab7959cca44d9dc0f7c5bbf75b9748",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 13789420420505736731,
-                "cols": {
-                  "᪉හ\"/.𞹤HѨ&এ¶𞹢𑵵𑍇E*0q<,ꚽ]𞹟Jq>ࠩ*": {
-                    "len": 11804849012656900638
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7518683495120435813,
-              "format": "Row",
-              "schema_id": "h8160953713798796873",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "〷🕴X%{𐢮.QὬὍV$𝓆𐮪𞀁8¥/᤺",
-              "encoded_size_bytes": 13541337929222127004,
-              "key_lower": "493c4b4a6a1126285332c85973e396af674771dd27bf90ae7ee8b597eb891b527018a8780b69112f417fc60c07d1d143cd32180bbd78ac2533ef70199aaae2758e5e8396fcbd65276789a8d33d46f1d7290f8fef1fb1c79f1cf9b81909",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 740599632319972426,
-                "cols": {
-                  "": {
-                    "len": 6727950256470614875,
-                    "b<Ⱥⷂಮl𑏂🠁𞟪.»𑇯jஞ\":t«d𑦥": {
-                      "len": 17096032943108068204
-                    },
-                    "⃒1\\&.{Ab~Ѩ:/}ꞹ": {
-                      "len": 16677004061073572456,
-                      "🫱¥🕴=𑴿𑴺ѨѨL𞗿?*dí𞋿𖬽*Aᤗ`𑤉3": {
-                        "lower": -7856693349536236710,
-                        "upper": 7000023191958249517
-                      }
-                    }
-                  },
-                  "𐼶T*𱌒𝔻BἜ": {
-                    "len": 17862343470041879577
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -8418915803900072562,
-              "format": null,
-              "schema_id": "h6609422214964107421",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "⮅¦/1/ᨠ𝕋.h🕴Y:Ѩଳ𑛞M𑙗਼'Ⱥ^<L$=𞹟=:=R",
-              "encoded_size_bytes": 9203641100537524145,
-              "key_lower": "b7ea77a0450af0e0af5278bb214259146ba93af7320b9157ee23a4f0d6136d63639d5a787f28ec23c1d7141982b1b229e2",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 17820325162841505338,
-                "cols": {
-                  "\"/&Ꮀ{𞹗🕴<🃇af=d>M½": {
-                    "len": 4418721441602973758,
-                    "?Z𝒯q𞸵a𑜟𚿰🕴\\*𑏢~oWໝ%$ᜰȺ": {
-                      "lower": true,
-                      "upper": true
-                    }
-                  },
-                  "Ⱥୋj\\𐫮਼𐆕🕴𐢯𛅥#ⷕ<[\".>/2:Ⱥ𖭾¥𐵍🕴ⴂ": {
-                    "lower": "TµѨ=Iₜ?4[ಏl",
-                    "upper": "w~Ѩ&~?A𑑡{\"2ꮉ1{੍S@`(.'Alb¥>𐣵."
-                  },
-                  "🫩?&𐤿.<@.🕴\"𑴂Ⴭ": {
-                    "len": 16370554532742526039,
-                    "࠵𫞔ᝎ𞂏=Λલ𝼁": {
-                      "len": 10985068336856231248
-                    },
-                    "𐑗kr៵V𑤉$@𑌼𑊆pJ&P{lȺa𝕆𖭞𒐂𞟠𝓴쒵𞥑}\"\"ȺB>": {
-                      "lower": false,
-                      "upper": true
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -6625633363117525990,
-              "format": {
-                "Both": 2
-              },
-              "schema_id": "h2247451040283911148",
-              "deprecated_schema_id": "h12232118196648358458"
-            },
-            {
-              "type": "Hollow",
-              "key": "ꟑ.'",
-              "encoded_size_bytes": 4118662984114688378,
-              "key_lower": "a91dcc359211a473",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 3580035914304677295,
-                "cols": {
-                  "v/$?`<١\\🕴<社𐖻:}'&ꛈR=z": {
-                    "len": 13467701209160158541
-                  },
-                  "vVꢯ.o𖫁𐀒S:𑶓H᧐": {
-                    "len": 7616587369168659085,
-                    ".$c&𐿃&.": {
-                      "lower": false,
-                      "upper": true
-                    }
-                  },
-                  "ௗ\"*Ừ¥.🁲è𐖞:Ѩ𐆠�𛲙q": {
-                    "len": 13197030520619834714,
-                    "'hQ": {
-                      "lower": "$'*𐠄𞺢\"𑖓$xແດ𑋝%v\"<𞗿\"𑜔&🠰𑱬H{𒐢T🕴ೖÚ",
-                      "upper": "&𞗗5u²@[<P𑁅%ᮾ'8ବ𑏕"
-                    }
-                  },
-                  "𐠼ਿெ𝃇¥+𐡀𐖕𞊡Z🕴]ං='N𐒉\\": {
-                    "len": 5644236517332815936
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7685985732967523208,
-              "format": {
-                "Both": 1
-              },
-              "schema_id": null,
-              "deprecated_schema_id": "h12445725050305984428"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  15913287454180833207
-                ]
-              },
-              "schema_id": null,
-              "deprecated_schema_id": "h16920119820173962704"
-            },
-            {
-              "type": "Hollow",
-              "key": "un/sಐ",
-              "encoded_size_bytes": 4298958222568668937,
-              "key_lower": "a550882de37f3803cf0f22c192557aa9e88795c24f14b44ff222d823715a46b8aaebbe32346fb3b02abd67a2425346b61ce31cfdeb35a1d4",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2181624350518155748,
-                "cols": {
-                  ".?CȺ{𑑠]G𖪸𞂏�᪄ux:": {
-                    "len": 8838812351446206266,
-                    "🕴𐿇ï°.<!'𐿥)𞸤𖭝": {
-                      "lower": true,
-                      "upper": true
-                    }
-                  },
-                  "ഏ{᪆᠒Ѩ𐨆": {
-                    "len": 3628296650466915443,
-                    "8Bo\"𑦧": {
-                      "lower": "4\\𜵟",
-                      "upper": "🩳Ѩ%\":ቯh¥:%&𑛅%𞹨𐀰¥I𑏊j%.TȺK🕴ቋ🕴«%ﶼ🕴"
-                    },
-                    "🕴𑥗�n}<G🕴;ꮨ9kೝ⭼ﹴȺ𑌡ⶱѨ¥ு𑦣¥𑰇lz%V🩲𝚭.𫟕": {
-                      "lower": "\\:𝪥𑃂ቘୣ�$¥¤&᫁'්ῆ🩫'𝼉Ѩ𐫤ം%ዀE🂱",
-                      "upper": "a਼a🕴K𐢭脳ⶆ𖫕gȺl𝓺<?×`v𞀤🕴𑌈¬ૢfኍ🕴$"
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 5232232645749709685,
-              "format": null,
-              "schema_id": "h15203988026423394850",
-              "deprecated_schema_id": "h16679957019313487698"
-            },
-            {
-              "type": "Hollow",
-              "key": "�ቍ🕴.Úᾴ'FȺkȺﷵR༗*ໂK:.𐞀H⵰Ꟑ",
-              "encoded_size_bytes": 318940904794480997,
-              "key_lower": "68103b977e1239b84c8d0ce0b474b8b08fbed9b6cb1a281cd3f0b28cfae8d5fe9f786ad959656129277fa1cdacca85e6f74423e1aec16af3ceeeeb3bc9922f5f071387c4",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 10238032944507809508,
-                "cols": {
-                  "Ί𝇛:𝪦𞹗<=Ù`ȺAￖ[¹ﭚñI¥:\\\\*:ඛVቘѨKy{0": {
-                    "len": 17400618427525961381,
-                    "`{D5dV𞹝🕴.": {
-                      "lower": 321938372001272462,
-                      "upper": 3965800631504104601
-                    },
-                    "t&|.']`F🈀=j$🁻E&": {
-                      "lower": false,
-                      "upper": true
-                    }
-                  },
-                  "ힱڦ᳇DொѨ᠆🕴ꬄ·ড়.4៦Ⱥuャ\"J": {
-                    "len": 10261400543471528147,
-                    "𒊿Á\"઼": {
-                      "lower": ",𐮫ؖIே𞄠Ѩ",
-                      "upper": "Ꮳ'$𖹶᱉🕴𐿡aೌ�ç.𑙣$🉑<<ᝩ%ೞ*õጓ"
-                    }
-                  },
-                  "𑦶&:&": {
-                    "len": 2550001186174558882,
-                    "M.⣛🕴'\\ꩲ}%🕴ﺷቨ*.b𐌍𞊤C$ප.\"'5?🕴iѨ?": {
-                      "lower": "$s𐨪Ѩᩇ언*Ѩ𑤠lᝲ𐓍iE$e%#𐡠",
-                      "upper": "ቘj%:℃k=ౕ\\𐠂"
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -6526193675576079346,
-              "format": "Row",
-              "schema_id": "h13829577073875694594",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "<K>𞅄ꩀA抃ȺMöὊᐜ$𑓙�¥𑊆ⶰᲝ =3𘢐Ὓe$wm",
-              "encoded_size_bytes": 18346805966051097741,
-              "key_lower": "ee4d76d457e437f02717ee87c563c693ceb5453a39c221ef6a5afa8815e522038c1aec1ca61b5056f42db035f42079d3445802748740528b0f0e82c4b35d3d",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 8771864842038018744,
-                "cols": {
-                  "Ѩ¿!ਫ਼\"Ⱥ\\U^r𑌐*Ⱥ𫘽𐔆O]::\"㇇*𑙓r": {
-                    "lower": -9020547294408109305,
-                    "upper": -439781450423914541
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  4264934204754132854
-                ]
-              },
-              "diffs_sum": 1349630556060270141,
-              "format": {
-                "Both": 1
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "𑁞¥𬛱",
-              "encoded_size_bytes": 10914043859329282531,
-              "key_lower": "8f897affe1a76fe7d000b8cffbf433727cbb9af90b854535a90a9e686f27313f2d5b75a85dbc7932400354920ed27dc83737f22bb99f1a13d0de5915a1130dc0a9",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 17063338183643575844,
-                "cols": {
-                  "<ଲ$𜾼2Ѩ%ⵖ²pෑ᩠﷏D)n*:Q": {
-                    "len": 15453357449590807439,
-                    "©'àȺⶭѨ?": {
-                      "lower": "3338763d009789a63e7368995698971cc5f6ed2e6d03bd7ad205e58e9b159d4e616e1499bb2e8d2fc9",
-                      "upper": "85f52e842e7f2e496bc1b2f8193b9a04540dde3a7328d0be15ab151b4cefd447f8fde5180ff23d27eb3f5e73ed0478a9ca7c1592d6acfbc63e4671346fe4fb14651b1fd061d1eb113c40bb5a2a656268d7447c165e1e6065e869ce"
-                    }
-                  },
-                  "p𚿰k$𓕓𞊐*Y=𔑳": {
-                    "len": 2103401577577556886,
-                    "C𖼭{.{𞹇Ѩ𑘃𫞗Y𞹋ೋ¥GvQ/?V*ÄೖB>ᦎ&ૌ𓄶`Ѩ꣙^": {
-                      "lower": "ca33a7c5dd6b2ad3904e8d2c8eb05960811c4e44c878ea75bfc2d027674b04f7ac9131ef1e74ee7501e345cad7aa857579675eee39204409de72d4b214933c62092627d4e4a8054886f8540945",
-                      "upper": "e8b1fc9f9de603d2f8e9b7cd817c35c4cab18dc0e3b5f8b0cc585fd120f1f3ea30b5f542d67e6355ee49c702cef2490766",
-                      "kind": "packed-time"
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  1888920712139758557
-                ]
-              },
-              "diffs_sum": -6990924760773748176,
-              "format": "Structured",
-              "schema_id": null,
-              "deprecated_schema_id": "h16290016717077652065"
-            },
-            {
-              "type": "Hollow",
-              "key": "$ෑ2{",
-              "encoded_size_bytes": 14886958380580787720,
-              "key_lower": "e625a0a3c678",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2680281077816799671,
-                "cols": {
-                  "3vD:ஂ:%𑇄K%RY`0ₒ¥Kd8.y𞟭𐁖𛅦🭃𑎎𐫍I|4=": {
-                    "len": 15322876662688527138,
-                    "Ⱥ`𑵀ⷝ": {
-                      "lower": "2e9442098994cecc55545a47",
-                      "upper": "3140aa9b7917cdc642716d95829460195897d8fc8a223edc52a9704b223e3ea0fb8e1647056fd823af68dc0cae01af93c8b565b12e275a4cb1"
-                    },
-                    "ລȺ`rg": {
-                      "len": 13193992874913903370,
-                      "ጂQ🛝<=": {
-                        "^Ѩ0.';!5𖦠\"`Ⱥⵡ𘪇{e[q𑨯Ⱥ𝔘ৄ?𑠢ጓ!𐫫": {
-                          "len": 1,
-                          "stats": {
-                            "Ⴭ/Ñ🬧l`𓌸=שּׁ'ⷒ?O:𮵝:𑩡": {
-                              "len": 1,
-                              "stats": {}
-                            },
-                            "᪕$G⁻Oᒈ1{,": {
-                              "len": 1,
-                              "stats": "json_nulls"
-                            }
-                          }
-                        },
-                        "᧙🕴ⶎY࡞ษ𑀝8n𐕴𑶓PȺஂ$\\~%M%`𖭗": {
-                          "len": 1,
-                          "stats": "json_mixed"
-                        }
-                      }
-                    }
-                  },
-                  "Ë3𑌀ൈ<à)᪖֎🕴Ѩ`𞹤t𞹝B𐞁ኋ": {
-                    "len": 16649271064572082216,
-                    "*N&𖽪ો⟵🕴ਲꟘA{🕴Ⱥ¥𛄝𐡭f\\": {
-                      "len": 4119934717930711350,
-                      "Ⱥᤢ<ꬁ¥1᳟𐎻�¥'.]%gF𖥓>'&&𑵲": {
-                        "lower": "ੇ$𐢪𞹒$$𐖷'ѨÆ<Z}�$hꬉ9&AR{Û\"𐓍$'^`",
-                        "upper": "𑊈၉᪬X/*¥=?0{𐴞𞻱m`𜾪ወ¥<c🡩꠰\\࿘"
-                      }
-                    },
-                    "Ὓ𒒊𞋕𑍐𑤿{ⴿ%థ4&m<𑰦ÔȺ?Rೳ𞹙=m᥀l꧙𝕍i": {
-                      "lower": -8714448177402263391,
-                      "upper": -5941653446000179643
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 7140156722401570520,
-              "format": null,
-              "schema_id": "h8933780341450161746",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  4257800584912010972
-                ]
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "TÏt¥᰼֎#𖬰𑇩",
-              "encoded_size_bytes": 16266402881064998665,
-              "key_lower": "ac0ad901e2671ea8d87d727a482cc2901bdeb09a890fefd666ffde9ce8a4b77d64e4f38b2d0b9d4dbd6d1ccb34530cc0b6b617d08cc9247fa0ab43fe077f8cba",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2133958836759516011,
-                "cols": {
-                  "": {
-                    "len": 96670668529446076,
-                    ":\"tL𝓘<ቼ🃂ଏÞ𑝁𑎎rDl#𞀪s🕴xsE𑎄$𑽗": {
-                      "lower": true,
-                      "upper": true
-                    },
-                    "ળ{$𑄚gÎq'𝔁𐴲g𑤫^j.P": {
-                      "lower": false,
-                      "upper": true
-                    }
-                  },
-                  "<z:්𑛕\\bË𞹟Oë¥1*": {
-                    "len": 1325909951828302254,
-                    "êﬓ/P/વ𜵙�ײ\"&Ѩפּ\\¥𐕔5y~ඛ🂠qೡѨ": {
-                      "*𐤏x/?ῑ🂲W%\\�$ⷞ:á?": {
-                        "len": 1,
-                        "stats": {
-                          "lower": "z]'𖭿۟~༁ଟ𞟦'?¬@𐀢t𞥟^q�ᝯ-{\"",
-                          "upper": "𞗦`&ৢ?Ⱥ🕴?ຮ𒿆$꩓&{\\:/'·<𘜉Ῑ=::$ૻU&ѨѨ."
-                        }
-                      }
-                    },
-                    "𑤖ȺѨ}ଈ𞅏m𑈲d%": {
-                      "lower": "068f1c565beab5c67c5b9882b4a097594cf605527df10ab73d9799022a1e244760",
-                      "upper": "1f7677296d3ef09b116fce093dea6f10cc4558d5810b6a57f42cfe025501bcb4b594253c8e6ae13d29b1ad42fac1bc3bfafd49571ee4ca32319d4a07c752804e94753d7fdeae4043c4cab3907fcb4ca41cc9"
-                    }
-                  },
-                  "¥$デ¡": {
-                    "len": 17849500069852054223,
-                    "\\c𖪐'$np0?=ᣈa𑥓çk.𞀃🡕1": {
-                      "lower": "3d25924f6151e51994a1bdf29555ce80c36f63f05e216aa1b35d14829eedc40392",
-                      "upper": "f8e700d57678fd172688108f6fca0d97c16ccf4a"
-                    },
-                    "`='𑻴g\\4%�v*{ￎ.<ᙚ𑏡๙&¡🕴ೖ🕴�¥𐍚៧આᤥ\\.=": {
-                      "lower": "/=𐩘",
-                      "upper": "4Ⱥ<ກ>ފඁê�:ೕQBﹲಹ3?𮄃?='`_`"
-                    }
-                  },
-                  "Ⱥh.𞹇b<🕴𑠵᧐�%c": {
-                    "len": 9759555493157605131
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  6635984908330493344
-                ]
-              },
-              "diffs_sum": -4527005005852875695,
-              "format": null,
-              "schema_id": "h422787613013312640",
-              "deprecated_schema_id": "h5535047863028897703"
-            },
-            {
-              "type": "Hollow",
-              "key": "u𝒢$:𑈊¥Ⱥລ%¥🢹!ᚅ?T4a𑐓𒐥𐞵𞸻ÊS\"'¥`𐦴🛩`𑏕",
-              "encoded_size_bytes": 7313328708436133818,
-              "key_lower": "3d812f0552",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 4535207306475685742,
-                "cols": {
-                  "%¥𐩘b%": {
-                    "len": 8632110775532798426,
-                    "�=𐮚\\%y`¥🕴𐺱\"/𐨆l\\=sW=dÁSHᝮ𑄟ௗSລ`*¡𓑇": {
-                      "len": 1706090167552652136
-                    },
-                    "𑤷FዀÚ*ᰘ&`;טּહ2¥𛄲ᜀ\"g'ￒk🕴𑚟¥": {
-                      "lower": -319847106932149333,
-                      "upper": 4967387227670980644
-                    }
-                  },
-                  "4~ÂV-𐨺oJ/mﹰ%}U𖭽ຼt:🕴./E¥ూr`ු÷𖾅e:": {
-                    "6�ᦇ`0ౌ/𖩣j𝍒L£": {
-                      "len": 1,
-                      "stats": {
-                        "lower": false,
-                        "upper": false
-                      }
-                    }
-                  },
-                  "\\": {
-                    "lower": true,
-                    "upper": true
-                  },
-                  "r🕴ꬑ𑙐¥𝒀lv𮈦ுퟰQo": {
-                    "len": 2742078370119928797,
-                    "𝍯\"𐝦`ୗ&l": {
-                      "len": 13288958464652030631
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  16636184971772291694
-                ]
-              },
-              "diffs_sum": 1218761589434616275,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "𐂫&Ѩ¯?.Ⱥਃ%`ఏc)l¥{Ꜻ@&",
-              "encoded_size_bytes": 932983232832514924,
-              "key_lower": "57d3d5db7564ebe21e6f03f301356055adc3a910eb03bd1395ea8ce291dc1fa77f2c4eb163c5cc9b762ab03218f5cdbe69ca7dadda1cffcf0320e78c97b37650986c96",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 13000108236857664845,
-                "cols": {
-                  "": {
-                    "len": 14890780028002475598,
-                    "{Vq\":𛊋&5v𑤆": {
-                      "lower": "4d58fc5905346e5f7994c06fb8204df79337444f40723bdc5be928264ad8b8ebd97ed73414b489255eb39ecea08b58411e12",
-                      "upper": "f74e773371f666f48d2f8533c489518110d99049dd22674eeb73b1b79cbac4234e"
-                    }
-                  },
-                  "/🕴'*+﷏K࡞.🪞`𐀏^%ｴ$🕴": {
-                    "len": 998066460311095353,
-                    "5ቖ": {
-                      "len": 11459328120272306654,
-                      "ꬋ$<𛅦𐩓&": {
-                        "lower": "19625b2eb79ee88557f996bfc6c0365226365ee5fdb57f1a70a89c7bd49732e2ff2d5a9339e45436e34c228cb0db32dc07105d569c400e706d7e9d44357e3e54ca8fc6e6a3a678556ee13c3851cabc82e1e6cbfc63ba",
-                        "upper": "5f33f76665aa739b45e8f59e9d6ac60a4ebd256775ae02",
-                        "kind": "packed-time"
-                      }
-                    },
-                    "𞹾¥K𑵧ᣢ=ญ/*ஂלּO¥⾈B": {
-                      "lower": "e199d388abe2df",
-                      "upper": "f2bec27d1ab13ae9c5114ac3f85557b0fc45bef6184a8100a982dfed41d86d7a2c34a4c05a8e70cb5decffb08af6ca6bf3e45e256b0f4c3395fce3d42a93f31f5b710662bd4413ab017ddf882e"
-                    }
-                  },
-                  "CJ": {
-                    "lower": false,
-                    "upper": true
-                  },
-                  "q": {
-                    "len": 5671761328162350100,
-                    "Ꟈ/ÿȺୃ↹": {
-                      "len": 3310581339084287606,
-                      "=1`zÏ𔔳f*={𜽀𞥊ໂ_₡*Ӗ½¿": {
-                        "lower": "b70355a423130665038d9446f68f6727a9f21ee80d747c",
-                        "upper": "c277d43973f3313f204e98f6f61a1cf681f64d1186c531b21e5bd4846ca73bba075d"
-                      },
-                      "ா`ౠ\\c`": {
-                        "lower": "\"+:uᜈ¹𖤴𐮉",
-                        "upper": "'𝔙|矐/mg%𑃤t𑤂*zמּ:J¥તu꠰W𞤆¥ﬖ(f"
-                      }
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  11151185127992877912
-                ]
-              },
-              "diffs_sum": -7581899887483187393,
-              "format": {
-                "Both": 2
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  16792570187171015108
-                ]
-              },
-              "schema_id": "h1845768459610919833",
-              "deprecated_schema_id": null
-            }
-          ]
-        ]
-      ]
-    },
-    {
-      "lower": [
-        12283092202528283739
-      ],
-      "upper": [
-        13823187544706422584
-      ],
-      "since": [
-        10274268452723049272
+        2374385966614238016
       ],
       "len": 7,
       "part_runs": [
@@ -1968,22 +2019,22 @@
             "schema": null,
             "deprecated_schema": null,
             "id": [
-              120,
-              173,
-              46,
-              242,
-              159,
-              101,
-              87,
-              49,
-              79,
-              189,
-              24,
+              165,
+              195,
+              50,
+              25,
+              27,
+              212,
+              69,
+              230,
+              203,
+              252,
+              18,
               64,
-              109,
-              161,
-              141,
-              173
+              59,
+              151,
+              167,
+              233
             ],
             "len": null
           },
@@ -1997,105 +2048,10 @@
               },
               "ts_rewrite": {
                 "elements": [
-                  10865717312938959476
+                  2569084088299544986
                 ]
               },
-              "schema_id": null,
-              "deprecated_schema_id": "h1181761690378777990"
-            },
-            {
-              "type": "Hollow",
-              "key": "$୩|ୣ@𖭥Z𑽋່𐘜=ₑ%ௗ<¥³'ᥳMೈ𜾇A𝕆4",
-              "encoded_size_bytes": 7521683723954962283,
-              "key_lower": "7ec7d4671638f18159950745be363f314efe54d5c227b8f14517d2b2e2be6c343d6f36e700fd51caf8a1f8dc1f",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 17058174316353662919,
-                "cols": {
-                  ".Ѩ;𑬉=𑤎//YW~*ౝ)Ὑꬄ\\𐠙$ஊ$𑱂i¥𐪁hￍਹ$`": {
-                    "len": 16875316751933484409,
-                    "ਁঐ{ꪚ}ࢇ꧒𞹭੯𜰛?}%$K𑵅7x𖭟6yA𞂏𖵈/eఽ\\ৗ": {
-                      "lower": false,
-                      "upper": true
-                    },
-                    "𐖻{𝑜*a𞟤2𑜦Qq𑖵:<r": {
-                      "lower": true,
-                      "upper": true
-                    }
-                  },
-                  "`꧗=/ⷄ*𐊈|X<\"🈺,~&𐁊%Ⱥ": {
-                    "len": 10468318848785271983
-                  },
-                  "େXB៱ದ/HȺ*[nx᪀ȺொP%ঐ¥~෴4ÞHk": {
-                    "len": 17024011610338248035
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  13595239121777776225
-                ]
-              },
-              "diffs_sum": 5359022246602522721,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "𝕆<W&.𐬂?ㇾ4ⴭㅌ",
-              "encoded_size_bytes": 17881726875607471596,
-              "key_lower": "2013138e805890e09ded88df3a412bb50f173e445446401009e69658c0691f9149a84bc5ad1cae26618ac1f373ad1d1ec6590b7bd384edef72c1",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 9490109609937294830,
-                "cols": {
-                  ".𓍮𱵴<D𰭓'#": {
-                    "len": 3163809376075150250
-                  },
-                  "<𞺛*$/�7*D🕴%ÿ,ࡧ`Ѩቐ`o𑴃": {
-                    "len": 7790243811608286189
-                  },
-                  "?\\&:\"<¥`{ਅ/🜚&፦ਹ": {
-                    "lower": "=D&𞗵𑛇HѨ᠑𑵃@=Qࡄ𑊍{z𞀣𖫂Ѩ&6`ׅখಶ",
-                    "upper": "ꧥ&𝕆*»p¥j{Ⱥ𐤷�Ⱥz🕴ￊzUïⷀ«𐡩¥ຊக{"
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": 962669325531011453,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h16719552882179045755"
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  7712147466502711824
-                ]
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  1401705007099511059
-                ]
-              },
-              "schema_id": null,
+              "schema_id": "h14333375685028100845",
               "deprecated_schema_id": null
             },
             {
@@ -2107,58 +2063,6 @@
               },
               "ts_rewrite": null,
               "schema_id": null,
-              "deprecated_schema_id": "h6700848455114021997"
-            },
-            {
-              "type": "Hollow",
-              "key": "𐾲%=ቶ?$jd/ힹ.~�🕴U",
-              "encoded_size_bytes": 16132842889631676118,
-              "key_lower": "34c94871573df05b744f3c8129e219e68e4059",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 16627650758037252971,
-                "cols": {
-                  "&𝒋𐿣/P𞅎⁚m𞸃.𑁢N𝔉%Mୠ🕴<𑌮/𑥖{𞹗𐲣[": {
-                    "len": 12389353229660812470,
-                    "ȺN<𐖫bףּ𖵹`𐁐ৣ뻊": {
-                      "len": 1079080967709065289,
-                      "3ෳ🮁%%:2": {
-                        "lower": -8215908669547780476,
-                        "upper": -5977905762010469517
-                      },
-                      "\\": {
-                        "lower": "/C\"𞸤𐓃%ꥡ𚿽⸢𐡴ª3.!X%$*",
-                        "upper": "𑌚&uౌ"
-                      }
-                    }
-                  },
-                  "4*oୢௐ@𛱸.uة:": {
-                    "len": 17820926288880839453
-                  },
-                  "hএ🣀z𑵐O\"'\\@H𑅵𑴅🕴𞠘ກ.`": {
-                    "len": 1205556014324206791,
-                    "D{㈚": {
-                      "lower": 1444081885898997405,
-                      "upper": 7214319387793483657
-                    },
-                    "𑊒e%K꠵pG": {
-                      "len": 14801866344932556100
-                    }
-                  },
-                  "শ&lM¥c*{t\\᧑A=𑴼-*¥?𐓨g$'𛲐�?𞗖z": {
-                    "lower": "",
-                    "upper": "\\*🕴?𐓄Ѩ🕴Êu🕴@🕴"
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  4562999343788312246
-                ]
-              },
-              "diffs_sum": 1931518275821923485,
-              "format": null,
-              "schema_id": "h9828535720372840289",
               "deprecated_schema_id": null
             },
             {
@@ -2168,93 +2072,9 @@
                 "index": 0,
                 "updates[len]": 0
               },
-              "ts_rewrite": {
-                "elements": [
-                  928458247266406837
-                ]
-              },
-              "schema_id": null,
+              "ts_rewrite": null,
+              "schema_id": "h6761280306478925864",
               "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "𞤎$L2\\𐐘Ⱥ🕴ꨩ𐵐ѨD𑋶/Ѩኍ𐭠ẋæ{\"𝈂",
-              "encoded_size_bytes": 11263707163062357354,
-              "key_lower": "e7993ea6613f27dda8d6d21de9e1f11a9cdff76d2919ead7a1cc81921d9294573b1da25c4a79f5c4e2f37a0b61e251efe2082e8aee8aa58ce184b5d0494deaea655150bf9e21e4df64495e46a137ade5830167f7322cbece9183344d",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2511132662173585673,
-                "cols": {
-                  "Z/ຎP½🕴𐝄𐔻Ѩ:Բ½𞹛🕴`Ü": {
-                    "len": 2199315438788439268
-                  },
-                  "z𜼃த2gOQ²𑜿]ﬞৡ?<Z𑴺WE꧑Eꬎ+f=": {
-                    "len": 1502954211269018352,
-                    "₤᥀\"ର𫜟|'Dฝঌ": {
-                      "lower": "4eaa044bf9ec7fb4f8a070d49af1ccace912ada1079698eb08c88ef11ab85b13b8384737fe49d6e0a31876d1c1279f3a89939efe32525108bfb8285af234192f19dd69b4b18748cc1ff1c55e574f6852a2f19a9d8d",
-                      "upper": "b93b75f07bf04c696bd884a364046a771475ef01439c5dc2346154796f08328ac34bfa0b2b25f14a76c094729d60e73d594d944bd52130c6d10d6cee52eaf92cf212b3",
-                      "kind": "packed-numeric"
-                    }
-                  },
-                  "𞀠v🂭.?𐞎\\𑰧`?Et𑏂7𐵿:Æ%U\"?🀣🕴=અF𫰐v": {
-                    "len": 15334234563544241057,
-                    "𑎎�vᝌ$-𑊒'ೱ$𑧑'?Vh.Ѩ𐒹.ঢ%Ⱥ'େ🫨�P/𫝫": {
-                      "_𐩲RxꢧN )¸🞞": {
-                        "len": 1,
-                        "stats": "json_mixed"
-                      }
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  13289338934726578846
-                ]
-              },
-              "diffs_sum": 2021559415038355810,
-              "format": null,
-              "schema_id": "h17477282815421853756",
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Inline",
-              "updates": {
-                "desc": null,
-                "index": 0,
-                "updates[len]": 0
-              },
-              "ts_rewrite": {
-                "elements": [
-                  12614453899617725240
-                ]
-              },
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "x'ඤo�dᾉ&=𐦯𐤿[wGTȺo`3𐖗`?",
-              "encoded_size_bytes": 7596969126931264040,
-              "key_lower": "80ea244f3f24c07f7a25bada65f4b516580e09ea7a7533ec76f633cb0fc67095461c81c4afee376affb68b39d169cdcf96c5d638",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 920960636440420802,
-                "cols": {
-                  "`𩰓𓞻ꭀ𑜀ቼѨ𐽷=<?🆗🂹 𞊖𛅒Ѩ_6𛲆c": {
-                    "len": 11101803622058751064
-                  }
-                }
-              },
-              "ts_rewrite": {
-                "elements": [
-                  7359041607181684627
-                ]
-              },
-              "diffs_sum": 5844758012406338077,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h9586169923171734094"
             }
           ]
         ]
@@ -2262,15 +2082,15 @@
     },
     {
       "lower": [
-        13823187544706422584
+        17595842971844993858
       ],
       "upper": [
-        15219552958365851283
+        18330011964416322525
       ],
       "since": [
-        17692753752508859727
+        6638624373105460586
       ],
-      "len": 6,
+      "len": 1,
       "part_runs": [
         [
           {
@@ -2278,26 +2098,132 @@
             "schema": null,
             "deprecated_schema": null,
             "id": [
-              79,
-              29,
-              69,
-              52,
-              62,
-              228,
+              121,
+              47,
+              57,
+              67,
+              127,
+              137,
+              214,
+              101,
+              30,
+              70,
+              175,
+              201,
+              189,
+              250,
               25,
-              244,
-              104,
-              130,
-              202,
-              128,
-              6,
-              161,
-              117,
-              252
+              228
             ],
             "len": null
           },
           [
+            {
+              "type": "Hollow",
+              "key": "𒎎e\\𑊕兩$𐩹𱯪ఐ`🧿",
+              "encoded_size_bytes": 3401880138906078893,
+              "key_lower": "8cc780",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 2447022588184951582,
+                "cols": {
+                  "<�𑢶𐮂𖭠Q¥V𑛑um𑶘¡�¥ꦼ'ힻVO/$ᣂ࠱qNѨ𐮜﹝՟": {
+                    "len": 1047626757080602078,
+                    "𖤄1e0𑰅*᪄L%`Tழ`,𑤖'ཕE𝓂¥ㆠ&": {
+                      "lower": true,
+                      "upper": true
+                    }
+                  },
+                  "?𐿋ᩁ𞀷𝑲{ࠗȺ~ú୭ⷀU{%ஹ6": {
+                    "len": 10935777758812088613
+                  },
+                  "Ѩ": {
+                    "lower": "Ð्\\<%+Ù᮰𖽗⳼𖤘𛲂൛*ァd𑴐ó",
+                    "upper": "ᝩ.*.'ᦟ¼q𐖑5rঽ<=\"j🂳𖄤T¥y$*"
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": 1109317237604396119,
+              "format": "Row",
+              "schema_id": "h15268331744422998157",
+              "deprecated_schema_id": null,
+              "source_shard": null
+            },
+            {
+              "type": "Hollow",
+              "key": "ypN𞸹ÕE%᧒𖼩Ѩ🕴`%.ພQY.ੂ~𑁦",
+              "encoded_size_bytes": 12092840400952880016,
+              "key_lower": "1c3823f419298a7ce511fb74938f352fbd2f5d43315c190ae736321829bde6419502bdbc1b179d16508376ad0aceab4c",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 953033391507477957,
+                "cols": {
+                  "|1𑍐*লஔ𑙦🕴P`&*ⅿ{\\&ῲI": {
+                    "D𑌷'𑲘ᥰY.ꠊ𑎋d&𐀿": {
+                      "lower": false,
+                      "upper": false
+                    },
+                    "len": 3283639646581371188,
+                    "ল൙𝇨⼖?𑐯a3Sె$:7D𐤚𑏐%": {
+                      "len": 8437441760192255836
+                    }
+                  },
+                  "🕴U/L9R𞋕X": {
+                    "len": 7321012453507213140
+                  },
+                  "🕴�ୋ&": {
+                    "len": 1086708885057695269,
+                    "ๅ\\e$": {
+                      "lower": "7==𞟳¥ଡ଼lੑÈE\"",
+                      "upper": "pꥠ$%'รqt⁶c🈤𑗙�.\"মa£𐔹`ꝙ:&{𝒶%યer"
+                    },
+                    "𝒦Ⱥ`bGⷋ": {
+                      "lower": false,
+                      "upper": true
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  3161703180941838211
+                ]
+              },
+              "diffs_sum": 4556271861789791093,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": "h15801036204454319764",
+              "source_shard": "s4f92dfba-3b9e-e575-32c3-dff018eb47a8"
+            },
+            {
+              "type": "Hollow",
+              "key": "M",
+              "encoded_size_bytes": 4133190832999278264,
+              "key_lower": "2afb68b67ebe1ccb107a591ba43908124bd1b2dd99d0f5d10a0167de2774c7aa2c9fa2697bbb48008dc29bd6c3c2225f0824affba02413469db5fb48ae556b42932da6710f8c7cb1dfc652d9bc6107470fb787ee639afcf772fe6cf77a20bd",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 1262702045035612990,
+                "cols": {
+                  "Rc𑊽&.𐖙𞟭ὀ&ਫ਼:g𑌌ѨT`V/𝌿Ⱥ=4{": {
+                    "len": 10160929147118805585
+                  },
+                  "s¥/`>⺗Y%₾ఎ}𞺣꠴`ꟕ={Ó": {
+                    "len": 4415657819641197364
+                  }
+                }
+              },
+              "ts_rewrite": {
+                "elements": [
+                  2136878889147167448
+                ]
+              },
+              "diffs_sum": -8425568049859109822,
+              "format": "Row",
+              "schema_id": "h3052681300883471989",
+              "deprecated_schema_id": "h17763127902269729234",
+              "source_shard": "s10f1a2a6-5c12-5481-24aa-cfdc6055b565"
+            },
             {
               "type": "Inline",
               "updates": {
@@ -2305,247 +2231,124 @@
                 "index": 0,
                 "updates[len]": 0
               },
-              "ts_rewrite": {
-                "elements": [
-                  5551897484401088020
-                ]
-              },
-              "schema_id": "h866067763453458422",
-              "deprecated_schema_id": "h12404409814454629993"
+              "ts_rewrite": null,
+              "schema_id": "h7086141039654104338",
+              "deprecated_schema_id": "h17154014800515872190"
             },
             {
               "type": "Hollow",
-              "key": "ph=Jx'Q}%)x�\\|🠐ᇉv𐩈Ὕ𞗱?Bz𐴖'",
-              "encoded_size_bytes": 18131913480350637837,
-              "key_lower": "027bdfb3ff64bc2784cbaf4848f076e9ba4cffbd1e34fc50424c29a6a6240569",
+              "key": "|𞟫ѨⷓȺ.?=!&u𑲍𞸐ⶢ㇀:q𱳋\\",
+              "encoded_size_bytes": 15294356744136608520,
+              "key_lower": "e11cb68be0294147",
               "structured_key_lower": null,
               "stats": {
-                "len": 13085471647464736860,
+                "len": 10151911485602507024,
                 "cols": {
-                  "?¥$/_𑍗$ᜨfTﬓ&\\&$Q�ໆ$^𑶦": {
-                    "len": 499508314531065827,
-                    "Ã`/u\\𑍦%oC{𑌿ਫ਼\\.W�yH<:𑶔𖼁='𞟨Øಏ\\ጕ&𐓒": {
-                      "lower": -2150583536617947426,
-                      "upper": 8426108738093044994
-                    }
-                  },
-                  "𞀗ѡ\"`�🕴/&k": {
-                    "len": 8317331638852761189,
-                    "D=6練ᨪ\"": {
-                      "lower": "ի",
-                      "upper": "𑲮$&𑎋ጓ\\𑌃Ѩ🪈𝒽.ꬌಽ🕴¥�𘴀Z;4ü/.𑎎&"
-                    },
-                    "ὃ𑵰🃫/$V": {
-                      "lower": -8671019988817382341,
-                      "upper": 2575018356098019971
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -7044248438965569176,
-              "format": {
-                "Both": 1
-              },
-              "schema_id": null,
-              "deprecated_schema_id": "h2238033329676484226"
-            }
-          ]
-        ],
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              135,
-              117,
-              6,
-              130,
-              208,
-              31,
-              141,
-              224,
-              237,
-              213,
-              214,
-              247,
-              36,
-              222,
-              40,
-              18
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Hollow",
-              "key": "=/<ಕæᱎ𓍑?⿽𖿰𐣴/\\¥ö^Ѩ7",
-              "encoded_size_bytes": 5641427270115472165,
-              "key_lower": "f1e4ed007e1b3d825604d3",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 581550150329779128,
-                "cols": {
-                  "𐡂cMBi9QeL:ౣTῼ¥ᡀ୕ῴ2$ዄSL�~'**": {
-                    "len": 2432033781920676039,
-                    "?{e𑤕?/3}$𑏂ോ<ð¥¥<á:l\"Aj.%=%": {
-                      "lower": "0a87dea4460a5c3760070a38003f78f7ebb012661fd8a762f284dbff22db52e60dca824ca48714c9fd9a0e2eea168dcd1b0592099b24a500de82bb58f2c55c3a2717db2784104c6486293e911c27dca964964d43",
-                      "upper": "0e68dc59482926"
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -6363686761778810783,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": null
-            },
-            {
-              "type": "Hollow",
-              "key": "p𐮜`:𝐋`🕴",
-              "encoded_size_bytes": 8856053065117842601,
-              "key_lower": "0a5955a00b054a62815895e577a53f9d620891d92b7b295c2239ae3545d2e0368f2a08b2c381f12e554e92818efea2dd37db",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 4597110045475241822,
-                "cols": {
-                  "0": {
-                    "len": 7818052122953775028,
-                    "য𞅁ઁ🕴𐫲𐀺Ѩ?jo?9🉇Z㇂w𐢭Ѩo%%Ⱥ&?k": {
-                      "lower": "%{,𞟰\\R\\{\"Eೡ$\"'𑰄8ᏣȺ0Ⱥኪ",
-                      "upper": "Ѩꔖ{`,ಱ﹨\\\\େ8./&Ѩ🕴ૈ§37⁅&T𑬉'"
-                    }
-                  },
-                  "ଃ0𛉐\"*n¥7aJL𐠩𐢯;": {
-                    "len": 9427488310721798486,
-                    "Eo½𐊮/𐣱h𖭞🕴�:{𑤳.\\": {
-                      "lower": "90a485da2fb49a95eb1ad2c29b20bfafe35e75eaae4aef3e67dd",
-                      "upper": "9e8e455980dde538b0bc5f18a2a8d304abe3d63b31866595327aee2bf8ed94bdc32d4ee7bc0a4e369d6e89bcc222c2a9879984cf0337848345f4cd98a1d2a543e7ebbd09"
-                    }
-                  },
-                  "𞹾?𞄑wྡ𐩅0zK.ઐ_": {
-                    "len": 4146115915355004769,
-                    "ੌ�𔗱/᭰𔓨𞲅ዂ🀏1𝒿\\&..=:𖭷ቭ=~𑙖𖿤ຄ𐝄`N5J|{": {
-                      "len": 8915611244680768808,
-                      "ಃ/ꬦ𑿩`ᣝ¥FᤰH\\=⺰{𐖻𔖪^*~%t𐨸𑅬𑏊h¥g𐡑": {
-                        "lower": "ೖਸ:",
-                        "upper": "𐩇ઑa﹎J&x?🕴𐋠{𑥔🕴ଅ\"ֱ?ߍ%/\\𑵤Z𐳙🩧<ቛ rѨ¤W"
-                      }
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -1641967329279660534,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h9610349698355386007"
-            }
-          ]
-        ],
-        [
-          {
-            "order": null,
-            "schema": null,
-            "deprecated_schema": null,
-            "id": [
-              82,
-              236,
-              195,
-              170,
-              13,
-              188,
-              94,
-              210,
-              107,
-              98,
-              61,
-              12,
-              15,
-              248,
-              233,
-              196
-            ],
-            "len": null
-          },
-          [
-            {
-              "type": "Hollow",
-              "key": "ᝰꬎq៶꣕Ό𩆅Ⱥ±á6}ᝲÃj.𞹬{#¥``𑍡¦ὓ𐇜0{t",
-              "encoded_size_bytes": 5917809457156618737,
-              "key_lower": "3c38cfd3d2ac2bdc60b792c11e4a7b30eb02509b44111e5bfd7d6e6728505d751c53f896b5b381d2b8b7bd85011e93af9697ce5b5f97caff92a4ff9d6acd29e7acbc5d3e",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 11957801092489151013,
-                "cols": {
-                  "|🕴 `4ѨD/#🝴𜰮N𑻠𞸲:$5¥'�øᜠ𐌎c🣁Ë": {
-                    "len": 486054851078237522,
-                    "':ઑѨ𝪟�vX𑅟:ñCk0𑊆": {
+                  "N/$𐴲�W⢃𝼪ු*Ⴚ\"<ླྀ:N$び?Ѩ$*:<": {
+                    "?ાq𐏏r𐙔f/𐆠\".h🕴Y:Ѩଳ𑛞M𑙗਼'Ⱥ^<L$=𞹟=:=": {
                       "lower": false,
                       "upper": false
-                    }
-                  }
-                }
-              },
-              "ts_rewrite": null,
-              "diffs_sum": -982247139582800752,
-              "format": null,
-              "schema_id": null,
-              "deprecated_schema_id": "h4174059185597972634"
-            },
-            {
-              "type": "Hollow",
-              "key": "𖭱+𑎟`4𜸂擄꠶#:Ⱥ=y¥%\\🕴𐰿{",
-              "encoded_size_bytes": 9584853998776115765,
-              "key_lower": "68b3074bfa235f6e41449bdd670475d3f504bd496a7d1f22ff1c2f0554d183d30f1042a25793f544114f3387e6f55314dbb54e0f5c7ea02afd1acd18446fb1f5419e401e41dad6656332695cda080bb54d75b921228d",
-              "structured_key_lower": null,
-              "stats": {
-                "len": 2208990609259255476,
-                "cols": {
-                  "`q𝒴𐖗\\?Lz𞹲..Ï𖫛*𛲈𖠗": {
-                    "len": 9856852281829539491
+                    },
+                    "len": 6131680246701471841
                   },
-                  "{𑙣B": {
-                    "len": 9875232680843580888,
-                    "¥𜲛V": {
+                  "Æ*7𑴅{Ⱥ": {
+                    ".": {
+                      "lower": "'Al",
+                      "upper": "𝪬>𐣵.𒉿Ⱥkቝ\\ₜ?4[ಏl8"
+                    },
+                    "len": 4432519091729794295,
+                    "¥S\"c\"𝍢🕴\"𑴂Ⴭ&𑏂=p᱅áBn𝓁V𐩀:\"HÎ.:h𐿢ෳῨ🕴": {
+                      "&9": {
+                        "kind": "packed-interval",
+                        "lower": "bd05ffc786e158",
+                        "upper": "bd8f1f1e7a1b836d796c59ca50bc0d7ea6c3943630659ef3672a6ecafa2c5808b336eb70d3"
+                      },
+                      "len": 14081237782136777173
+                    }
+                  },
+                  "૨=N½🕴<f𞸹*𑌉𑅐{🕴lF🫸": {
+                    "$ὬὍV$𝓆𐮪𞀁8¥/᤺9𒔧K}X&I": {
                       "lower": true,
                       "upper": true
                     },
-                    "𐞃𓑓𑱧J{\\Ѩ<**Z:i\"𐕵@": {
-                      "len": 9242640048625006962,
-                      "O": {
-                        "lower": "x𐺰᪖𐄥7𑏂{/$*gొዀ\\*C𞺂K:g/&ਫ਼",
-                        "upper": "𞀤¥/&E@𑨤�𝓙/p2𓄅ꟑ\\*/ੋȺ'𝓵c=/๋I7\\b𖩥"
+                    "len": 16915753765572254199,
+                    "🕴𤮖)-ቘB<q&|ஆ": {
+                      "H⃒1\\&.{Ab~Ѩ:/}": {
+                        "len": 1,
+                        "stats": "json_nulls"
+                      },
+                      "𞗿?*dí𞋿𖬽*Aᤗ`𑤉3\"\"": {
+                        "len": 1,
+                        "stats": {
+                          "lower": false,
+                          "upper": false
+                        }
                       }
                     }
                   },
-                  "᩻*𞄷:*$@𑼓<": {
-                    "len": 11555384654083509612
+                  "𐝦𐕷𑊣Ⱥ𞹱𑠪Uj𞓴\"h𝋅':🕴Ѩ": {
+                    "len": 6562183140426720778,
+                    "ꬢ¥=�a𐝡($": {
+                      "len": 17802038913941142730
+                    }
+                  }
+                }
+              },
+              "ts_rewrite": null,
+              "diffs_sum": 7436597506657581559,
+              "format": {
+                "Both": 1
+              },
+              "schema_id": "h2921071278177502274",
+              "deprecated_schema_id": "h5347008525471986902",
+              "source_shard": "sbf3ab0d5-15f5-de1b-2def-f8c7e1d10058"
+            },
+            {
+              "type": "Hollow",
+              "key": "&¥𑛇)ႈ=𐲀.P&*᪀hᎺ�𐒼𐾇$",
+              "encoded_size_bytes": 9415490525822834230,
+              "key_lower": "68302afa7d0ba59f33ef38310a6c8309db611fc65c12a9150c76b23d2bdc7746dde208c91d5050fe2e33b7d07e2137104ffdf9645a5604f72e8b5a5bd1ce147df19c326494",
+              "structured_key_lower": null,
+              "stats": {
+                "len": 9338030098019088137,
+                "cols": {
+                  "\\�/𝒦$IᛴÆ𑈛:𑏂K𐧌ຄÿ�": {
+                    "len": 2266820232372029334,
+                    "¹558ବ𑏕🪂*𐠄𞺢\"𑖓$xແດ": {
+                      "kind": "packed-time",
+                      "lower": "6d02608672fe8e14661142ea4def8ddb9f26d7a8f66aa573f0f1f15ab869564b1dca4756ea0d5a4df68ca3f230e688e33f524d1baa6a91f5711f37a0f419cba6f7eadd0ba0d2f5e3e174e8bc8e318f6ad21603eda0c094902d5c7663",
+                      "upper": "6f4c131121a0278813bfef9ab85cb0f0f02d4c5e9f059ef79a25044990b1e691"
+                    }
                   },
-                  "🕴\\'🕴Ὕঐ`�಼ቜ=':{໋Ѩ𞹴/₵J𑍗ਫ਼{": {
-                    "len": 13923671740987833726,
-                    "D*𑃲ૐÁ𑴉ᛧ𛄲vÛ¥.)F<&": {
-                      "lower": -439223737747825790,
-                      "upper": 7119872677693441630
-                    },
-                    "M{K$[�𐋷🭹%Ѩ🥉sȺuP𝔇h}#": {
-                      "lower": -7431430530404059372,
-                      "upper": -7276208719984947496
+                  "`ኺ&0$🕴Z𖫈𞸁Ὑ🫩Ⱥଥ;*𐦞$𝓧🩵./ஔ2.ퟜಞRE": {
+                    "len": 15653590758846334795,
+                    "𖼲𞹔T`'qG𝒟=": {
+                      "lower": true,
+                      "upper": true
+                    }
+                  },
+                  "𑏂ΌL?🕴Or*ౖ::A<𖡔🩷(𞹑'yW𑲴\"": {
+                    "len": 9115854467395140102,
+                    "🕴ꫜܝ&'𜰼?𑂿<9౧/y'ⵄ¹8m:p{𒒐Ⱥ㈈": {
+                      "&)`>+𑠵=எ:<﹗Ѩ𐨍Ud🃃:R\\�&கü~ఇⅯȺi.": {
+                        "lower": false,
+                        "upper": false
+                      },
+                      "len": 8604262441537158577
                     }
                   }
                 }
               },
               "ts_rewrite": {
                 "elements": [
-                  13842131786436768318
+                  4524113942160703040
                 ]
               },
-              "diffs_sum": -7057227854059238508,
-              "format": "Row",
-              "schema_id": "h9815511718741493381",
-              "deprecated_schema_id": "h4781720926636151039"
+              "diffs_sum": 6922825133360926915,
+              "format": null,
+              "schema_id": null,
+              "deprecated_schema_id": null,
+              "source_shard": "sd46709ba-f7a5-5088-2de3-7f3803cf0f22"
             }
           ]
         ]
@@ -2553,231 +2356,6 @@
     }
   ],
   "hollow_batches": {},
-  "spine_batches": {
-    "0-5": {
-      "level": 4,
-      "desc": {
-        "lower": {
-          "elements": [
-            0
-          ]
-        },
-        "upper": {
-          "elements": [
-            12283092202528283739
-          ]
-        },
-        "since": {
-          "elements": []
-        }
-      },
-      "parts": [
-        "0-1",
-        "1-2",
-        "2-3",
-        "3-4",
-        "4-5"
-      ],
-      "descs": [
-        {
-          "lower": {
-            "elements": [
-              0
-            ]
-          },
-          "upper": {
-            "elements": [
-              6804750270025273488
-            ]
-          },
-          "since": {
-            "elements": [
-              7094175399473318935
-            ]
-          }
-        },
-        {
-          "lower": {
-            "elements": [
-              6804750270025273488
-            ]
-          },
-          "upper": {
-            "elements": [
-              8533421771665316503
-            ]
-          },
-          "since": {
-            "elements": [
-              6707987942952584102
-            ]
-          }
-        },
-        {
-          "lower": {
-            "elements": [
-              8533421771665316503
-            ]
-          },
-          "upper": {
-            "elements": [
-              11097192288656037474
-            ]
-          },
-          "since": {
-            "elements": [
-              10601936447805286216
-            ]
-          }
-        },
-        {
-          "lower": {
-            "elements": [
-              11097192288656037474
-            ]
-          },
-          "upper": {
-            "elements": [
-              12058781582860639930
-            ]
-          },
-          "since": {
-            "elements": [
-              15842489547996084433
-            ]
-          }
-        },
-        {
-          "lower": {
-            "elements": [
-              12058781582860639930
-            ]
-          },
-          "upper": {
-            "elements": [
-              12283092202528283739
-            ]
-          },
-          "since": {
-            "elements": [
-              9245196773332099580
-            ]
-          }
-        }
-      ]
-    },
-    "5-6": {
-      "level": 3,
-      "desc": {
-        "lower": {
-          "elements": [
-            12283092202528283739
-          ]
-        },
-        "upper": {
-          "elements": [
-            13823187544706422584
-          ]
-        },
-        "since": {
-          "elements": [
-            10274268452723049272
-          ]
-        }
-      },
-      "parts": [
-        "5-6"
-      ],
-      "descs": [
-        {
-          "lower": {
-            "elements": [
-              12283092202528283739
-            ]
-          },
-          "upper": {
-            "elements": [
-              13823187544706422584
-            ]
-          },
-          "since": {
-            "elements": [
-              10274268452723049272
-            ]
-          }
-        }
-      ]
-    },
-    "6-7": {
-      "level": 3,
-      "desc": {
-        "lower": {
-          "elements": [
-            13823187544706422584
-          ]
-        },
-        "upper": {
-          "elements": [
-            15219552958365851283
-          ]
-        },
-        "since": {
-          "elements": [
-            17692753752508859727
-          ]
-        }
-      },
-      "parts": [
-        "6-7"
-      ],
-      "descs": [
-        {
-          "lower": {
-            "elements": [
-              13823187544706422584
-            ]
-          },
-          "upper": {
-            "elements": [
-              15219552958365851283
-            ]
-          },
-          "since": {
-            "elements": [
-              17692753752508859727
-            ]
-          }
-        }
-      ]
-    }
-  },
-  "merges": {
-    "0-5": {
-      "since": {
-        "elements": []
-      },
-      "remaining_work": 0,
-      "active_compaction": {
-        "start_ms": 0
-      }
-    },
-    "5-7": {
-      "since": {
-        "elements": []
-      },
-      "remaining_work": 13,
-      "active_compaction": null
-    },
-    "6-7": {
-      "since": {
-        "elements": [
-          17692753752508859727
-        ]
-      },
-      "remaining_work": 0,
-      "active_compaction": {
-        "start_ms": 0
-      }
-    }
-  }
+  "spine_batches": {},
+  "merges": {}
 }

@@ -32,6 +32,7 @@ enum ProtoStateField {
   SPINE_MERGES = 11;
   ACTIVE_ROLLUP = 13;
   ACTIVE_GC = 14;
+  RETAINED_PARTS = 15;
 }
 
 enum ProtoStateFieldDiffType {

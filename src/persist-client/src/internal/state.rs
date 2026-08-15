@@ -14,7 +14,7 @@ use mz_persist::metrics::ColumnarMetrics;
 use proptest::prelude::{Arbitrary, Strategy};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::ControlFlow::{self, Break, Continue};
@@ -67,6 +67,7 @@ use crate::internal::trace::{
 };
 use crate::metrics::Metrics;
 use crate::read::LeasedReaderId;
+use crate::retain::RetainId;
 use crate::schema::CaESchema;
 use crate::write::WriterId;
 use crate::{PersistConfig, ShardId};
@@ -206,6 +207,19 @@ pub struct CriticalReaderState<T> {
     pub since: Antichain<T>,
     /// An opaque token matched on by compare_and_downgrade_since.
     pub opaque: Opaque,
+    /// For debugging.
+    pub debug: HandleDebugState,
+}
+
+/// A retain-only reference: the exact blob keys it pins against GC.
+///
+/// Unlike every reader state, this holds no `since` and no seqno capability, so
+/// it neither taxes the shard's compaction nor bounds its truncation. See
+/// [`crate::retain`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RetainedPartsState {
+    /// The blob keys this reference pins.
+    pub keys: BTreeSet<PartialBatchKey>,
     /// For debugging.
     pub debug: HandleDebugState,
 }
@@ -421,6 +435,10 @@ pub struct HollowRunRef<T> {
 
     pub diffs_sum: Option<[u8; 8]>,
 
+    /// The shard whose blob prefix [`Self::key`] resolves against; see
+    /// [`HollowBatchPart::source_shard`].
+    pub source_shard: Option<ShardId>,
+
     pub(crate) _phantom_data: PhantomData<T>,
 }
 impl<T: Eq> PartialOrd<Self> for HollowRunRef<T> {
@@ -494,6 +512,7 @@ impl<T: Timestamp + Codec64> HollowRunRef<T> {
             key_lower,
             structured_key_lower,
             diffs_sum: Some(diffs_sum),
+            source_shard: None,
             _phantom_data: Default::default(),
         }
     }
@@ -554,6 +573,28 @@ impl<T> RunPart<T> {
         match self {
             RunPart::Single(BatchPart::Hollow(hollow)) => hollow,
             _ => panic!("expected hollow part!"),
+        }
+    }
+
+    /// Points this part's key at `source`'s blob prefix.
+    ///
+    /// Used when seeding a fork's trace, so an inherited part is fetched from
+    /// the shard that wrote it. An inline part carries its data with it and
+    /// needs no shard.
+    pub fn set_source_shard(&mut self, source: ShardId) {
+        match self {
+            Self::Single(BatchPart::Hollow(p)) => p.source_shard = Some(source),
+            Self::Single(BatchPart::Inline { .. }) => {}
+            Self::Many(r) => r.source_shard = Some(source),
+        }
+    }
+
+    /// This part's blob key, or `None` if it is stored inline.
+    pub fn hollow_key(&self) -> Option<&PartialBatchKey> {
+        match self {
+            Self::Single(BatchPart::Hollow(p)) => Some(&p.key),
+            Self::Single(BatchPart::Inline { .. }) => None,
+            Self::Many(r) => Some(&r.key),
         }
     }
 
@@ -682,6 +723,7 @@ impl<T: Timestamp + Codec64 + Sync> RunPart<T> {
                     yield Cow::Borrowed(p);
                 }
                 RunPart::Many(r) => {
+                    let shard_id = r.source_shard.unwrap_or(shard_id);
                     let fetched = r.get(shard_id, blob, metrics).await
                         .ok_or_else(|| MissingBlob(r.key.complete(&shard_id)))?;
                     for run_part in fetched.parts {
@@ -867,6 +909,21 @@ pub struct HollowBatchPart<T> {
 
     /// ID of a schema that has since been deprecated and exists only to cleanly roundtrip.
     pub deprecated_schema_id: Option<SchemaId>,
+    /// The shard whose blob prefix [`Self::key`] resolves against, when the part
+    /// is not owned by the shard that references it.
+    ///
+    /// A copy-on-write fork inherits its source's parts by pointer rather than
+    /// by copy, so a fork's trace mixes foreign parts (`Some(source)`) with the
+    /// parts the fork wrote itself (`None`). Foreign parts are kept alive by a
+    /// retain-only reference on the source, not by the source's `since`.
+    pub source_shard: Option<ShardId>,
+}
+
+impl<T> HollowBatchPart<T> {
+    /// The shard this part's blob lives under, given the shard referencing it.
+    pub fn shard_id(&self, referencing: ShardId) -> ShardId {
+        self.source_shard.unwrap_or(referencing)
+    }
 }
 
 /// A [Batch] but with the updates themselves stored externally.
@@ -1223,6 +1280,7 @@ impl<T: Ord> Ord for HollowBatchPart<T> {
             format: self_format,
             schema_id: self_schema_id,
             deprecated_schema_id: self_deprecated_schema_id,
+            source_shard: self_source_shard,
         } = self;
         let HollowBatchPart {
             key: other_key,
@@ -1236,6 +1294,7 @@ impl<T: Ord> Ord for HollowBatchPart<T> {
             format: other_format,
             schema_id: other_schema_id,
             deprecated_schema_id: other_deprecated_schema_id,
+            source_shard: other_source_shard,
         } = other;
         (
             self_key,
@@ -1249,6 +1308,7 @@ impl<T: Ord> Ord for HollowBatchPart<T> {
             self_format,
             self_schema_id,
             self_deprecated_schema_id,
+            self_source_shard,
         )
             .cmp(&(
                 other_key,
@@ -1262,6 +1322,7 @@ impl<T: Ord> Ord for HollowBatchPart<T> {
                 other_format,
                 other_schema_id,
                 other_deprecated_schema_id,
+                other_source_shard,
             ))
     }
 }
@@ -1331,6 +1392,9 @@ pub struct StateCollections<T> {
 
     pub(crate) leased_readers: BTreeMap<LeasedReaderId, LeasedReaderState<T>>,
     pub(crate) critical_readers: BTreeMap<CriticalReaderId, CriticalReaderState<T>>,
+    // Contributes no `since` and no seqno capability, so none of the invariants
+    // above mention it. It only removes keys from what GC may delete.
+    pub(crate) retained_parts: BTreeMap<RetainId, RetainedPartsState>,
     pub(crate) writers: BTreeMap<WriterId, WriterState<T>>,
     pub(crate) schemas: BTreeMap<SchemaId, EncodedSchemas>,
 
@@ -1959,6 +2023,69 @@ where
         Continue(Since(reader_current_since))
     }
 
+    /// Pins `keys` against GC under `id`, contributing no `since`.
+    ///
+    /// Idempotent: re-registering an id that already holds the same keys is a
+    /// no-op, so a create that retries after a crash converges.
+    pub fn retain_parts(
+        &mut self,
+        hostname: &str,
+        id: &RetainId,
+        keys: BTreeSet<PartialBatchKey>,
+        purpose: &str,
+    ) -> ControlFlow<NoOpStateTransition<()>, ()> {
+        let state = RetainedPartsState {
+            keys,
+            debug: HandleDebugState {
+                hostname: hostname.to_owned(),
+                purpose: purpose.to_owned(),
+            },
+        };
+        if self.retained_parts.get(id) == Some(&state) {
+            return Break(NoOpStateTransition(()));
+        }
+        self.retained_parts.insert(*id, state);
+        Continue(())
+    }
+
+    /// Drops the pin held by `id` and returns the keys nothing else references.
+    ///
+    /// A key another reference still pins, or that is still live in this
+    /// shard's own trace, is not returned: only keys whose last reference this
+    /// was are the caller's to delete. Releasing an id that is not held returns
+    /// nothing, so teardown is safe to retry.
+    ///
+    /// NOTE: the caller deletes the returned blobs itself. GC cannot: it learns
+    /// what to delete from the diffs recording a part's removal, and those are
+    /// truncated away while the pin is held.
+    pub fn release_parts(
+        &mut self,
+        id: &RetainId,
+    ) -> ControlFlow<NoOpStateTransition<Vec<PartialBatchKey>>, Vec<PartialBatchKey>> {
+        let Some(released) = self.retained_parts.remove(id) else {
+            return Break(NoOpStateTransition(Vec::new()));
+        };
+        let still_pinned: BTreeSet<_> = self
+            .retained_parts
+            .values()
+            .flat_map(|state| state.keys.iter())
+            .collect();
+        let mut live_in_trace = BTreeSet::new();
+        self.trace.map_batches(|batch| {
+            for part in &batch.parts {
+                if let Some(key) = part.hollow_key() {
+                    live_in_trace.insert(key.clone());
+                }
+            }
+        });
+        let deletable = released
+            .keys
+            .into_iter()
+            .filter(|key| !still_pinned.contains(key) && !live_in_trace.contains(key))
+            .collect();
+        Continue(deletable)
+    }
+
     pub fn compare_and_downgrade_since(
         &mut self,
         reader_id: &CriticalReaderId,
@@ -2359,6 +2486,7 @@ where
                 active_gc: None,
                 leased_readers: BTreeMap::new(),
                 critical_readers: BTreeMap::new(),
+                retained_parts: BTreeMap::new(),
                 writers: BTreeMap::new(),
                 schemas: BTreeMap::new(),
                 trace: Trace::default(),
@@ -2770,12 +2898,13 @@ impl<T: Serialize + Timestamp + Lattice> Serialize for State<T> {
                     active_gc,
                     leased_readers,
                     critical_readers,
+                    retained_parts,
                     writers,
                     schemas,
                     trace,
                 },
         } = self;
-        let mut s = s.serialize_struct("State", 13)?;
+        let mut s = s.serialize_struct("State", 14)?;
         let () = s.serialize_field("applier_version", &applier_version.to_string())?;
         let () = s.serialize_field("shard_id", shard_id)?;
         let () = s.serialize_field("seqno", seqno)?;
@@ -2787,6 +2916,7 @@ impl<T: Serialize + Timestamp + Lattice> Serialize for State<T> {
         let () = s.serialize_field("active_gc", active_gc)?;
         let () = s.serialize_field("leased_readers", leased_readers)?;
         let () = s.serialize_field("critical_readers", critical_readers)?;
+        let () = s.serialize_field("retained_parts", retained_parts)?;
         let () = s.serialize_field("writers", writers)?;
         let () = s.serialize_field("schemas", schemas)?;
         let () = s.serialize_field("since", &trace.since().elements())?;
@@ -2994,6 +3124,7 @@ pub(crate) mod tests {
                 any::<Option<BatchColumnarFormat>>(),
                 any::<Option<SchemaId>>(),
                 any::<Option<SchemaId>>(),
+                any::<Option<ShardId>>(),
             ),
             |(
                 key,
@@ -3005,6 +3136,7 @@ pub(crate) mod tests {
                 format,
                 schema_id,
                 deprecated_schema_id,
+                source_shard,
             )| {
                 HollowBatchPart {
                     key,
@@ -3018,6 +3150,7 @@ pub(crate) mod tests {
                     format,
                     schema_id,
                     deprecated_schema_id,
+                    source_shard,
                 }
             },
         )
@@ -3111,6 +3244,20 @@ pub(crate) mod tests {
         )
     }
 
+    pub fn any_retained_parts_state() -> impl Strategy<Value = RetainedPartsState> {
+        Strategy::prop_map(
+            (
+                proptest::collection::btree_set(any::<PartialBatchKey>(), 0..3),
+                any::<String>(),
+                any::<String>(),
+            ),
+            |(keys, hostname, purpose)| RetainedPartsState {
+                keys,
+                debug: HandleDebugState { hostname, purpose },
+            },
+        )
+    }
+
     pub fn any_state<T: Arbitrary + Timestamp + Lattice>(
         num_trace_batches: Range<usize>,
     ) -> impl Strategy<Value = State<T>> {
@@ -3139,12 +3286,21 @@ pub(crate) mod tests {
             proptest::collection::btree_map(any::<WriterId>(), any_writer_state::<T>(), 0..3),
             proptest::collection::btree_map(any::<SchemaId>(), any_encoded_schemas(), 0..3),
             any_trace::<T>(num_trace_batches),
+            proptest::collection::btree_map(any::<RetainId>(), any_retained_parts_state(), 0..3),
         );
 
         (part1, part2).prop_map(
             |(
                 (shard_id, seqno, walltime_ms, hostname, last_gc_req, rollups, active_rollup),
-                (active_gc, leased_readers, critical_readers, writers, schemas, trace),
+                (
+                    active_gc,
+                    leased_readers,
+                    critical_readers,
+                    writers,
+                    schemas,
+                    trace,
+                    retained_parts,
+                ),
             )| State {
                 shard_id,
                 seqno,
@@ -3158,6 +3314,7 @@ pub(crate) mod tests {
                     active_gc,
                     leased_readers,
                     critical_readers,
+                    retained_parts,
                     writers,
                     schemas,
                     trace,
@@ -3192,6 +3349,7 @@ pub(crate) mod tests {
                         format: None,
                         schema_id: None,
                         deprecated_schema_id: None,
+                        source_shard: None,
                     }))
                 })
                 .collect(),

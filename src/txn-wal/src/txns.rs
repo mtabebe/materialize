@@ -1048,6 +1048,61 @@ mod tests {
         }
     }
 
+    /// A copy-on-write fork is registered non-empty: it already carries the
+    /// batches it inherited, and its upper is the fork point rather than the
+    /// minimum. `register` records only a `Register` entry, so the inherited
+    /// content is pre-registration history read through a snapshot, and txns
+    /// tracks the shard from the register ts forward.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn register_non_empty_fork() {
+        let client = PersistClient::new_for_tests().await;
+        let mut cfgs = mz_dyncfg::ConfigUpdates::default();
+        cfgs.add(&mz_persist_client::cfg::ENABLE_BRANCHING, true);
+        cfgs.apply(client.dyncfgs());
+        let mut txns = TxnsHandle::expect_open(client.clone()).await;
+        let log = txns.new_log();
+
+        // Production data, written outside txns so the source is a plain shard.
+        let source = ShardId::new();
+        let mut source_write = writer(&client, source).await;
+        write_directly(1, &mut source_write, &["before"], &log).await;
+
+        // Fork it. The fork's upper is the fork point, not the minimum.
+        let fork = ShardId::new();
+        let _retained = client
+            .fork_shard::<String, (), u64, i64>(
+                source,
+                fork,
+                Antichain::from_elem(2),
+                mz_persist_client::retain::RetainId::new(),
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork should succeed")
+            .expect("fork should be new");
+        let fork_write = writer(&client, fork).await;
+        assert_eq!(fork_write.upper(), &Antichain::from_elem(2));
+
+        // Registering at the fork point succeeds even though the shard is
+        // neither empty nor at the minimum upper.
+        txns.register(2, [fork_write]).await.unwrap();
+
+        // And the fork then takes the ordinary txn write path.
+        txns.expect_commit_at(3, fork, &["after"], &log).await;
+
+        let mut fork_read = reader(&client, fork).await;
+        let mut rows: Vec<_> = fork_read
+            .snapshot_and_fetch(Antichain::from_elem(3))
+            .await
+            .expect("snapshot should succeed")
+            .into_iter()
+            .map(|((k, ()), _, _)| k)
+            .collect();
+        rows.sort();
+        assert_eq!(rows, vec!["after".to_string(), "before".to_string()]);
+    }
+
     #[mz_ore::test(tokio::test)]
     #[cfg_attr(miri, ignore)] // too slow
     async fn register_at() {

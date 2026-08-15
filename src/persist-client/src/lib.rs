@@ -21,6 +21,7 @@
 // https://github.com/rust-lang/rust/issues/87417 pans out.
 #![allow(ungated_async_fn_track_caller)]
 
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -42,6 +43,7 @@ use timely::progress::{Antichain, Timestamp};
 use crate::async_runtime::IsolatedRuntime;
 use crate::batch::{BATCH_DELETE_ENABLED, Batch, BatchBuilder, ProtoBatch};
 use crate::cache::{PersistClientCache, StateCache};
+use crate::cfg::ENABLE_BRANCHING;
 use crate::cfg::PersistConfig;
 use crate::critical::{CriticalReaderId, Opaque, SinceHandle};
 use crate::error::InvalidUsage;
@@ -50,11 +52,13 @@ use crate::internal::compact::{CompactConfig, Compactor};
 use crate::internal::encoding::parse_id;
 use crate::internal::gc::GarbageCollector;
 use crate::internal::machine::{Machine, retry_external};
+use crate::internal::paths::PartialBatchKey;
 use crate::internal::state_versions::StateVersions;
 use crate::metrics::Metrics;
 use crate::read::{
     Cursor, LazyPartStats, LeasedReaderId, READER_LEASE_DURATION, ReadHandle, Since,
 };
+use crate::retain::{RetainHandle, RetainId};
 use crate::rpc::PubSubSender;
 use crate::schema::CaESchema;
 use crate::write::{WriteHandle, WriterId};
@@ -98,6 +102,7 @@ pub mod operators {
     );
 }
 pub mod read;
+pub mod retain;
 pub mod rpc;
 pub mod schema;
 pub mod stats;
@@ -492,6 +497,133 @@ impl PersistClient {
         let handle = SinceHandle::new(machine, gc, reader_id, state.since, state.opaque);
 
         Ok(handle)
+    }
+
+    /// Mints `fork` as a copy-on-write fork of `source`, carrying everything
+    /// strictly below `fork_upper`.
+    ///
+    /// Create copies no data. The fork's trace is seeded with the source's
+    /// batches below `fork_upper`, each part tagged with the source shard so it
+    /// resolves against the source's blobs, and a retain-only reference on the
+    /// source pins exactly those blobs against GC. The fork's own writes then
+    /// land at `fork_upper` and above, in its own blobs.
+    ///
+    /// The one straddling batch per level (`lower < fork_upper <= upper`) has
+    /// its registered `upper` clamped to `fork_upper`, which makes persist's
+    /// existing read-time truncation drop the updates above the fork point.
+    ///
+    /// The caller must durably record `retain_id` *before* calling this, and is
+    /// responsible for releasing it at teardown; see [`Self::retain_parts`].
+    ///
+    /// Returns `Ok(None)` if `fork` is already initialized, so a create that
+    /// crashes mid-flight converges on retry.
+    #[instrument(level = "debug", fields(source = %source, fork = %fork))]
+    pub async fn fork_shard<K, V, T, D>(
+        &self,
+        source: ShardId,
+        fork: ShardId,
+        fork_upper: Antichain<T>,
+        retain_id: RetainId,
+        diagnostics: Diagnostics,
+    ) -> Result<Option<RetainHandle<K, V, T, D>>, InvalidUsage<T>>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + Sync,
+        D: Monoid + Codec64 + Send + Sync,
+    {
+        if !ENABLE_BRANCHING.get(&self.cfg) {
+            return Err(InvalidUsage::Disabled {
+                config: ENABLE_BRANCHING.name(),
+            });
+        }
+        let source_machine: Machine<K, V, T, D> =
+            self.make_machine(source, diagnostics.clone()).await?;
+
+        let (trace, keys) = source_machine
+            .applier
+            .snapshot_trace_below(&fork_upper, source)?;
+
+        let fork_metrics = self.metrics.shards.shard(&fork, &diagnostics.shard_name);
+        let inited = source_machine
+            .applier
+            .state_versions
+            .init_forked_shard::<K, V, T, D>(&fork_metrics, trace)
+            .await;
+        if inited.is_none() {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            self.retain_parts(source, retain_id, keys, diagnostics)
+                .await?,
+        ))
+    }
+
+    /// Pins `keys` on `shard_id` against garbage collection, holding no
+    /// compaction `since`.
+    ///
+    /// This is what lets a copy-on-write fork reference its source's blobs by
+    /// pointer without taxing the source's compaction. Retention is bounded by
+    /// the keys named here, not by the source's churn, so it does not grow with
+    /// how long the reference is held.
+    ///
+    /// The caller must durably record `id` *before* calling this: a pin that is
+    /// established and then forgotten holds its blobs forever. Re-registering
+    /// the same `id` with the same keys is a no-op, so a create that crashes
+    /// mid-flight converges on retry.
+    ///
+    /// Refuses when [`crate::cfg::ENABLE_BRANCHING`] is off, which is how
+    /// persist stops *new* forks while still allowing existing ones to release.
+    #[instrument(level = "debug", fields(shard = %shard_id))]
+    pub async fn retain_parts<K, V, T, D>(
+        &self,
+        shard_id: ShardId,
+        id: RetainId,
+        keys: BTreeSet<PartialBatchKey>,
+        diagnostics: Diagnostics,
+    ) -> Result<RetainHandle<K, V, T, D>, InvalidUsage<T>>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + Sync,
+        D: Monoid + Codec64 + Send + Sync,
+    {
+        if !ENABLE_BRANCHING.get(&self.cfg) {
+            return Err(InvalidUsage::Disabled {
+                config: ENABLE_BRANCHING.name(),
+            });
+        }
+        let machine = self.make_machine(shard_id, diagnostics.clone()).await?;
+        let gc = GarbageCollector::new(machine.clone(), Arc::clone(&self.isolated_runtime));
+        let maintenance = machine
+            .retain_parts(&id, keys, &diagnostics.handle_purpose)
+            .await;
+        maintenance.start_performing(&machine, &gc);
+        Ok(RetainHandle { id, machine })
+    }
+
+    /// Reopens the retain-only reference `id` on `shard_id` so it can be
+    /// released.
+    ///
+    /// Unlike [`Self::retain_parts`] this is not gated on
+    /// [`crate::cfg::ENABLE_BRANCHING`]: turning the flag off must stop new
+    /// pins, never strand existing ones.
+    #[instrument(level = "debug", fields(shard = %shard_id))]
+    pub async fn open_retain<K, V, T, D>(
+        &self,
+        shard_id: ShardId,
+        id: RetainId,
+        diagnostics: Diagnostics,
+    ) -> Result<RetainHandle<K, V, T, D>, InvalidUsage<T>>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + Sync,
+        D: Monoid + Codec64 + Send + Sync,
+    {
+        let machine = self.make_machine(shard_id, diagnostics).await?;
+        Ok(RetainHandle { id, machine })
     }
 
     /// [Self::open], but returning only a [WriteHandle].
@@ -972,12 +1104,14 @@ mod tests {
     use timely::order::PartialOrder;
     use timely::progress::Antichain;
 
-    use crate::batch::BLOB_TARGET_SIZE;
+    use crate::batch::{
+        BLOB_TARGET_SIZE, INLINE_WRITES_SINGLE_MAX_BYTES, INLINE_WRITES_TOTAL_MAX_BYTES,
+    };
     use crate::cache::PersistClientCache;
     use crate::cfg::BATCH_BUILDER_MAX_OUTSTANDING_PARTS;
     use crate::critical::Opaque;
     use crate::error::{CodecConcreteType, CodecMismatch, UpperMismatch};
-    use crate::internal::paths::BlobKey;
+    use crate::internal::paths::{BlobKey, BlobKeyPrefix, PartialBlobKey};
     use crate::read::ListenEvent;
 
     use super::*;
@@ -1003,6 +1137,243 @@ mod tests {
             .open(PersistLocation::new_in_mem())
             .await
             .expect("client construction failed")
+    }
+
+    /// A fork reads its source as of the fork point, then diverges: its own
+    /// writes are invisible to production and production's later writes are
+    /// invisible to it.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // error: unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn fork_shard_isolation(dyncfgs: ConfigUpdates) {
+        let data = [
+            (("1".to_owned(), "one".to_owned()), 1, 1),
+            (("2".to_owned(), "two".to_owned()), 2, 1),
+            (("prod".to_owned(), "after".to_owned()), 3, 1),
+            (("branch".to_owned(), "after".to_owned()), 3, 1),
+        ];
+
+        let client = new_test_client(&dyncfgs).await;
+        client.cfg.set_config(&ENABLE_BRANCHING, true);
+        let source = ShardId::new();
+        let fork = ShardId::new();
+
+        let (mut write, _read) = client.expect_open::<String, String, u64, i64>(source).await;
+        // Everything at or below ts 2 is inherited; ts 3 is not.
+        write.expect_append(&data[..2], vec![0], vec![3]).await;
+
+        let retain_id = RetainId::new();
+        client
+            .fork_shard::<String, String, u64, i64>(
+                source,
+                fork,
+                Antichain::from_elem(3),
+                retain_id,
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork should succeed")
+            .expect("fork should be new");
+
+        let (mut fork_write, mut fork_read) =
+            client.expect_open::<String, String, u64, i64>(fork).await;
+        assert_eq!(fork_write.upper(), &Antichain::from_elem(3));
+
+        // The fork reads the source's data through the source's own blobs.
+        assert_eq!(
+            fork_read.expect_snapshot_and_fetch(2).await,
+            all_ok(&data[..2], 2)
+        );
+
+        // Each side writes at ts 3, and neither sees the other's.
+        write.expect_append(&data[2..3], vec![3], vec![4]).await;
+        fork_write.expect_append(&data[3..], vec![3], vec![4]).await;
+
+        let (_, mut read) = client.expect_open::<String, String, u64, i64>(source).await;
+        let mut prod_at_3 = read.expect_snapshot_and_fetch(3).await;
+        let mut fork_at_3 = fork_read.expect_snapshot_and_fetch(3).await;
+        prod_at_3.sort();
+        fork_at_3.sort();
+        assert_eq!(prod_at_3, all_ok([&data[0], &data[1], &data[2]], 3));
+        assert_eq!(fork_at_3, all_ok([&data[0], &data[1], &data[3]], 3));
+
+        // Teardown reopens the pin from its durable id, as it would after a
+        // restart. The blobs are still live in the source's own trace here, so
+        // nothing is deleted.
+        let retained = client
+            .open_retain::<String, String, u64, i64>(source, retain_id, Diagnostics::for_tests())
+            .await
+            .expect("reopen should succeed");
+        assert_eq!(retained.release().await, 0);
+    }
+
+    /// A batch straddling the fork point contributes only its updates below
+    /// that point.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // error: unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn fork_shard_cutoff(dyncfgs: ConfigUpdates) {
+        let below = (("below".to_owned(), "fork".to_owned()), 1, 1);
+        let above = (("above".to_owned(), "fork".to_owned()), 3, 1);
+
+        let client = new_test_client(&dyncfgs).await;
+        client.cfg.set_config(&ENABLE_BRANCHING, true);
+        let source = ShardId::new();
+        let fork = ShardId::new();
+
+        // One batch [0,4) holding an update on each side of the fork point.
+        let (mut write, _read) = client.expect_open::<String, String, u64, i64>(source).await;
+        write
+            .expect_append(&[below.clone(), above.clone()], vec![0], vec![4])
+            .await;
+
+        let _retained = client
+            .fork_shard::<String, String, u64, i64>(
+                source,
+                fork,
+                Antichain::from_elem(2),
+                RetainId::new(),
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork should succeed")
+            .expect("fork should be new");
+
+        // Advance the fork past the source's update at 3 without writing it,
+        // so a snapshot at 3 would surface it if the cutoff had not applied.
+        let (mut fork_write, mut fork_read) =
+            client.expect_open::<String, String, u64, i64>(fork).await;
+        assert_eq!(fork_write.upper(), &Antichain::from_elem(2));
+        fork_write.expect_compare_and_append(&[], 2, 4).await;
+
+        assert_eq!(
+            fork_read.expect_snapshot_and_fetch(3).await,
+            all_ok([&below], 3)
+        );
+    }
+
+    /// Create copies no data: the fork's own blob prefix stays empty until it
+    /// writes something.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // error: unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn fork_shard_is_metadata_only(dyncfgs: ConfigUpdates) {
+        let data = [
+            (("1".to_owned(), "one".to_owned()), 1, 1),
+            (("2".to_owned(), "two".to_owned()), 2, 1),
+        ];
+
+        let client = new_test_client(&dyncfgs).await;
+        client.cfg.set_config(&ENABLE_BRANCHING, true);
+        // An inline part lives in state, not in blob, so force blob writes:
+        // referencing blobs by pointer is the thing under test.
+        client.cfg.set_config(&INLINE_WRITES_SINGLE_MAX_BYTES, 0);
+        client.cfg.set_config(&INLINE_WRITES_TOTAL_MAX_BYTES, 0);
+        let source = ShardId::new();
+        let fork = ShardId::new();
+
+        let (mut write, _read) = client.expect_open::<String, String, u64, i64>(source).await;
+        write.expect_append(&data, vec![0], vec![3]).await;
+
+        let batch_parts_before = count_batch_parts(&client, &source).await;
+        assert!(batch_parts_before > 0, "source should have written parts");
+
+        let _retained = client
+            .fork_shard::<String, String, u64, i64>(
+                source,
+                fork,
+                Antichain::from_elem(3),
+                RetainId::new(),
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork should succeed")
+            .expect("fork should be new");
+
+        assert_eq!(
+            count_batch_parts(&client, &source).await,
+            batch_parts_before,
+            "fork must not write to the source"
+        );
+        assert_eq!(
+            count_batch_parts(&client, &fork).await,
+            0,
+            "fork must not copy any part"
+        );
+    }
+
+    /// Forking is refused when it would read data the source has already
+    /// compacted, or data the source has not written yet.
+    #[mz_persist_proc::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // error: unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn fork_shard_bounds(dyncfgs: ConfigUpdates) {
+        let data = [(("1".to_owned(), "one".to_owned()), 1, 1)];
+
+        let client = new_test_client(&dyncfgs).await;
+        let source = ShardId::new();
+
+        let (mut write, mut read) = client.expect_open::<String, String, u64, i64>(source).await;
+        write.expect_append(&data, vec![0], vec![2]).await;
+
+        // The flag gates creating new forks.
+        assert!(matches!(
+            client
+                .fork_shard::<String, String, u64, i64>(
+                    source,
+                    ShardId::new(),
+                    Antichain::from_elem(2),
+                    RetainId::new(),
+                    Diagnostics::for_tests(),
+                )
+                .await,
+            Err(InvalidUsage::Disabled { .. })
+        ));
+        client.cfg.set_config(&ENABLE_BRANCHING, true);
+
+        // Past the source's upper: the fork would claim data that does not
+        // exist.
+        assert!(matches!(
+            client
+                .fork_shard::<String, String, u64, i64>(
+                    source,
+                    ShardId::new(),
+                    Antichain::from_elem(3),
+                    RetainId::new(),
+                    Diagnostics::for_tests(),
+                )
+                .await,
+            Err(InvalidUsage::InvalidBounds { .. })
+        ));
+
+        // Behind the source's since: the inherited batches no longer carry
+        // their true pre-fork times.
+        read.downgrade_since(&Antichain::from_elem(2)).await;
+        assert!(matches!(
+            client
+                .fork_shard::<String, String, u64, i64>(
+                    source,
+                    ShardId::new(),
+                    Antichain::from_elem(1),
+                    RetainId::new(),
+                    Diagnostics::for_tests(),
+                )
+                .await,
+            Err(InvalidUsage::InvalidBounds { .. })
+        ));
+    }
+
+    async fn count_batch_parts(client: &PersistClient, shard_id: &ShardId) -> usize {
+        let mut count = 0;
+        client
+            .blob
+            .list_keys_and_metadata(&BlobKeyPrefix::Shard(shard_id).to_string(), &mut |meta| {
+                if matches!(
+                    BlobKey::parse_ids(meta.key),
+                    Ok((_, PartialBlobKey::Batch(_, _)))
+                ) {
+                    count += 1;
+                }
+            })
+            .await
+            .expect("list should succeed");
+        count
     }
 
     pub fn all_ok<'a, K, V, T, D, I>(iter: I, as_of: T) -> Vec<((K, V), T, D)>

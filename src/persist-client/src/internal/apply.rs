@@ -9,7 +9,7 @@
 
 //! Implementation of persist command application.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use crate::error::{CodecMismatch, InvalidUsage};
 use crate::internal::gc::GcReq;
 use crate::internal::maintenance::RoutineMaintenance;
 use crate::internal::metrics::{CmdMetrics, Metrics, ShardMetrics};
-use crate::internal::paths::{PartialRollupKey, RollupId};
+use crate::internal::paths::{PartialBatchKey, PartialRollupKey, RollupId};
 use crate::internal::state::{
     ActiveGc, ActiveRollup, EncodedSchemas, ExpiryMetrics, GC_FALLBACK_THRESHOLD_MS,
     GC_MAX_VERSIONS, GC_MIN_VERSIONS, GC_USE_ACTIVE_GC, GcConfig, HollowBatch, LeasedReaderState,
@@ -29,7 +29,7 @@ use crate::internal::state::{
 };
 use crate::internal::state_diff::StateDiff;
 use crate::internal::state_versions::{EncodedRollup, StateVersions};
-use crate::internal::trace::FueledMergeReq;
+use crate::internal::trace::{FueledMergeReq, Trace};
 use crate::internal::watch::StateWatch;
 use crate::read::LeasedReaderId;
 use crate::rpc::{PUBSUB_PUSH_DIFF_ENABLED, PubSubSender};
@@ -37,11 +37,13 @@ use crate::schema::SchemaCache;
 use crate::{Diagnostics, PersistConfig, ShardId, cfg};
 use differential_dataflow::difference::Monoid;
 use differential_dataflow::lattice::Lattice;
+use differential_dataflow::trace::Description;
 use mz_ore::cast::CastFrom;
 use mz_ore::soft_assert_or_log;
 use mz_persist::location::{CaSResult, Indeterminate, SeqNo, VersionedData};
 use mz_persist_types::schema::SchemaId;
 use mz_persist_types::{Codec, Codec64};
+use timely::PartialOrder;
 use timely::progress::{Antichain, Timestamp};
 use tracing::debug;
 
@@ -318,6 +320,74 @@ where
         self.state
             .read_lock(&self.metrics.locks.applier_read_noncacheable, |state| {
                 state.snapshot(as_of)
+            })
+    }
+
+    /// Builds the trace a copy-on-write fork of this shard inherits below
+    /// `fork_upper`, and the blob keys it references.
+    ///
+    /// Every inherited part is tagged with `source` so it resolves against this
+    /// shard's blobs rather than the fork's. Nothing is copied.
+    pub fn snapshot_trace_below(
+        &self,
+        fork_upper: &Antichain<T>,
+        source: ShardId,
+    ) -> Result<(Trace<T>, BTreeSet<PartialBatchKey>), InvalidUsage<T>> {
+        self.state
+            .read_lock(&self.metrics.locks.applier_read_noncacheable, |state| {
+                let trace = &state.state.collections.trace;
+                // Inherited batches must still carry their true pre-fork times,
+                // so the source cannot already have compacted past the fork
+                // point.
+                if PartialOrder::less_equal(fork_upper, trace.since()) {
+                    return Err(InvalidUsage::InvalidBounds {
+                        lower: trace.since().clone(),
+                        upper: fork_upper.clone(),
+                    });
+                }
+                // The source must already cover everything the fork inherits.
+                if !PartialOrder::less_equal(fork_upper, trace.upper()) {
+                    return Err(InvalidUsage::InvalidBounds {
+                        lower: fork_upper.clone(),
+                        upper: trace.upper().clone(),
+                    });
+                }
+
+                let mut forked = Trace::default();
+                let mut keys = BTreeSet::new();
+                for batch in trace.batches() {
+                    if PartialOrder::less_equal(fork_upper, batch.desc.lower()) {
+                        // Entirely above the fork point.
+                        continue;
+                    }
+                    let straddles = !PartialOrder::less_equal(batch.desc.upper(), fork_upper);
+                    let mut batch = batch.clone();
+                    if straddles {
+                        // Clamping the registered upper is the cutoff: persist
+                        // already drops updates outside a batch's registered
+                        // bounds on read. That filter requires an untruncated
+                        // since, which a compacted batch does not have.
+                        if batch.desc.since() != &Antichain::from_elem(T::minimum()) {
+                            return Err(InvalidUsage::InvalidBounds {
+                                lower: batch.desc.lower().clone(),
+                                upper: batch.desc.upper().clone(),
+                            });
+                        }
+                        batch.desc = Description::new(
+                            batch.desc.lower().clone(),
+                            fork_upper.clone(),
+                            batch.desc.since().clone(),
+                        );
+                    }
+                    for part in &mut batch.parts {
+                        if let Some(key) = part.hollow_key() {
+                            keys.insert(key.clone());
+                        }
+                        part.set_source_shard(source);
+                    }
+                    forked.push_batch_no_merge_reqs(batch);
+                }
+                Ok((forked, keys))
             })
     }
 

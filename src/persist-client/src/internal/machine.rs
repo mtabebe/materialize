@@ -9,6 +9,7 @@
 
 //! Implementation of the persist state machine.
 
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::sync::Arc;
@@ -43,7 +44,7 @@ use crate::internal::apply::Applier;
 use crate::internal::compact::CompactReq;
 use crate::internal::maintenance::{RoutineMaintenance, WriterMaintenance};
 use crate::internal::metrics::{CmdMetrics, Metrics, MetricsRetryStream, RetryMetrics};
-use crate::internal::paths::PartialRollupKey;
+use crate::internal::paths::{PartialBatchKey, PartialRollupKey};
 use crate::internal::state::{
     CompareAndAppendBreak, CriticalReaderState, HandleDebugState, HollowBatch, HollowRollup,
     IdempotencyToken, LeasedReaderState, NoOpStateTransition, Since, SnapshotErr, StateCollections,
@@ -52,6 +53,7 @@ use crate::internal::state_versions::StateVersions;
 use crate::internal::trace::{ApplyMergeResult, FueledMergeRes};
 use crate::internal::watch::StateWatch;
 use crate::read::LeasedReaderId;
+use crate::retain::RetainId;
 use crate::rpc::PubSubSender;
 use crate::schema::CaESchema;
 use crate::write::WriterId;
@@ -281,6 +283,46 @@ where
             })
             .await;
         (state, maintenance)
+    }
+
+    /// Pins `keys` against GC under `id`, holding no `since`.
+    pub async fn retain_parts(
+        &self,
+        id: &RetainId,
+        keys: BTreeSet<PartialBatchKey>,
+        purpose: &str,
+    ) -> RoutineMaintenance {
+        let metrics = Arc::clone(&self.applier.metrics);
+        let (_seqno, (), maintenance) = self
+            .apply_unbatched_idempotent_cmd(&metrics.cmds.register, |_seqno, cfg, state| {
+                state.retain_parts(&cfg.hostname, id, keys.clone(), purpose)
+            })
+            .await;
+        maintenance
+    }
+
+    /// Drops the pin held by `id` and deletes the blobs it was the last
+    /// reference to, returning how many were deleted.
+    ///
+    /// The deletion happens here rather than in GC because GC learns what to
+    /// delete from the diffs recording a part's removal, and those are
+    /// truncated away while the pin is held.
+    pub async fn release_parts(&self, id: RetainId) -> usize {
+        let metrics = Arc::clone(&self.applier.metrics);
+        let (_seqno, deletable, _maintenance) = self
+            .apply_unbatched_idempotent_cmd(&metrics.cmds.expire_reader, |_seqno, _cfg, state| {
+                state.release_parts(&id)
+            })
+            .await;
+
+        let shard_id = self.shard_id();
+        let blob = &self.applier.state_versions.blob;
+        let deleted = deletable.len();
+        for key in deletable {
+            let key = key.complete(&shard_id);
+            retry_external(&metrics.retries.external.batch_delete, || blob.delete(&key)).await;
+        }
+        deleted
     }
 
     pub async fn register_schema(
@@ -2217,6 +2259,45 @@ pub mod datadriven {
         let (_, maintenance) = datadriven.machine.expire_leased_reader(&reader_id).await;
         datadriven.routine.push(maintenance);
         Ok(format!("{} ok\n", datadriven.machine.seqno()))
+    }
+
+    pub async fn retain_parts(
+        datadriven: &mut MachineState,
+        args: DirectiveArgs<'_>,
+    ) -> Result<String, anyhow::Error> {
+        let retain_id: RetainId = args.expect("retain_id");
+        let keys = args
+            .args
+            .get("batches")
+            .expect("missing batches")
+            .iter()
+            .flat_map(|batch| {
+                datadriven.batches[batch]
+                    .batch
+                    .parts
+                    .iter()
+                    .filter_map(|part| part.hollow_key().cloned())
+            })
+            .collect();
+        let maintenance = datadriven
+            .machine
+            .retain_parts(&retain_id, keys, "datadriven")
+            .await;
+        datadriven.routine.push(maintenance);
+        Ok(format!("{} ok\n", datadriven.machine.seqno()))
+    }
+
+    pub async fn release_parts(
+        datadriven: &MachineState,
+        args: DirectiveArgs<'_>,
+    ) -> Result<String, anyhow::Error> {
+        let retain_id: RetainId = args.expect("retain_id");
+        let deleted = datadriven.machine.release_parts(retain_id).await;
+        Ok(format!(
+            "{} batch_parts={}\n",
+            datadriven.machine.seqno(),
+            deleted
+        ))
     }
 
     pub async fn compare_and_append_batches(
