@@ -45,16 +45,10 @@ SHOW branch
 ----
 (empty)
 
-statement ok
-SET branch = b
-
-query T
-SHOW branch
-----
-b
-
-statement ok
-RESET branch
+# Entering a branch is namespace policy, not a scalar setting, so the branch
+# has to exist.
+statement error unknown branch 'nope'
+SET branch = nope
 
 statement ok
 CREATE CLUSTER bc SIZE 'scale=1,workers=1'
@@ -115,3 +109,7 @@ SHOW BRANCH CHANGES b
 
 statement error EXPLAIN CREATE BRANCH not yet supported
 EXPLAIN CREATE BRANCH FROM CLUSTER quickstart IN CLUSTER bc
+
+# `SET branch` names a branch that exists, so with no branches yet the only
+# observable policy is the refusal above. Once a branch exists, entering one
+# from within another is refused too; see the sequencer phase.

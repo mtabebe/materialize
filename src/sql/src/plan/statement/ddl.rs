@@ -4744,6 +4744,9 @@ pub fn plan_create_branch(
     }: CreateBranchStatement<Aug>,
 ) -> Result<Plan, PlanError> {
     scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+    if scx.catalog.active_branch().is_some() {
+        sql_bail!("cannot create a branch from within a branch; RESET branch first");
+    }
 
     let CreateBranchOptionExtracted {
         seen: _,

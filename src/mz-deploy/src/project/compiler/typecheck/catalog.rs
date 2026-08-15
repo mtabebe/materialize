@@ -31,6 +31,7 @@ use mz_expr::MirScalarExpr;
 use mz_ore::collections::HashMap;
 use mz_ore::now::NOW_ZERO;
 use mz_repr::adt::mz_acl_item::{AclMode, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::explain::{DummyHumanizer, ExprHumanizer};
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
@@ -1316,6 +1317,14 @@ impl SessionCatalog for CatalogRuntime {
         &self.active_cluster_name
     }
 
+    fn active_branch(&self) -> Option<BranchId> {
+        None
+    }
+
+    fn resolve_branch(&self, _name: &str) -> Option<BranchId> {
+        None
+    }
+
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)] {
         &self.search_path
     }
@@ -2019,6 +2028,14 @@ impl SessionCatalog for TaskCatalog {
 
     fn active_cluster(&self) -> &str {
         self.base.active_cluster()
+    }
+
+    fn active_branch(&self) -> Option<BranchId> {
+        self.base.active_branch()
+    }
+
+    fn resolve_branch(&self, name: &str) -> Option<BranchId> {
+        self.base.resolve_branch(name)
     }
 
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)] {

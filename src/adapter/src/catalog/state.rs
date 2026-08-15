@@ -502,6 +502,10 @@ impl CatalogState {
             unresolvable_ids: BTreeSet::new(),
             conn_id: session.conn_id().clone(),
             cluster: session.vars().cluster().into(),
+            branch: session
+                .vars()
+                .branch()
+                .and_then(|name| self.resolve_branch(name).map(|branch| branch.id)),
             database,
             search_path,
             role_id: session.current_role_id().clone(),
@@ -521,6 +525,9 @@ impl CatalogState {
             unresolvable_ids: BTreeSet::new(),
             conn_id: SYSTEM_CONN_ID.clone(),
             cluster,
+            // A sessionless catalog has no branch, which is what keeps branch
+            // state out of `create_sql` rehydration on bootstrap.
+            branch: None,
             database: self
                 .resolve_database(DEFAULT_DATABASE_NAME)
                 .ok()
@@ -1182,6 +1189,11 @@ impl CatalogState {
 
     pub fn get_network_policies(&self) -> impl Iterator<Item = &NetworkPolicyId> {
         self.network_policies_by_id.keys()
+    }
+
+    /// Resolves a branch by name.
+    pub fn resolve_branch(&self, name: &str) -> Option<&BranchDescriptor> {
+        self.branches_by_id.values().find(|b| b.name == name)
     }
 
     /// Returns the branches owned by `owner`, or every branch when `owner` is
@@ -3049,6 +3061,40 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The branch overlay is a session-scoped namespace, so the contexts that
+    /// replan a `create_sql` on bootstrap must not carry one. That is what
+    /// keeps a branch's objects out of catalog rehydration, and it holds by
+    /// construction rather than by a check, so it is worth pinning down.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // unsupported operation: can't call foreign function `TLS_client_method`
+    async fn system_session_has_no_branch() {
+        Catalog::with_debug(|catalog| async move {
+            let branch = BranchDescriptor {
+                id: BranchId(1),
+                name: "b".to_string(),
+                owner_id: RoleId::User(1),
+                created_ts: 0,
+                expires_ts: None,
+                cluster_maps: Vec::new(),
+                branch_ts: Vec::new(),
+                branch_point_snapshot: Vec::new(),
+                object_identities: Vec::new(),
+                fork_refs: Vec::new(),
+            };
+            let mut state = catalog.state.clone();
+            state.branches_by_id.insert(branch.id, branch);
+
+            assert_eq!(state.resolve_branch("b").map(|b| b.id), Some(BranchId(1)));
+            // `parse_item_inner` replans through `for_system_session`.
+            assert_eq!(state.for_system_session().active_branch(), None);
+            assert_eq!(
+                state.for_sessionless_user(RoleId::User(1)).active_branch(),
+                None
+            );
+        })
+        .await
+    }
 
     /// A deep dependency chain (a long chain of stacked views) must not
     /// overflow the stack when computing its dependents, and the dependents

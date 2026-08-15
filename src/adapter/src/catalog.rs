@@ -58,6 +58,7 @@ use mz_ore::now::{EpochMillis, NowFn, SYSTEM_TIME};
 use mz_ore::result::ResultExt as _;
 use mz_persist_client::PersistClient;
 use mz_repr::adt::mz_acl_item::{AclMode, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::explain::ExprHumanizer;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::optimize::OptimizerFeatures;
@@ -277,6 +278,11 @@ pub struct ConnCatalog<'a> {
     unresolvable_ids: BTreeSet<CatalogItemId>,
     conn_id: ConnectionId,
     cluster: String,
+    /// The branch this session resolves names in, if any.
+    ///
+    /// Set only from a user session's `branch` variable, so the contexts that
+    /// replan `create_sql` never carry one.
+    branch: Option<BranchId>,
     database: Option<DatabaseId>,
     search_path: Vec<(ResolvedDatabaseSpecifier, SchemaSpecifier)>,
     role_id: RoleId,
@@ -1958,6 +1964,14 @@ impl SessionCatalog for ConnCatalog<'_> {
 
     fn active_database(&self) -> Option<&DatabaseId> {
         self.database.as_ref()
+    }
+
+    fn active_branch(&self) -> Option<BranchId> {
+        self.branch
+    }
+
+    fn resolve_branch(&self, name: &str) -> Option<BranchId> {
+        self.state.resolve_branch(name).map(|branch| branch.id)
     }
 
     fn active_cluster(&self) -> &str {

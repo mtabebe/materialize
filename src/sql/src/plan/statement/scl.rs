@@ -23,6 +23,7 @@ use crate::ast::{
     ExecuteStatement, FetchOption, FetchOptionName, FetchStatement, PrepareStatement,
     ResetVariableStatement, SetVariableStatement, SetVariableTo, ShowVariableStatement,
 };
+use crate::catalog::CatalogError;
 use crate::names::{self, Aug};
 use crate::plan::statement::{StatementContext, StatementDesc};
 use crate::plan::{
@@ -60,6 +61,28 @@ pub fn plan_set_variable(
             VarInput::SqlSet(values),
             scx.catalog.system_vars(),
         )?;
+    }
+
+    // A branch is a namespace, so entering one is resolution policy, not a
+    // scalar setting: the branch must exist, and a session already inside a
+    // branch has to `RESET branch` before entering another. That refusal is
+    // what makes "no branch off a branch" a policy rather than a structural
+    // limit.
+    if UncasedStr::new(&name) == vars::BRANCH.name {
+        if let VariableValue::Values(values) = &value {
+            // The flag gate comes first, so a disabled feature reports itself
+            // rather than leaking through a policy error.
+            scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+            if scx.catalog.active_branch().is_some() {
+                sql_bail!("cannot enter a branch from within a branch; RESET branch first");
+            }
+            let [branch] = &values[..] else {
+                sql_bail!("branch takes exactly one value");
+            };
+            if scx.catalog.resolve_branch(branch).is_none() {
+                return Err(CatalogError::UnknownBranch(branch.clone()).into());
+            }
+        }
     }
 
     Ok(Plan::SetVariable(SetVariablePlan { name, value, local }))

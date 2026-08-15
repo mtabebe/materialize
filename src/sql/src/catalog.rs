@@ -30,6 +30,7 @@ use mz_expr::MirScalarExpr;
 use mz_ore::now::{EpochMillis, NowFn};
 use mz_ore::str::StrExt;
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::explain::ExprHumanizer;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::role_id::RoleId;
@@ -102,6 +103,16 @@ pub trait SessionCatalog: fmt::Debug + ExprHumanizer + Send + Sync + ConnectionR
 
     /// Returns the cluster to use if one is not explicitly specified.
     fn active_cluster(&self) -> &str;
+
+    /// Returns the branch this session resolves names in, or `None` for
+    /// production.
+    ///
+    /// Always `None` outside a user session, which is what keeps branch state
+    /// out of `create_sql` rehydration.
+    fn active_branch(&self) -> Option<BranchId>;
+
+    /// Resolves a branch by name.
+    fn resolve_branch(&self, name: &str) -> Option<BranchId>;
 
     /// Returns the resolved search paths for the current user. (Invalid search paths are skipped.)
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)];
