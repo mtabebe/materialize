@@ -52,14 +52,14 @@ use crate::durable::initialize::{
 use crate::durable::objects::serialization::proto;
 use crate::durable::objects::{
     AuditLogKey, BranchClusterMap, BranchDescriptor, BranchDescriptorKey, BranchDescriptorValue,
-    BranchTimestamp, Cluster, ClusterConfig, ClusterIntrospectionSourceIndexKey,
-    ClusterIntrospectionSourceIndexValue, ClusterKey, ClusterReplica, ClusterReplicaKey,
-    ClusterReplicaValue, ClusterSystemConfiguration, ClusterSystemConfigurationKey,
-    ClusterSystemConfigurationValue, ClusterValue, CommentKey, CommentValue, Config, ConfigKey,
-    ConfigValue, Database, DatabaseKey, DatabaseValue, DefaultPrivilegesKey,
-    DefaultPrivilegesValue, DurableType, GidMappingKey, GidMappingValue, IdAllocKey, IdAllocValue,
-    IntrospectionSourceIndex, Item, ItemKey, ItemValue, NetworkPolicyKey, NetworkPolicyValue,
-    ReplicaConfig, ReplicaSystemConfiguration, ReplicaSystemConfigurationKey,
+    BranchForkRef, BranchObjectIdentity, BranchSnapshotItem, BranchTimestamp, Cluster,
+    ClusterConfig, ClusterIntrospectionSourceIndexKey, ClusterIntrospectionSourceIndexValue,
+    ClusterKey, ClusterReplica, ClusterReplicaKey, ClusterReplicaValue, ClusterSystemConfiguration,
+    ClusterSystemConfigurationKey, ClusterSystemConfigurationValue, ClusterValue, CommentKey,
+    CommentValue, Config, ConfigKey, ConfigValue, Database, DatabaseKey, DatabaseValue,
+    DefaultPrivilegesKey, DefaultPrivilegesValue, DurableType, GidMappingKey, GidMappingValue,
+    IdAllocKey, IdAllocValue, IntrospectionSourceIndex, Item, ItemKey, ItemValue, NetworkPolicyKey,
+    NetworkPolicyValue, ReplicaConfig, ReplicaSystemConfiguration, ReplicaSystemConfigurationKey,
     ReplicaSystemConfigurationValue, Role, RoleKey, RoleValue, Schema, SchemaKey, SchemaValue,
     ServerConfigurationKey, ServerConfigurationValue, SettingKey, SettingValue, SourceReference,
     SourceReferencesKey, SourceReferencesValue, StorageCollectionMetadataKey,
@@ -218,13 +218,15 @@ impl<'a> Transaction<'a> {
             // Temporary items from different sessions may share a name in the
             // temporary schema (whose durable schema id is a sentinel shared
             // by every session), so name uniqueness is additionally scoped by
-            // the owning session.
+            // the owning session. A branch's items share their production
+            // twins' schema and name, so they are scoped by the branch.
             items: TableTransaction::new_with_uniqueness_fn(
                 items,
                 |a: &ItemValue, b| {
                     a.schema_id == b.schema_id
                         && a.name == b.name
                         && a.ephemeral_owner_session == b.ephemeral_owner_session
+                        && a.branch_id == b.branch_id
                         && {
                             // `item_type` is slow, only compute if needed.
                             let a_type = a.item_type();
@@ -238,6 +240,7 @@ impl<'a> Transaction<'a> {
                     prev.schema_id == next.schema_id
                         && prev.name == next.name
                         && prev.ephemeral_owner_session == next.ephemeral_owner_session
+                        && prev.branch_id == next.branch_id
                         // `item_type` is slow, only compute it once name and schema match.
                         && prev.item_type() == next.item_type()
                 },
@@ -767,6 +770,7 @@ impl<'a> Transaction<'a> {
         temporary_oids: &HashSet<u32>,
         versions: BTreeMap<RelationVersion, GlobalId>,
         ephemeral_owner_session: Option<Uuid>,
+        branch_id: Option<BranchId>,
     ) -> Result<u32, CatalogError> {
         let oid = self.allocate_oid(temporary_oids)?;
         self.insert_item(
@@ -780,6 +784,7 @@ impl<'a> Transaction<'a> {
             privileges,
             versions,
             ephemeral_owner_session,
+            branch_id,
         )?;
         Ok(oid)
     }
@@ -796,6 +801,7 @@ impl<'a> Transaction<'a> {
         privileges: Vec<MzAclItem>,
         extra_versions: BTreeMap<RelationVersion, GlobalId>,
         ephemeral_owner_session: Option<Uuid>,
+        branch_id: Option<BranchId>,
     ) -> Result<(), CatalogError> {
         match self.items.insert(
             ItemKey { id },
@@ -809,6 +815,7 @@ impl<'a> Transaction<'a> {
                 global_id,
                 extra_versions,
                 ephemeral_owner_session,
+                branch_id,
             },
             self.op_id,
         ) {
@@ -2379,6 +2386,9 @@ impl<'a> Transaction<'a> {
         expires_ts: Option<EpochMillis>,
         cluster_maps: Vec<BranchClusterMap>,
         branch_ts: Vec<BranchTimestamp>,
+        object_identities: Vec<BranchObjectIdentity>,
+        branch_point_snapshot: Vec<BranchSnapshotItem>,
+        fork_refs: Vec<BranchForkRef>,
     ) -> Result<BranchId, CatalogError> {
         let id = BranchId(self.get_and_increment_id(BRANCH_ID_ALLOC_KEY.to_string())?);
         let branch = BranchDescriptor {
@@ -2389,9 +2399,9 @@ impl<'a> Transaction<'a> {
             expires_ts,
             cluster_maps,
             branch_ts,
-            branch_point_snapshot: Vec::new(),
-            object_identities: Vec::new(),
-            fork_refs: Vec::new(),
+            branch_point_snapshot,
+            object_identities,
+            fork_refs,
         };
         let (key, value) = branch.into_key_value();
         match self.branches.insert(key, value, self.op_id) {

@@ -1327,20 +1327,26 @@ mod tests {
         ));
         client.cfg.set_config(&ENABLE_BRANCHING, true);
 
-        // Past the source's upper: the fork would claim data that does not
-        // exist.
-        assert!(matches!(
-            client
-                .fork_shard::<String, String, u64, i64>(
-                    source,
-                    ShardId::new(),
-                    Antichain::from_elem(3),
-                    RetainId::new(),
-                    Diagnostics::for_tests(),
-                )
-                .await,
-            Err(InvalidUsage::InvalidBounds { .. })
-        ));
+        // Past the source's upper, which is not an error: a shard written
+        // through txn-wal trails the decided frontier whenever it has not been
+        // written recently. The fork gets everything and is readable at the
+        // fork point.
+        let past_upper = ShardId::new();
+        client
+            .fork_shard::<String, String, u64, i64>(
+                source,
+                past_upper,
+                Antichain::from_elem(5),
+                RetainId::new(),
+                Diagnostics::for_tests(),
+            )
+            .await
+            .expect("fork past the upper should succeed")
+            .expect("fork should be new");
+        let (write, _) = client
+            .expect_open::<String, String, u64, i64>(past_upper)
+            .await;
+        assert_eq!(write.upper(), &Antichain::from_elem(5));
 
         // Behind the source's since: the inherited batches no longer carry
         // their true pre-fork times.

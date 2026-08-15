@@ -1,0 +1,119 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+mode cockroach
+
+reset-server
+
+simple conn=mz_system,user=mz_system
+ALTER SYSTEM SET enable_branching = on
+----
+COMPLETE 0
+
+statement ok
+CREATE TABLE t (a int)
+
+statement ok
+INSERT INTO t VALUES (1), (2)
+
+statement ok
+CREATE INDEX t_idx ON t (a)
+
+statement ok
+CREATE CLUSTER bc SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE BRANCH b FROM CLUSTER quickstart IN CLUSTER bc
+
+query I
+SELECT sum(a) FROM t
+----
+3
+
+statement ok
+SET branch = b
+
+# Inside the branch, `t` resolves to the branch's fork, which carries
+# production's rows as of the branch point.
+query I
+SELECT sum(a) FROM t
+----
+3
+
+statement ok
+INSERT INTO t VALUES (10)
+
+query I
+SELECT sum(a) FROM t
+----
+13
+
+statement ok
+RESET branch
+
+# Production did not see the branch's write.
+query I
+SELECT sum(a) FROM t
+----
+3
+
+statement ok
+INSERT INTO t VALUES (100)
+
+query I
+SELECT sum(a) FROM t
+----
+103
+
+statement ok
+SET branch = b
+
+# ... and the branch did not see production's.
+query I
+SELECT sum(a) FROM t
+----
+13
+
+statement ok
+RESET branch
+
+# An unchanged branch has nothing to report.
+query TTT
+SHOW BRANCH CHANGES b
+----
+
+statement ok
+SET branch = b
+
+# Create an index inside the branch, and it shows up as added.
+statement ok
+CREATE INDEX t_branch_idx ON t (a)
+
+statement ok
+RESET branch
+
+query TTT
+SHOW BRANCH CHANGES b
+----
+materialize.public.t_branch_idx  index  added
+
+# The DDL names the branch's cluster (u2) and the branch's table (u3), so what
+# comes back describes the branch, not production.
+query T
+SHOW BRANCH CHANGES b AS SQL
+----
+CREATE INDEX "t_branch_idx" IN CLUSTER [u2] ON [u3 AS "materialize"."public"."t"] ("a")
+
+statement ok
+DROP BRANCH b
+
+query I
+SELECT sum(a) FROM t
+----
+103

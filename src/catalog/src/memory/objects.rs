@@ -28,6 +28,7 @@ use mz_controller_types::{ClusterId, ReplicaId};
 use mz_expr::{MirScalarExpr, OptimizedMirRelationExpr};
 use mz_ore::collections::CollectionExt;
 use mz_repr::adt::mz_acl_item::{AclMode, MzAclItem, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::network_policy_id::NetworkPolicyId;
 use mz_repr::optimize::OptimizerFeatureOverrides;
 use mz_repr::refresh_schedule::RefreshSchedule;
@@ -679,6 +680,12 @@ pub struct CatalogEntry {
     pub name: QualifiedItemName,
     pub owner_id: RoleId,
     pub privileges: PrivilegeMap,
+    /// The branch this item belongs to, if any.
+    ///
+    /// A branch item shares its production twin's schema and name, so this is
+    /// what keeps the two apart -- in the durable catalog's uniqueness check,
+    /// and in the namespace it is installed into.
+    pub branch_id: Option<BranchId>,
 }
 
 /// A [`CatalogEntry`] that is associated with a specific "collection" of data.

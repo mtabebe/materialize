@@ -2352,6 +2352,31 @@ impl ResolvedIds {
         }
     }
 
+    /// Rewrites every id through `remap`, for a branch that substitutes its
+    /// own objects for the production ones an item was resolved against.
+    pub fn remap(
+        &mut self,
+        remap: impl Fn(CatalogItemId, GlobalId) -> Option<(CatalogItemId, GlobalId)>,
+    ) {
+        self.entries = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|(item_id, gids)| {
+                let mut new_item_id = item_id;
+                let gids = gids
+                    .into_iter()
+                    .map(|gid| match remap(item_id, gid) {
+                        Some((mapped_item_id, mapped_gid)) => {
+                            new_item_id = mapped_item_id;
+                            mapped_gid
+                        }
+                        None => gid,
+                    })
+                    .collect();
+                (new_item_id, gids)
+            })
+            .collect();
+    }
+
     /// Returns if the set of IDs is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

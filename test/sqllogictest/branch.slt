@@ -154,11 +154,11 @@ SHOW BRANCHES
 ----
 multi  u1->u4,u3->u5  <EXPIRES>
 
-statement error cluster bc3 is the target of more than one map
-CREATE BRANCH multi2 FROM CLUSTER quickstart IN CLUSTER bc3, FROM CLUSTER bc2 IN CLUSTER bc3
-
 statement ok
 DROP BRANCH multi
+
+statement error cluster bc3 is the target of more than one map
+CREATE BRANCH multi2 FROM CLUSTER quickstart IN CLUSTER bc3, FROM CLUSTER bc2 IN CLUSTER bc3
 
 # Entering a branch, then refusing to nest.
 simple conn=branchless,user=branchless
@@ -212,8 +212,17 @@ COMPLETE 0
 statement error SHOW BRANCHES with a filter not yet supported
 SHOW BRANCHES LIKE 'b%'
 
-statement error SHOW BRANCH CHANGES not yet supported
+statement error unknown branch 'b'
 SHOW BRANCH CHANGES b
 
-statement error EXPLAIN CREATE BRANCH not yet supported
+# The preflight reports what a branch would take over and what it would read
+# live, and creates nothing.
+query TTT
 EXPLAIN CREATE BRANCH FROM CLUSTER quickstart IN CLUSTER bc
+----
+materialize.public.t  table  forked
+materialize.public.t_idx  index  rebuilt
+
+query TTT
+SHOW BRANCHES
+----

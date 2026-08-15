@@ -110,6 +110,19 @@ impl Coordinator {
             let responses = ExecuteResponse::generated_from(&PlanKind::from(&plan));
             ctx.tx_mut().set_allowed(responses);
 
+            // Refresh the connection's branch from the session, so a catalog
+            // transaction can stamp objects created inside a branch. The
+            // transaction sees a `ConnMeta`, not a `Session`.
+            let branch = ctx
+                .session()
+                .vars()
+                .branch()
+                .and_then(|name| self.catalog().state().resolve_branch(name))
+                .map(|branch| branch.id);
+            if let Some(conn) = self.active_conns.get_mut(ctx.session().conn_id()) {
+                conn.branch = branch;
+            }
+
             if self.controller.read_only() && !plan.allowed_in_read_only() {
                 ctx.retire(Err(AdapterError::ReadOnly));
                 return;
@@ -300,6 +313,14 @@ impl Coordinator {
                 }
                 Plan::ShowBranches(plan::ShowBranchesPlan) => {
                     let res = self.sequence_show_branches(ctx.session());
+                    ctx.retire(res);
+                }
+                Plan::ShowBranchChanges(plan) => {
+                    let res = self.sequence_show_branch_changes(ctx.session(), plan);
+                    ctx.retire(res);
+                }
+                Plan::ExplainCreateBranch(plan) => {
+                    let res = self.sequence_explain_create_branch(plan);
                     ctx.retire(res);
                 }
                 Plan::CreateBranch(plan) => {

@@ -34,7 +34,9 @@ use mz_audit_log::{
 };
 use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::builtin::BuiltinLog;
-use mz_catalog::durable::objects::{BranchClusterMap, BranchTimestamp};
+use mz_catalog::durable::objects::{
+    BranchClusterMap, BranchForkRef, BranchObjectIdentity, BranchSnapshotItem, BranchTimestamp,
+};
 use mz_catalog::durable::{DryRunTransaction, NetworkPolicy, Snapshot, Transaction};
 use mz_catalog::expr_cache::LocalExpressions;
 use mz_catalog::memory::error::{AmbiguousRename, Error, ErrorKind};
@@ -189,9 +191,34 @@ pub enum Op {
         expires_ts: Option<EpochMillis>,
         cluster_maps: Vec<BranchClusterMap>,
         branch_ts: Vec<BranchTimestamp>,
+        object_identities: Vec<BranchObjectIdentity>,
+        branch_point_snapshot: Vec<BranchSnapshotItem>,
+        fork_refs: Vec<BranchForkRef>,
     },
     DropBranch {
         id: BranchId,
+    },
+    /// Creates an item a branch substitutes for a production object.
+    ///
+    /// Like [`Op::CreateItem`], except a table binds to `fork_shard` -- the
+    /// copy-on-write fork of production's shard -- instead of minting an empty
+    /// one, which is how a branch's writes diverge without copying data.
+    CreateBranchItem {
+        /// The branch that owns this item, which [`Op::CreateBranch`] mints, so
+        /// that op has to come first in the same transaction. Each op's updates
+        /// are applied before the next one runs, so the branch is resolvable
+        /// here.
+        branch: (String, RoleId),
+        id: CatalogItemId,
+        global_id: GlobalId,
+        name: QualifiedItemName,
+        /// The item, or `None` to derive it from the branch's descriptor -- the
+        /// same derivation the apply path uses, so a branch item cannot be
+        /// built two different ways.
+        item: Option<CatalogItem>,
+        owner_id: RoleId,
+        privileges: Vec<MzAclItem>,
+        fork_shard: Option<ShardId>,
     },
     Comment {
         object_id: CommentObjectId,
@@ -1783,6 +1810,7 @@ impl Catalog {
                         &temporary_oids,
                         versions,
                         Some(owner_session),
+                        None,
                     )?;
 
                     info!(
@@ -1829,6 +1857,10 @@ impl Catalog {
                         &temporary_oids,
                         versions,
                         None,
+                        // An object created inside a branch belongs to it, so
+                        // it shares its schema and name with production without
+                        // colliding, and disappears with the branch.
+                        session.and_then(|conn| conn.branch()),
                     )?;
                     info!(
                         "create {} {} ({})",
@@ -1916,12 +1948,60 @@ impl Catalog {
                     )?;
                 }
             }
+            Op::CreateBranchItem {
+                branch: (branch_name, branch_owner),
+                id,
+                global_id,
+                name,
+                item,
+                owner_id,
+                privileges,
+                fork_shard,
+            } => {
+                let branch_id = state
+                    .get_branches(Some(branch_owner))
+                    .find(|branch| branch.name == branch_name)
+                    .ok_or_else(|| {
+                        AdapterError::Unstructured(anyhow::anyhow!(
+                            "branch {branch_name} must be created before its items"
+                        ))
+                    })?
+                    .id;
+                let item = match item {
+                    Some(item) => item,
+                    None => state.substitute_branch_item(global_id).ok_or_else(|| {
+                        AdapterError::Unstructured(anyhow::anyhow!(
+                            "branch {branch_name} has no substitute for {global_id}"
+                        ))
+                    })?,
+                };
+                let (create_sql, _, versions) = item.to_serialized();
+                tx.insert_user_item(
+                    id,
+                    global_id,
+                    name.qualifiers.schema_spec.into(),
+                    &name.item,
+                    create_sql,
+                    owner_id,
+                    privileges,
+                    &state.get_temporary_oids().collect(),
+                    versions,
+                    None,
+                    Some(branch_id),
+                )?;
+                if let Some(shard) = fork_shard {
+                    storage_collections_to_register.insert(global_id, shard);
+                }
+            }
             Op::CreateBranch {
                 name,
                 owner_id,
                 expires_ts,
                 cluster_maps,
                 branch_ts,
+                object_identities,
+                branch_point_snapshot,
+                fork_refs,
             } => {
                 let created_ts = oracle_write_ts.into();
                 let id = tx.insert_branch(
@@ -1931,6 +2011,9 @@ impl Catalog {
                     expires_ts,
                     cluster_maps,
                     branch_ts,
+                    object_identities,
+                    branch_point_snapshot,
+                    fork_refs,
                 )?;
                 CatalogState::add_to_audit_log(
                     &state.system_configuration,
@@ -3396,6 +3479,7 @@ fn tx_replace_item(
         privileges,
         extra_versions,
         ephemeral_owner_session,
+        branch_id,
     } = state.durable_item(new_entry)?;
 
     tx.remove_item(id)?;
@@ -3410,6 +3494,7 @@ fn tx_replace_item(
         privileges,
         extra_versions,
         ephemeral_owner_session,
+        branch_id,
     )?;
 
     Ok(())

@@ -47,6 +47,7 @@ use mz_ore::{
 };
 use mz_pgrepr::oid::INVALID_OID;
 use mz_repr::adt::mz_acl_item::{MzAclItem, PrivilegeMap};
+use mz_repr::branch_id::BranchId;
 use mz_repr::role_id::RoleId;
 use mz_repr::{CatalogItemId, Diff, GlobalId, RelationVersion, Timestamp, VersionedRelationDesc};
 use mz_sql::catalog::CatalogError as SqlCatalogError;
@@ -864,6 +865,7 @@ impl CatalogState {
                     }),
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::from_mz_acl_items(acl_items),
+                    None,
                 );
             }
 
@@ -899,6 +901,7 @@ impl CatalogState {
                     }),
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::from_mz_acl_items(acl_items),
+                    None,
                 );
             }
             Builtin::Index(index) => {
@@ -947,6 +950,7 @@ impl CatalogState {
                     item,
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::default(),
+                    None,
                 );
             }
             Builtin::View(_) => {
@@ -989,6 +993,7 @@ impl CatalogState {
                         rbac::default_builtin_object_privilege(mz_sql::catalog::ObjectType::Type),
                         rbac::owner_privilege(mz_sql::catalog::ObjectType::Type, MZ_SYSTEM_ROLE_ID),
                     ]),
+                    None,
                 );
             }
 
@@ -1007,6 +1012,7 @@ impl CatalogState {
                     }),
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::default(),
+                    None,
                 );
             }
 
@@ -1040,6 +1046,7 @@ impl CatalogState {
                     }),
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::from_mz_acl_items(acl_items),
+                    None,
                 );
             }
             Builtin::MaterializedView(mv) => {
@@ -1105,6 +1112,7 @@ impl CatalogState {
                     item,
                     MZ_SYSTEM_ROLE_ID,
                     PrivilegeMap::from_mz_acl_items(acl_items),
+                    None,
                 );
             }
             Builtin::Connection(connection) => {
@@ -1151,6 +1159,7 @@ impl CatalogState {
                     item,
                     connection.owner_id.clone(),
                     PrivilegeMap::from_mz_acl_items(acl_items),
+                    None,
                 );
             }
         }
@@ -1197,6 +1206,7 @@ impl CatalogState {
                     privileges,
                     extra_versions,
                     ephemeral_owner_session,
+                    branch_id,
                 } = item;
 
                 // Temporary items live in the temporary schema of the owning
@@ -1285,17 +1295,27 @@ impl CatalogState {
                         retraction
                     }
                     None => {
-                        let mut catalog_item = self
-                            .deserialize_item(
-                                global_id,
-                                &create_sql,
-                                &extra_versions,
-                                local_expression_cache,
-                                None,
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("{e:?}: invalid persisted SQL: {create_sql}")
-                            });
+                        // A branch's item is a substitute for a production
+                        // object, so it is rebuilt from that object rather than
+                        // replanned. Replanning it would resolve its own name
+                        // against production and collide with the very object
+                        // it substitutes for; its `create_sql` is what
+                        // `SHOW BRANCH CHANGES` diffs, not how it is rebuilt.
+                        let mut catalog_item =
+                            match branch_id.and_then(|_| self.substitute_branch_item(global_id)) {
+                                Some(item) => item,
+                                None => self
+                                    .deserialize_item(
+                                        global_id,
+                                        &create_sql,
+                                        &extra_versions,
+                                        local_expression_cache,
+                                        None,
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        panic!("{e:?}: invalid persisted SQL: {create_sql}")
+                                    }),
+                            };
 
                         if conn_id.is_some() {
                             // See the patch-up comments on the reparse above.
@@ -1304,6 +1324,7 @@ impl CatalogState {
                         }
 
                         CatalogEntry {
+                            branch_id,
                             item: catalog_item,
                             referenced_by: Vec::new(),
                             used_by: Vec::new(),
@@ -1853,6 +1874,7 @@ impl CatalogState {
                         item,
                         MZ_SYSTEM_ROLE_ID,
                         PrivilegeMap::from_mz_acl_items(acl_items),
+                        None,
                     );
 
                     // Enqueue any items waiting on this dependency.
@@ -1996,6 +2018,23 @@ impl CatalogState {
         for gid in entry.item.global_ids() {
             self.entry_by_global_id.insert(gid, entry.id());
         }
+        // A branch's items shadow production objects of the same name, so they
+        // live in the branch's namespace rather than in the schema's.
+        if let Some(branch) = entry.branch_id {
+            let prev_id = self
+                .branch_items
+                .entry(branch)
+                .or_default()
+                .insert(entry.name().item.clone(), entry.id());
+            assert!(
+                prev_id.is_none(),
+                "branch {branch} already has an item named {}",
+                entry.name().item
+            );
+            self.entry_by_id.insert(entry.id(), entry);
+            return;
+        }
+
         let conn_id = entry.item().conn_id().unwrap_or(&SYSTEM_CONN_ID);
         // Lazily create the temporary schema if this is a temporary item and the schema
         // doesn't exist yet.
@@ -2035,8 +2074,10 @@ impl CatalogState {
         item: CatalogItem,
         owner_id: RoleId,
         privileges: PrivilegeMap,
+        branch_id: Option<BranchId>,
     ) {
         let entry = CatalogEntry {
+            branch_id,
             item,
             name,
             id,
@@ -2067,27 +2108,38 @@ impl CatalogState {
             self.entry_by_global_id.remove(&gid);
         }
 
-        let conn_id = metadata.item().conn_id().unwrap_or(&SYSTEM_CONN_ID);
-        let schema = self.get_schema_mut(
-            &metadata.name().qualifiers.database_spec,
-            &metadata.name().qualifiers.schema_spec,
-            conn_id,
-        );
-        if metadata.item_type() == CatalogItemType::Type {
-            schema
-                .types
-                .remove(&metadata.name().item)
-                .expect("catalog out of sync");
-        } else {
-            // Functions would need special handling, but we don't yet support
-            // dropping functions.
-            assert_ne!(metadata.item_type(), CatalogItemType::Func);
+        // A branch's items live in the branch's namespace, not the schema's.
+        match metadata.branch_id {
+            Some(branch) => {
+                self.branch_items
+                    .get_mut(&branch)
+                    .and_then(|items| items.remove(&metadata.name().item))
+                    .expect("catalog out of sync");
+            }
+            None => {
+                let conn_id = metadata.item().conn_id().unwrap_or(&SYSTEM_CONN_ID);
+                let schema = self.get_schema_mut(
+                    &metadata.name().qualifiers.database_spec,
+                    &metadata.name().qualifiers.schema_spec,
+                    conn_id,
+                );
+                if metadata.item_type() == CatalogItemType::Type {
+                    schema
+                        .types
+                        .remove(&metadata.name().item)
+                        .expect("catalog out of sync");
+                } else {
+                    // Functions would need special handling, but we don't yet
+                    // support dropping functions.
+                    assert_ne!(metadata.item_type(), CatalogItemType::Func);
 
-            schema
-                .items
-                .remove(&metadata.name().item)
-                .expect("catalog out of sync");
-        };
+                    schema
+                        .items
+                        .remove(&metadata.name().item)
+                        .expect("catalog out of sync");
+                };
+            }
+        }
 
         if !id.is_system() {
             if let Some(cluster_id) = metadata.item().cluster_id() {
@@ -2122,6 +2174,7 @@ impl CatalogState {
             index,
             MZ_SYSTEM_ROLE_ID,
             PrivilegeMap::default(),
+            None,
         );
     }
 

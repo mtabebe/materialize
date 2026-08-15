@@ -1267,6 +1267,9 @@ impl Coordinator {
                 // A branch's own limit is its per-owner quota, checked where it
                 // is sequenced; it consumes none of the object limits here.
                 Op::CreateBranch { .. } | Op::DropBranch { .. } => {}
+                // A branch's items substitute for production objects that
+                // already count against these limits.
+                Op::CreateBranchItem { .. } => {}
                 Op::CreateCluster { .. } => {
                     // TODO(benesch): having deprecated linked clusters, remove
                     // the `max_sources` and `max_sinks` limit, and set a higher

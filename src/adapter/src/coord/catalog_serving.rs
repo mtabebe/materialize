@@ -84,6 +84,8 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::CreateBranch(_)
         | Plan::DropBranch(_)
         | Plan::ShowBranches(_)
+        | Plan::ShowBranchChanges(_)
+        | Plan::ExplainCreateBranch(_)
         | Plan::CreateCluster(_)
         | Plan::CreateClusterReplica(_)
         | Plan::CreateSource(_)

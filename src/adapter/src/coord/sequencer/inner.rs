@@ -21,7 +21,9 @@ use itertools::Itertools;
 use mz_adapter_types::compaction::CompactionWindow;
 use mz_adapter_types::connection::ConnectionId;
 use mz_adapter_types::dyncfgs::{ENABLE_PASSWORD_AUTH, READ_THEN_WRITE_MAX_DEPENDENCIES};
-use mz_catalog::durable::objects::{BranchClusterMap, BranchTimestamp};
+use mz_catalog::durable::objects::{
+    BranchClusterMap, BranchForkRef, BranchObjectIdentity, BranchSnapshotItem, BranchTimestamp,
+};
 use mz_catalog::memory::error::ErrorKind;
 use mz_catalog::memory::objects::{
     CatalogItem, Connection, DataSourceDesc, Sink, Source, Table, TableDataSource, Type,
@@ -35,6 +37,9 @@ use mz_ore::future::OreFutureExt;
 use mz_ore::task::{self, JoinHandle, spawn};
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{assert_none, instrument};
+use mz_persist_client::Diagnostics;
+use mz_persist_client::retain::RetainId;
+use mz_persist_types::ShardId;
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::mz_acl_item::{MzAclItem, PrivilegeMap};
 use mz_repr::branch_id::BranchId;
@@ -90,9 +95,10 @@ use mz_sql_parser::ast::{
 use mz_ssh_util::keys::SshKeyPairSet;
 use mz_storage_client::controller::ExportDescription;
 use mz_storage_types::AlterCompatible;
+use mz_storage_types::StorageDiff;
 use mz_storage_types::connections::inline::IntoInlineConnection;
 use mz_storage_types::controller::StorageError;
-use mz_storage_types::sources::{SourceConnection, Timeline};
+use mz_storage_types::sources::{SourceConnection, SourceData, Timeline};
 use mz_transform::dataflow::DataflowMetainfo;
 use mz_transform::notice::{OptimizerNotice, RawOptimizerNotice};
 use smallvec::SmallVec;
@@ -100,6 +106,8 @@ use timely::progress::Antichain;
 use tokio::sync::{oneshot, watch};
 use tracing::{Instrument, Span, info, warn};
 
+use crate::CollectionIdBundle;
+use crate::catalog::BranchScope;
 use crate::catalog::{self, Catalog, ConnCatalog, DropObjectInfo, UpdatePrivilegeVariant};
 use crate::command::{ExecuteResponse, Response};
 use crate::coord::appends::{
@@ -116,6 +124,7 @@ use crate::coord::{
 };
 use crate::error::AdapterError;
 use crate::notice::{AdapterNotice, DroppedInUseIndex};
+use crate::optimize::dataflows::dataflow_import_id_bundle;
 use crate::optimize::dataflows::{EvalTime, ExprPrep, ExprPrepOneShot};
 use crate::optimize::{self, Optimize};
 use crate::session::{
@@ -124,6 +133,7 @@ use crate::session::{
 };
 use crate::util::{ClientTransmitter, ResultExt, viewable_variables};
 use crate::{PeekResponseUnary, ReadHolds};
+use mz_repr::optimize::OverrideFrom;
 
 /// A future that resolves to a real-time recency timestamp.
 type RtrTimestampFuture = BoxFuture<'static, Result<Timestamp, StorageError>>;
@@ -1880,11 +1890,12 @@ impl Coordinator {
         // timeline. A single-cluster branch's inputs are all on
         // `EpochMilliseconds`; a branch spanning timelines takes one read per
         // timeline.
-        let branch_ts = self.get_local_read_ts().await;
+        let branch_point = self.get_local_read_ts().await;
         let branch_ts = vec![BranchTimestamp {
             timeline: Timeline::EpochMilliseconds.to_string(),
-            ts: branch_ts,
+            ts: branch_point,
         }];
+        let branch_name = name.clone();
 
         let expires_in =
             expires_in.unwrap_or_else(|| self.catalog().system_config().branch_default_expires());
@@ -1892,22 +1903,172 @@ impl Coordinator {
             .ok()
             .and_then(|millis| (self.now()).checked_add(millis));
 
-        let op = catalog::Op::CreateBranch {
-            name,
-            owner_id,
-            expires_ts,
-            cluster_maps: cluster_maps
-                .into_iter()
-                .map(|map| BranchClusterMap {
-                    prod_cluster_id: map.prod_cluster_id,
-                    branch_cluster_id: map.branch_cluster_id,
-                })
-                .collect(),
-            branch_ts,
+        // A branch substitutes for the indexes its cluster holds and the tables
+        // its dataflows can write; everything else it reads in place.
+        let mut scope = BranchScope::default();
+        for map in &cluster_maps {
+            let cluster_scope = self.catalog().state().branch_scope(map.prod_cluster_id);
+            scope.indexes.extend(cluster_scope.indexes);
+            scope.tables.extend(cluster_scope.tables);
+            scope.shared.extend(cluster_scope.shared);
+        }
+
+        let mut ops = Vec::new();
+        let mut object_identities = Vec::new();
+        let mut branch_point_snapshot = Vec::new();
+        let mut fork_refs = Vec::new();
+
+        // Fork each writable table. The fork copies no data: it references
+        // production's blobs and pins them with a retain-only reference, whose
+        // token is recorded so teardown can release it.
+        for table_id in &scope.tables {
+            let entry = self.catalog().get_entry(table_id).clone();
+            let prod_gid = entry.latest_global_id();
+            let source_shard = self
+                .catalog()
+                .state()
+                .storage_metadata()
+                .get_collection_shard(prod_gid)?;
+            let (item_id, global_id) = self.allocate_user_id().await?;
+            let fork_shard = ShardId::new();
+            let retain_id = RetainId::new();
+            self.persist_client
+                .fork_shard::<SourceData, (), Timestamp, StorageDiff>(
+                    source_shard,
+                    fork_shard,
+                    Antichain::from_elem(branch_point.step_forward()),
+                    retain_id,
+                    Diagnostics {
+                        shard_name: entry.name().item.clone(),
+                        handle_purpose: "branch fork".to_string(),
+                    },
+                )
+                .await
+                .map_err(|err| AdapterError::Unstructured(anyhow!("cannot fork table: {err}")))?;
+
+            object_identities.push(BranchObjectIdentity {
+                prod_global_id: prod_gid,
+                branch_global_id: global_id,
+            });
+            branch_point_snapshot.push(BranchSnapshotItem {
+                global_id: prod_gid,
+                create_sql: entry.create_sql().to_string(),
+            });
+            fork_refs.push(BranchForkRef {
+                branch_table_global_id: global_id,
+                fork_shard_id: fork_shard,
+                source_shard_id: source_shard,
+                retain_ref_token: retain_id.to_string(),
+            });
+            ops.push(catalog::Op::CreateBranchItem {
+                branch: (branch_name.clone(), owner_id),
+                id: item_id,
+                global_id,
+                name: entry.name().clone(),
+                item: None,
+                owner_id: *entry.owner_id(),
+                privileges: entry.privileges().all_values_owned().collect(),
+                fork_shard: Some(fork_shard),
+            });
+        }
+
+        // An index is in-memory state with no shard to read through, so the
+        // branch rebuilds it on its own cluster. Its item is built after the
+        // descriptor op, because an index has to be remapped onto the branch's
+        // copy of whatever it indexes.
+        let mut index_items = Vec::new();
+        for index_id in &scope.indexes {
+            let entry = self.catalog().get_entry(index_id).clone();
+            let CatalogItem::Index(index) = entry.item() else {
+                continue;
+            };
+            // An index on a cluster the branch did not take over is not the
+            // branch's to rebuild.
+            if !cluster_maps
+                .iter()
+                .any(|map| map.prod_cluster_id == index.cluster_id)
+            {
+                continue;
+            }
+            let (item_id, global_id) = self.allocate_user_id().await?;
+            object_identities.push(BranchObjectIdentity {
+                prod_global_id: index.global_id(),
+                branch_global_id: global_id,
+            });
+            branch_point_snapshot.push(BranchSnapshotItem {
+                global_id: index.global_id(),
+                create_sql: entry.create_sql().to_string(),
+            });
+            index_items.push((item_id, global_id, entry));
+        }
+
+        ops.insert(
+            0,
+            catalog::Op::CreateBranch {
+                name: branch_name.clone(),
+                owner_id,
+                expires_ts,
+                cluster_maps: cluster_maps
+                    .into_iter()
+                    .map(|map| BranchClusterMap {
+                        prod_cluster_id: map.prod_cluster_id,
+                        branch_cluster_id: map.branch_cluster_id,
+                    })
+                    .collect(),
+                branch_ts,
+                object_identities,
+                branch_point_snapshot,
+                fork_refs,
+            },
+        );
+        // The index items come last: each is derived from the descriptor, so
+        // the descriptor op has to have been applied first.
+        for (item_id, global_id, entry) in index_items {
+            ops.push(catalog::Op::CreateBranchItem {
+                branch: (branch_name.clone(), owner_id),
+                id: item_id,
+                global_id,
+                name: entry.name().clone(),
+                item: None,
+                owner_id: *entry.owner_id(),
+                privileges: entry.privileges().all_values_owned().collect(),
+                fork_shard: None,
+            });
+        }
+        self.catalog_transact_with_context(Some(session.conn_id()), None, ops)
+            .await?;
+
+        // The branch reads its shared inputs in place, held back only as far as
+        // the branch point.
+        let branch_id = self
+            .catalog()
+            .state()
+            .resolve_branch(&branch_name)
+            .expect("just created")
+            .id;
+        // Only collections persist actually backs can be held; a log source
+        // has no shard and is reconstructed per replica.
+        let storage_ids = scope
+            .shared
+            .iter()
+            .filter(|gid| {
+                self.catalog()
+                    .state()
+                    .storage_metadata()
+                    .get_collection_shard(**gid)
+                    .is_ok()
+            })
+            .copied()
+            .collect();
+        let id_bundle = CollectionIdBundle {
+            storage_ids,
+            compute_ids: BTreeMap::new(),
         };
-        self.catalog_transact_with_context(Some(session.conn_id()), None, vec![op])
-            .await
-            .map(|_| ExecuteResponse::CreatedBranch)
+        self.acquire_branch_read_holds(branch_id, &id_bundle, branch_point);
+
+        self.render_branch_indexes(branch_id).await;
+
+        Ok(ExecuteResponse::CreatedBranch)
     }
 
     #[instrument]
@@ -1936,14 +2097,70 @@ impl Coordinator {
             ));
         };
 
-        self.catalog_transact_with_context(
-            Some(session.conn_id()),
-            None,
-            vec![catalog::Op::DropBranch { id: branch_id }],
-        )
-        .await?;
-        self.teardown_branch(branch_id);
+        self.teardown_branch(branch_id, Some(session.conn_id().clone()))
+            .await?;
         Ok(ExecuteResponse::DroppedBranch)
+    }
+
+    /// Optimizes and installs a branch's indexes on its own cluster.
+    ///
+    /// An index is the one branch object with in-memory state and no shard to
+    /// read through, so it has to be rebuilt. v1 lets it hydrate lazily from
+    /// persist rather than blocking create on it, which is what keeps create
+    /// sub-second regardless of data size.
+    async fn render_branch_indexes(&mut self, branch_id: BranchId) {
+        let index_ids: Vec<_> = self
+            .catalog()
+            .state()
+            .branch_item_ids(branch_id)
+            .filter(|id| matches!(self.catalog().get_entry(id).item(), CatalogItem::Index(_)))
+            .collect();
+
+        for item_id in index_ids {
+            if let Err(err) = self.render_branch_index(item_id).await {
+                // A branch whose index fails to render is still a usable
+                // branch: everything else reads live, and the index rebuilds on
+                // the next bootstrap.
+                tracing::warn!(%item_id, %err, "failed to render branch index");
+            }
+        }
+    }
+
+    async fn render_branch_index(&mut self, item_id: CatalogItemId) -> Result<(), AdapterError> {
+        let entry = self.catalog().get_entry(&item_id).clone();
+        let CatalogItem::Index(index) = entry.item() else {
+            return Ok(());
+        };
+        let cluster_id = index.cluster_id;
+        let global_id = index.global_id;
+        let compute_instance = self
+            .instance_snapshot(cluster_id)
+            .expect("branch cluster exists");
+        let optimizer_config = optimize::OptimizerConfig::from(self.catalog().system_config())
+            .override_from(&self.catalog.get_cluster(cluster_id).config.features())
+            .override_from(&self.cluster_scoped_optimizer_overrides(cluster_id));
+        let mut optimizer = optimize::index::Optimizer::new(
+            self.owned_catalog(),
+            compute_instance,
+            global_id,
+            optimizer_config,
+            self.optimizer_metrics(),
+        );
+        let index_plan = optimize::index::Index::new(
+            entry.name().clone(),
+            index.on,
+            index.keys.iter().cloned().collect(),
+        );
+        let global_mir_plan = optimizer.catch_unwind_optimize(index_plan)?;
+        let global_lir_plan = optimizer.catch_unwind_optimize(global_mir_plan)?;
+        let (mut df_desc, _df_meta) = global_lir_plan.unapply();
+
+        let id_bundle = dataflow_import_id_bundle(&df_desc, cluster_id);
+        let read_holds = self.acquire_read_holds(&id_bundle);
+        df_desc.set_as_of(read_holds.least_valid_read());
+        self.ship_dataflow(df_desc, cluster_id, None).await;
+        drop(read_holds);
+        Ok(())
     }
 
     /// Tears down every branch whose `EXPIRES` has lapsed, so an abandoned
@@ -1958,15 +2175,10 @@ impl Coordinator {
             .map(|branch| (branch.id, branch.name.clone()))
             .collect();
         for (branch_id, name) in expired {
-            let op = catalog::Op::DropBranch { id: branch_id };
-            match self
-                .catalog_transact_with_context(None, None, vec![op])
-                .await
-            {
-                Ok(_) => self.teardown_branch(branch_id),
-                // Losing a race with an explicit `DROP BRANCH` is the expected
-                // way this fails; the next tick retries anything else.
-                Err(err) => tracing::warn!(%name, %err, "failed to expire branch"),
+            // Losing a race with an explicit `DROP BRANCH` is the expected way
+            // this fails; the next tick retries anything else.
+            if let Err(err) = self.teardown_branch(branch_id, None).await {
+                tracing::warn!(%name, %err, "failed to expire branch");
             }
         }
     }
@@ -1974,8 +2186,209 @@ impl Coordinator {
     /// Releases everything a branch holds. Shared by `DROP BRANCH`, expiry, and
     /// eviction, because a teardown that only hides a branch would leak its
     /// read holds and its fork's retain reference.
-    pub(super) fn teardown_branch(&mut self, branch_id: BranchId) {
+    ///
+    /// Runs in dependency order: the catalog transaction drops the branch's
+    /// items (which tears down their dataflows and finalizes the fork shards)
+    /// and its descriptor together, then the runtime holds go, then the retain
+    /// references. Releasing a retain reference before the fork shard is gone
+    /// would let the source reclaim blobs the fork still points at.
+    pub(super) async fn teardown_branch(
+        &mut self,
+        branch_id: BranchId,
+        conn_id: Option<ConnectionId>,
+    ) -> Result<(), AdapterError> {
+        let fork_refs = self
+            .catalog()
+            .state()
+            .get_branches(None)
+            .find(|branch| branch.id == branch_id)
+            .map(|branch| branch.fork_refs.clone())
+            .unwrap_or_default();
+
+        let mut ops: Vec<_> = self
+            .catalog()
+            .state()
+            .branch_item_ids(branch_id)
+            .map(DropObjectInfo::Item)
+            .collect();
+        let ops = vec![
+            catalog::Op::DropObjects(std::mem::take(&mut ops)),
+            catalog::Op::DropBranch { id: branch_id },
+        ];
+        self.catalog_transact_with_context(conn_id.as_ref(), None, ops)
+            .await?;
+
         self.release_branch_read_holds(branch_id);
+
+        for fork_ref in fork_refs {
+            let Ok(retain_id) = fork_ref.retain_ref_token.parse::<RetainId>() else {
+                continue;
+            };
+            match self
+                .persist_client
+                .open_retain::<SourceData, (), Timestamp, StorageDiff>(
+                    fork_ref.source_shard_id,
+                    retain_id,
+                    Diagnostics {
+                        shard_name: "branch fork source".to_string(),
+                        handle_purpose: "branch teardown".to_string(),
+                    },
+                )
+                .await
+            {
+                Ok(handle) => {
+                    handle.release().await;
+                }
+                Err(err) => tracing::warn!(%err, "failed to release branch retain reference"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Reports what a branch of these clusters would take over and what it
+    /// would read live, without creating anything.
+    ///
+    /// Runs the same scope computation `CREATE BRANCH` does, so the preflight
+    /// and the create cannot disagree.
+    pub(super) fn sequence_explain_create_branch(
+        &self,
+        plan::ExplainCreateBranchPlan { cluster_maps }: plan::ExplainCreateBranchPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let state = self.catalog().state();
+        let mut scope = BranchScope::default();
+        for map in &cluster_maps {
+            let cluster_scope = state.branch_scope(map.prod_cluster_id);
+            scope.indexes.extend(cluster_scope.indexes);
+            scope.tables.extend(cluster_scope.tables);
+            scope.shared.extend(cluster_scope.shared);
+        }
+
+        let mut rows = Vec::new();
+        let mut push = |name: String, typ: &str, treatment: &str| {
+            rows.push(Row::pack_slice(&[
+                Datum::String(&name),
+                Datum::String(typ),
+                Datum::String(treatment),
+            ]));
+        };
+        for id in &scope.indexes {
+            let entry = state.get_entry(id);
+            push(
+                state.resolve_full_name(entry.name(), None).to_string(),
+                "index",
+                "rebuilt",
+            );
+        }
+        for id in &scope.tables {
+            let entry = state.get_entry(id);
+            push(
+                state.resolve_full_name(entry.name(), None).to_string(),
+                "table",
+                "forked",
+            );
+        }
+        for gid in &scope.shared {
+            let Some(entry) = state.try_get_entry_by_global_id(gid) else {
+                continue;
+            };
+            push(
+                state.resolve_full_name(entry.name(), None).to_string(),
+                &entry.item_type().to_string(),
+                "shared",
+            );
+        }
+        rows.sort();
+        Ok(Self::send_immediate_rows(rows))
+    }
+
+    /// Diffs a branch's catalog against the snapshot it forked from.
+    ///
+    /// This is a catalog comparison: it reads no data and no frontier. Row
+    /// writes to a forked table are data, not catalog, so they are deliberately
+    /// absent -- they are recoverable from the fork's `(branch point, now]`
+    /// range if we later choose to emit them.
+    pub(super) fn sequence_show_branch_changes(
+        &self,
+        session: &Session,
+        plan::ShowBranchChangesPlan { name, as_sql }: plan::ShowBranchChangesPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let state = self.catalog().state();
+        let owner = (!session.is_superuser()).then(|| *session.current_role_id());
+        let branch = state
+            .get_branches(owner)
+            .find(|branch| branch.name == name)
+            .ok_or_else(|| {
+                AdapterError::Catalog(mz_catalog::memory::error::Error::new(
+                    mz_catalog::memory::error::ErrorKind::Sql(CatalogError::UnknownBranch(
+                        name.clone(),
+                    )),
+                ))
+            })?;
+
+        // What the branch has now, keyed by the production object it stands in
+        // for; an object created inside the branch stands in for nothing.
+        let mut current: BTreeMap<Option<GlobalId>, &mz_catalog::memory::objects::CatalogEntry> =
+            BTreeMap::new();
+        for item_id in state.branch_item_ids(branch.id) {
+            let entry = state.get_entry(&item_id);
+            let prod = entry
+                .global_ids()
+                .find_map(|gid| state.production_of_branch_global_id(gid));
+            current.insert(prod, entry);
+        }
+
+        let mut rows = Vec::new();
+        for snapshot in &branch.branch_point_snapshot {
+            match current.remove(&Some(snapshot.global_id)) {
+                Some(entry) if entry.create_sql() != snapshot.create_sql => rows.push((
+                    state.resolve_full_name(entry.name(), None).to_string(),
+                    entry.item_type().to_string(),
+                    "altered".to_string(),
+                    entry.create_sql().to_string(),
+                )),
+                Some(_) => {}
+                None => {
+                    let Some(entry) = state.try_get_entry_by_global_id(&snapshot.global_id) else {
+                        continue;
+                    };
+                    rows.push((
+                        state.resolve_full_name(entry.name(), None).to_string(),
+                        entry.item_type().to_string(),
+                        "dropped".to_string(),
+                        format!(
+                            "DROP {} {};",
+                            entry.item_type(),
+                            state.resolve_full_name(entry.name(), None)
+                        ),
+                    ));
+                }
+            }
+        }
+        for entry in current.values() {
+            rows.push((
+                state.resolve_full_name(entry.name(), None).to_string(),
+                entry.item_type().to_string(),
+                "added".to_string(),
+                entry.create_sql().to_string(),
+            ));
+        }
+        rows.sort();
+
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|(name, typ, change, sql)| {
+                if as_sql {
+                    Row::pack_slice(&[Datum::String(&sql)])
+                } else {
+                    Row::pack_slice(&[
+                        Datum::String(&name),
+                        Datum::String(&typ),
+                        Datum::String(&change),
+                    ])
+                }
+            })
+            .collect();
+        Ok(Self::send_immediate_rows(rows))
     }
 
     /// Lists the branches visible to `session`: its own, or every branch for a

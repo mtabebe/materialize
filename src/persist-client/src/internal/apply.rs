@@ -328,6 +328,11 @@ where
     ///
     /// Every inherited part is tagged with `source` so it resolves against this
     /// shard's blobs rather than the fork's. Nothing is copied.
+    ///
+    /// The caller owns the choice of `fork_upper`: it must be a frontier no
+    /// writer will write below, or the fork silently misses those writes. This
+    /// cannot be checked against the shard's own upper, which trails the
+    /// decided frontier for any shard written through txn-wal.
     pub fn snapshot_trace_below(
         &self,
         fork_upper: &Antichain<T>,
@@ -345,14 +350,6 @@ where
                         upper: fork_upper.clone(),
                     });
                 }
-                // The source must already cover everything the fork inherits.
-                if !PartialOrder::less_equal(fork_upper, trace.upper()) {
-                    return Err(InvalidUsage::InvalidBounds {
-                        lower: fork_upper.clone(),
-                        upper: trace.upper().clone(),
-                    });
-                }
-
                 let mut forked = Trace::default();
                 let mut keys = BTreeSet::new();
                 for batch in trace.batches() {
@@ -387,6 +384,21 @@ where
                     }
                     forked.push_batch_no_merge_reqs(batch);
                 }
+                // A shard's physical upper can trail the fork point -- a
+                // txn-wal table's does whenever it has not been written
+                // recently -- which just means it has no data up there. Fill
+                // the gap so the fork is readable at the fork point.
+                if PartialOrder::less_than(forked.upper(), fork_upper) {
+                    forked.push_batch_no_merge_reqs(HollowBatch::empty(Description::new(
+                        forked.upper().clone(),
+                        fork_upper.clone(),
+                        trace.since().clone(),
+                    )));
+                }
+                // The fork inherits the source's compaction state along with
+                // its batches; a batch may already have been compacted past the
+                // minimum, and the trace's since has to cover that.
+                forked.downgrade_since(trace.since());
                 Ok((forked, keys))
             })
     }

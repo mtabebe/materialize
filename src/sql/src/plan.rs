@@ -149,6 +149,8 @@ pub enum Plan {
     CreateBranch(CreateBranchPlan),
     DropBranch(DropBranchPlan),
     ShowBranches(ShowBranchesPlan),
+    ShowBranchChanges(ShowBranchChangesPlan),
+    ExplainCreateBranch(ExplainCreateBranchPlan),
     CreateIndex(CreateIndexPlan),
     CreateType(CreateTypePlan),
     Comment(CommentPlan),
@@ -280,8 +282,7 @@ impl Plan {
             StatementKind::CreateNetworkPolicy => &[PlanKind::CreateNetworkPolicy],
             StatementKind::CreateBranch => &[PlanKind::CreateBranch],
             StatementKind::DropBranch => &[PlanKind::DropBranch],
-            // Planned in a later phase; parses today, refused at plan time.
-            StatementKind::ExplainCreateBranch => &[],
+            StatementKind::ExplainCreateBranch => &[PlanKind::ExplainCreateBranch],
             StatementKind::CreateMaterializedView => &[PlanKind::CreateMaterializedView],
             StatementKind::CreateRole => &[PlanKind::CreateRole],
             StatementKind::CreateSchema => &[PlanKind::CreateSchema],
@@ -330,6 +331,7 @@ impl Plan {
                 PlanKind::ShowAllVariables,
                 PlanKind::InspectShard,
                 PlanKind::ShowBranches,
+                PlanKind::ShowBranchChanges,
             ],
             StatementKind::StartTransaction => &[PlanKind::StartTransaction],
             StatementKind::Subscribe => &[PlanKind::Subscribe],
@@ -362,6 +364,8 @@ impl Plan {
             Plan::CreateBranch(_) => "create branch",
             Plan::DropBranch(_) => "drop branch",
             Plan::ShowBranches(_) => "show branches",
+            Plan::ShowBranchChanges(_) => "show branch changes",
+            Plan::ExplainCreateBranch(_) => "explain create branch",
             Plan::Comment(_) => "comment",
             Plan::DiscardTemp => "discard temp",
             Plan::DiscardAll => "discard all",
@@ -825,6 +829,18 @@ pub struct DropBranchPlan {
 
 #[derive(Debug, Clone)]
 pub struct ShowBranchesPlan;
+
+#[derive(Debug, Clone)]
+pub struct ShowBranchChangesPlan {
+    pub name: String,
+    /// Whether to emit runnable DDL rather than list the changes.
+    pub as_sql: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplainCreateBranchPlan {
+    pub cluster_maps: Vec<BranchClusterMap>,
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateNetworkPolicyPlan {

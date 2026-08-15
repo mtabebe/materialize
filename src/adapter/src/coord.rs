@@ -1340,9 +1340,22 @@ pub struct ConnMeta {
     /// WARNING: This role reference is not updated when the role is dropped.
     /// Consumers should not assume that this role exist.
     authenticated_role: RoleId,
+
+    /// The branch this connection is currently inside, refreshed from the
+    /// session at each statement.
+    ///
+    /// The catalog transaction needs it to stamp objects created inside a
+    /// branch, and it reaches the transaction as a `ConnMeta` rather than a
+    /// `Session`, which the coordinator does not hold.
+    branch: Option<BranchId>,
 }
 
 impl ConnMeta {
+    /// The branch this connection is inside, if any.
+    pub fn branch(&self) -> Option<BranchId> {
+        self.branch
+    }
+
     pub fn conn_id(&self) -> &ConnectionId {
         &self.conn_id
     }

@@ -71,19 +71,19 @@ use mz_sql_parser::ast::{
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
     DocOnIdentifier, DocOnSchema, DropBranchStatement, DropObjectsStatement, DropOwnedStatement,
-    Expr, Format, FormatSpecifier, GlueAvroOption, GlueAvroOptionName, IcebergSinkConfigOption,
-    Ident, IfExistsBehavior, IndexOption, IndexOptionName, KafkaSinkConfigOption, KeyConstraint,
-    LoadGeneratorOption, LoadGeneratorOptionName, MaterializedViewOption,
-    MaterializedViewOptionName, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption,
-    NetworkPolicyOptionName, NetworkPolicyRuleDefinition, NetworkPolicyRuleOption,
-    NetworkPolicyRuleOptionName, OnHydrationOptionValue, PgConfigOption, PgConfigOptionName,
-    ProtobufSchema, QualifiedReplica, RefreshAtOptionValue, RefreshEveryOptionValue,
-    RefreshOptionValue, ReplicaDefinition, ReplicaOption, ReplicaOptionName, RoleAttribute,
-    SetRoleVar, SourceErrorPolicy, SourceIncludeMetadata, SqlServerConfigOption,
-    SqlServerConfigOptionName, Statement, TableConstraint, TableFromSourceColumns,
-    TableFromSourceOption, TableFromSourceOptionName, TableOption, TableOptionName,
-    UnresolvedDatabaseName, UnresolvedItemName, UnresolvedObjectName, UnresolvedSchemaName, Value,
-    ViewDefinition, WithOptionValue,
+    ExplainCreateBranchStatement, Expr, Format, FormatSpecifier, GlueAvroOption,
+    GlueAvroOptionName, IcebergSinkConfigOption, Ident, IfExistsBehavior, IndexOption,
+    IndexOptionName, KafkaSinkConfigOption, KeyConstraint, LoadGeneratorOption,
+    LoadGeneratorOptionName, MaterializedViewOption, MaterializedViewOptionName, MySqlConfigOption,
+    MySqlConfigOptionName, NetworkPolicyOption, NetworkPolicyOptionName,
+    NetworkPolicyRuleDefinition, NetworkPolicyRuleOption, NetworkPolicyRuleOptionName,
+    OnHydrationOptionValue, PgConfigOption, PgConfigOptionName, ProtobufSchema, QualifiedReplica,
+    RefreshAtOptionValue, RefreshEveryOptionValue, RefreshOptionValue, ReplicaDefinition,
+    ReplicaOption, ReplicaOptionName, RoleAttribute, SetRoleVar, SourceErrorPolicy,
+    SourceIncludeMetadata, SqlServerConfigOption, SqlServerConfigOptionName, Statement,
+    TableConstraint, TableFromSourceColumns, TableFromSourceOption, TableFromSourceOptionName,
+    TableOption, TableOptionName, UnresolvedDatabaseName, UnresolvedItemName, UnresolvedObjectName,
+    UnresolvedSchemaName, Value, ViewDefinition, WithOptionValue,
 };
 use mz_sql_parser::ident;
 use mz_sql_parser::parser::StatementParseResult;
@@ -162,11 +162,11 @@ use crate::plan::{
     CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
     CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan,
     CreateTypePlan, CreateViewPlan, DataSourceDesc, DropBranchPlan, DropObjectsPlan, DropOwnedPlan,
-    HirRelationExpr, Index, MaterializedView, NetworkPolicyRule, NetworkPolicyRuleAction,
-    NetworkPolicyRuleDirection, OnHydration, Plan, PlanClusterOption, PlanNotice, PolicyAddress,
-    QueryContext, ReplicaConfig, Secret, Sink, Source, Table, TableDataSource, Type, VariableValue,
-    View, WebhookBodyFormat, WebhookHeaderFilters, WebhookHeaders, WebhookValidation, literal,
-    plan_utils, query, transform_ast,
+    ExplainCreateBranchPlan, HirRelationExpr, Index, MaterializedView, NetworkPolicyRule,
+    NetworkPolicyRuleAction, NetworkPolicyRuleDirection, OnHydration, Plan, PlanClusterOption,
+    PlanNotice, PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink, Source, Table,
+    TableDataSource, Type, VariableValue, View, WebhookBodyFormat, WebhookHeaderFilters,
+    WebhookHeaders, WebhookValidation, literal, plan_utils, query, transform_ast,
 };
 use crate::session::vars::{
     self, ENABLE_AUTO_SCALING_STRATEGY, ENABLE_CLUSTER_SCHEDULE_REFRESH,
@@ -4753,6 +4753,19 @@ pub fn plan_create_branch(
         expires_in,
     } = options.try_into()?;
 
+    Ok(Plan::CreateBranch(CreateBranchPlan {
+        name: normalize::ident(name),
+        cluster_maps: plan_branch_cluster_maps(scx, cluster_maps)?,
+        expires_in,
+    }))
+}
+
+/// Resolves and validates the `prod -> branch` cluster maps of a
+/// `CREATE BRANCH`, shared with its preflight so the two agree exactly.
+fn plan_branch_cluster_maps(
+    scx: &StatementContext,
+    cluster_maps: Vec<mz_sql_parser::ast::BranchClusterMap>,
+) -> Result<Vec<BranchClusterMap>, PlanError> {
     let mut resolved = Vec::with_capacity(cluster_maps.len());
     let mut branch_clusters = BTreeSet::new();
     for map in cluster_maps {
@@ -4784,11 +4797,31 @@ pub fn plan_create_branch(
             branch_cluster_id: branch.id(),
         });
     }
+    Ok(resolved)
+}
 
-    Ok(Plan::CreateBranch(CreateBranchPlan {
-        name: normalize::ident(name),
-        cluster_maps: resolved,
-        expires_in,
+pub fn describe_explain_create_branch(
+    _: &StatementContext,
+    _: ExplainCreateBranchStatement,
+) -> Result<StatementDesc, PlanError> {
+    Ok(StatementDesc::new(Some(
+        RelationDesc::builder()
+            .with_column("name", SqlScalarType::String.nullable(false))
+            .with_column("type", SqlScalarType::String.nullable(false))
+            .with_column("treatment", SqlScalarType::String.nullable(false))
+            .finish(),
+    )))
+}
+
+/// Plans the preflight: what a branch of these clusters would take over, and
+/// what it would read live. Creates nothing.
+pub fn plan_explain_create_branch(
+    scx: &StatementContext,
+    ExplainCreateBranchStatement { cluster_maps }: ExplainCreateBranchStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+    Ok(Plan::ExplainCreateBranch(ExplainCreateBranchPlan {
+        cluster_maps: plan_branch_cluster_maps(scx, cluster_maps)?,
     }))
 }
 

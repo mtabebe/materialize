@@ -139,6 +139,16 @@ pub struct CatalogState {
     pub(super) network_policies_by_id: imbl::OrdMap<NetworkPolicyId, NetworkPolicy>,
     #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
     pub(super) branches_by_id: imbl::OrdMap<BranchId, BranchDescriptor>,
+    /// The items each branch owns, by unqualified name.
+    ///
+    /// A branch's items are ordinary catalog entries -- they are in
+    /// `entry_by_id`, they have dependencies, and every controller reaches them
+    /// by id -- but they are deliberately absent from their schema's item map,
+    /// because they share a name with the production object they shadow. This
+    /// index is the namespace they live in instead, consulted only when a
+    /// session has a branch active.
+    #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
+    pub(super) branch_items: imbl::OrdMap<BranchId, imbl::OrdMap<String, CatalogItemId>>,
     #[serde(serialize_with = "mz_ore::serde::map_key_to_string")]
     pub(super) role_auth_by_id: imbl::OrdMap<RoleId, RoleAuth>,
 
@@ -191,6 +201,18 @@ pub struct CatalogState {
     // Read-only not derived from the durable catalog.
     #[serde(skip)]
     pub(super) license_key: ValidatedLicenseKey,
+}
+
+/// What a branch of one cluster takes over, and what it reads live. See
+/// [`CatalogState::branch_scope`].
+#[derive(Debug, Default)]
+pub struct BranchScope {
+    /// Indexes the branch rebuilds on its own cluster.
+    pub indexes: Vec<CatalogItemId>,
+    /// Tables the branch forks, so its writes diverge from production's.
+    pub tables: BTreeSet<CatalogItemId>,
+    /// Collections the branch reads in place, through read holds.
+    pub shared: BTreeSet<GlobalId>,
 }
 
 /// The temporary namespaces of the sessions connected to this process: for
@@ -454,6 +476,7 @@ impl CatalogState {
             roles_by_id: Default::default(),
             network_policies_by_id: Default::default(),
             branches_by_id: Default::default(),
+            branch_items: Default::default(),
             role_auth_by_id: Default::default(),
             config: CatalogConfig {
                 start_time: Default::default(),
@@ -488,6 +511,10 @@ impl CatalogState {
     }
 
     pub fn for_session<'a>(&'a self, session: &'a Session) -> ConnCatalog<'a> {
+        let branch = session
+            .vars()
+            .branch()
+            .and_then(|name| self.resolve_branch(name).map(|branch| branch.id));
         let search_path = self.resolve_search_path(session);
         let database = self
             .database_by_name
@@ -501,11 +528,16 @@ impl CatalogState {
             state,
             unresolvable_ids: BTreeSet::new(),
             conn_id: session.conn_id().clone(),
-            cluster: session.vars().cluster().into(),
-            branch: session
-                .vars()
-                .branch()
-                .and_then(|name| self.resolve_branch(name).map(|branch| branch.id)),
+            // Inside a branch, the session's cluster names the branch's cluster
+            // if the branch took that cluster over, so an object created in the
+            // branch renders there rather than on production's.
+            cluster: match branch
+                .and_then(|id| self.branch_cluster_for(id, session.vars().cluster()))
+            {
+                Some(cluster) => cluster,
+                None => session.vars().cluster().into(),
+            },
+            branch,
             database,
             search_path,
             role_id: session.current_role_id().clone(),
@@ -1027,6 +1059,7 @@ impl CatalogState {
             privileges: entry.privileges.into_all_values().collect(),
             extra_versions,
             ephemeral_owner_session,
+            branch_id: entry.branch_id,
         })
     }
 
@@ -1194,6 +1227,178 @@ impl CatalogState {
     /// Resolves a branch by name.
     pub fn resolve_branch(&self, name: &str) -> Option<&BranchDescriptor> {
         self.branches_by_id.values().find(|b| b.name == name)
+    }
+
+    /// The branch that owns `id`, if any.
+    ///
+    /// A branch's descriptor records the identity it minted for each production
+    /// object it shadows, so ownership is derived from the descriptor rather
+    /// than stamped on the item. That keeps a branch item an ordinary durable
+    /// item, and it means ownership is known before any item applies: the
+    /// descriptor is applied ahead of items.
+    pub fn branch_of_global_id(&self, id: GlobalId) -> Option<BranchId> {
+        self.branches_by_id.values().find_map(|branch| {
+            branch
+                .object_identities
+                .iter()
+                .any(|identity| identity.branch_global_id == id)
+                .then_some(branch.id)
+        })
+    }
+
+    /// The items `branch` owns.
+    pub fn branch_item_ids(&self, branch: BranchId) -> impl Iterator<Item = CatalogItemId> + '_ {
+        self.branch_items
+            .get(&branch)
+            .into_iter()
+            .flat_map(|items| items.values().copied())
+    }
+
+    /// Resolves `name` within `branch`, or `None` if the branch does not shadow
+    /// it and the name should fall through to production.
+    pub fn resolve_branch_item(&self, branch: BranchId, name: &str) -> Option<&CatalogEntry> {
+        let id = self.branch_items.get(&branch)?.get(name)?;
+        self.entry_by_id.get(id)
+    }
+
+    /// What a branch of `cluster_id` takes over, and what it reads live.
+    ///
+    /// A branch substitutes for exactly two things: the indexes the cluster
+    /// holds, because an index is in-memory state with no shard to read
+    /// through, and the tables its dataflows can write, because a write has to
+    /// diverge. Everything else in the closure -- sources, views, and the
+    /// output shards of materialized views the branch did not change -- is read
+    /// in place, which is what keeps a branch from copying data.
+    pub fn branch_scope(&self, cluster_id: ClusterId) -> BranchScope {
+        let mut scope = BranchScope::default();
+        let Some(cluster) = self.clusters_by_id.get(&cluster_id) else {
+            return scope;
+        };
+        for item_id in cluster.bound_objects() {
+            let entry = self.get_entry(item_id);
+            if let CatalogItem::Index(_) = entry.item() {
+                scope.indexes.push(*item_id);
+            }
+            for dep in self.transitive_uses(*item_id) {
+                if dep == *item_id {
+                    continue;
+                }
+                match self.get_entry(&dep).item() {
+                    CatalogItem::Table(_) => {
+                        scope.tables.insert(dep);
+                    }
+                    // Only what a dataflow actually reads is an input. A type
+                    // or a function is a definition, and an index is rebuilt
+                    // rather than read.
+                    item @ (CatalogItem::Source(_)
+                    | CatalogItem::Log(_)
+                    | CatalogItem::MaterializedView(_)) => scope.shared.extend(item.global_ids()),
+                    _ => {}
+                }
+            }
+        }
+        // A table the branch takes over is not also read live.
+        for table in &scope.tables {
+            for gid in self.get_entry(table).item().global_ids() {
+                scope.shared.remove(&gid);
+            }
+        }
+        scope
+    }
+
+    /// Rebuilds the item a branch substitutes for a production object, by
+    /// cloning the production item and rebinding it onto the branch's identity
+    /// and, for an index, its cluster.
+    pub(super) fn substitute_branch_item(&self, branch_gid: GlobalId) -> Option<CatalogItem> {
+        let (branch, prod_gid) = self.branches_by_id.values().find_map(|branch| {
+            branch
+                .object_identities
+                .iter()
+                .find(|identity| identity.branch_global_id == branch_gid)
+                .map(|identity| (branch, identity.prod_global_id))
+        })?;
+        let mut item = self.try_get_entry_by_global_id(&prod_gid)?.item().clone();
+        match &mut item {
+            CatalogItem::Table(table) => {
+                table.collections = [(RelationVersion::root(), branch_gid)]
+                    .into_iter()
+                    .collect();
+            }
+            CatalogItem::Index(index) => {
+                index.global_id = branch_gid;
+                index.cluster_id = branch
+                    .cluster_maps
+                    .iter()
+                    .find(|map| map.prod_cluster_id == index.cluster_id)
+                    .map(|map| map.branch_cluster_id)?;
+                // The index has to be over the branch's copy of what it
+                // indexes, not production's, or it would index the wrong data.
+                if let Some(on) = self.branch_substitute_gid(branch.id, index.on) {
+                    index.on = on;
+                }
+                index.resolved_ids.remap(|_, gid| {
+                    let mapped = self.branch_substitute_gid(branch.id, gid)?;
+                    Some((self.try_get_entry_by_global_id(&mapped)?.id(), mapped))
+                });
+                index.optimized_plan = None;
+                index.physical_plan = None;
+                index.dataflow_metainfo = None;
+            }
+            _ => return None,
+        }
+        Some(item)
+    }
+
+    /// The cluster `branch` runs `prod_cluster_name`'s objects on, if it took
+    /// that cluster over.
+    pub fn branch_cluster_for(&self, branch: BranchId, prod_cluster_name: &str) -> Option<String> {
+        let prod = self.clusters_by_name.get(prod_cluster_name)?;
+        let branch_cluster_id = self
+            .branches_by_id
+            .get(&branch)?
+            .cluster_maps
+            .iter()
+            .find(|map| map.prod_cluster_id == *prod)
+            .map(|map| map.branch_cluster_id)?;
+        Some(self.clusters_by_id.get(&branch_cluster_id)?.name.clone())
+    }
+
+    /// The identity `branch` substitutes for the production collection `prod`.
+    pub fn branch_substitute_gid(&self, branch: BranchId, prod: GlobalId) -> Option<GlobalId> {
+        self.branches_by_id
+            .get(&branch)?
+            .object_identities
+            .iter()
+            .find(|identity| identity.prod_global_id == prod)
+            .map(|identity| identity.branch_global_id)
+    }
+
+    /// The production object a branch identity substitutes for, if any.
+    pub fn production_of_branch_global_id(&self, id: GlobalId) -> Option<GlobalId> {
+        self.branches_by_id.values().find_map(|branch| {
+            branch
+                .object_identities
+                .iter()
+                .find(|identity| identity.branch_global_id == id)
+                .map(|identity| identity.prod_global_id)
+        })
+    }
+
+    /// The item `branch` substitutes for the production object `prod`, if it
+    /// has one.
+    ///
+    /// Matching on the production identity rather than on the name is what
+    /// makes the overlay exact: a branch item carries its production twin's
+    /// qualifiers, so a name lookup alone could not tell `public.t` from
+    /// another schema's `t`.
+    pub fn branch_shadow(&self, branch: BranchId, prod: GlobalId) -> Option<&CatalogEntry> {
+        let identity = self
+            .branches_by_id
+            .get(&branch)?
+            .object_identities
+            .iter()
+            .find(|identity| identity.prod_global_id == prod)?;
+        self.try_get_entry_by_global_id(&identity.branch_global_id)
     }
 
     /// Returns the branches owned by `owner`, or every branch when `owner` is

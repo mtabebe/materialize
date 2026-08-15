@@ -527,7 +527,11 @@ fn generate_rbac_requirements(
         // A role only ever sees or drops its own branches, which the sequencer
         // enforces against the branch's owner; there is no privilege to check.
         Plan::DropBranch(plan::DropBranchPlan { .. })
-        | Plan::ShowBranches(plan::ShowBranchesPlan) => RbacRequirements::default(),
+        | Plan::ShowBranches(plan::ShowBranchesPlan)
+        | Plan::ShowBranchChanges(plan::ShowBranchChangesPlan { .. })
+        | Plan::ExplainCreateBranch(plan::ExplainCreateBranchPlan { .. }) => {
+            RbacRequirements::default()
+        }
         Plan::CreateNetworkPolicy(plan::CreateNetworkPolicyPlan { .. }) => RbacRequirements {
             privileges: vec![(
                 SystemObjectId::System,

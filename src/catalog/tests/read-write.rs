@@ -457,6 +457,7 @@ async fn test_items(state_builder: TestCatalogStateBuilder) {
             privileges: vec![],
             extra_versions: BTreeMap::new(),
             ephemeral_owner_session: None,
+            branch_id: None,
         },
         Item {
             id: CatalogItemId::User(200),
@@ -469,6 +470,7 @@ async fn test_items(state_builder: TestCatalogStateBuilder) {
             privileges: vec![],
             extra_versions: BTreeMap::new(),
             ephemeral_owner_session: None,
+            branch_id: None,
         },
     ];
 
@@ -496,6 +498,7 @@ async fn test_items(state_builder: TestCatalogStateBuilder) {
             item.privileges.clone(),
             item.extra_versions.clone(),
             item.ephemeral_owner_session,
+            None,
         )
         .unwrap();
     }
@@ -750,6 +753,7 @@ async fn test_persist_ddl_detection_with_batch_allocated_ids() {
             RoleId::User(1),
             vec![],
             BTreeMap::new(),
+            None,
             None,
         )
         .unwrap();
@@ -1009,6 +1013,9 @@ async fn test_persist_branch_round_trip() {
             Some(2000),
             cluster_maps.clone(),
             branch_ts.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
         )
         .unwrap();
     // A second branch with the same name and owner conflicts.
@@ -1020,6 +1027,9 @@ async fn test_persist_branch_round_trip() {
             None,
             cluster_maps.clone(),
             branch_ts.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
         )
         .is_err()
     );

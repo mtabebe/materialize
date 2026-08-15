@@ -93,7 +93,7 @@ use uuid::Uuid;
 // DO NOT add any more imports from `crate` outside of `crate::catalog`.
 pub use crate::catalog::builtin_table_updates::BuiltinTableUpdate;
 pub use crate::catalog::open::{InitializeStateResult, OpenCatalogResult};
-pub use crate::catalog::state::CatalogState;
+pub use crate::catalog::state::{BranchScope, CatalogState};
 pub use crate::catalog::transact::{
     DropObjectInfo, InjectedAuditEvent, Op, ReplicaCreateDropReason, TransactionResult,
 };
@@ -2149,12 +2149,32 @@ impl SessionCatalog for ConnCatalog<'_> {
         &self,
         name: &PartialItemName,
     ) -> Result<&dyn mz_sql::catalog::CatalogItem, SqlCatalogError> {
-        let r = self.state.resolve_entry(
+        // Inside a branch, a name that production resolves resolves to the
+        // branch's substitute for that object if it has one, and to production
+        // otherwise -- which is how a source, or any object the branch did not
+        // take over, stays live. A name production cannot resolve may still be
+        // an object created inside the branch.
+        let r = match self.state.resolve_entry(
             self.database.as_ref(),
             &self.effective_search_path(true),
             name,
             &self.conn_id,
-        )?;
+        ) {
+            Ok(entry) => match self.branch {
+                Some(branch) => entry
+                    .global_ids()
+                    .find_map(|gid| self.state.branch_shadow(branch, gid))
+                    .unwrap_or(entry),
+                None => entry,
+            },
+            Err(err) => match self.branch {
+                Some(branch) => self
+                    .state
+                    .resolve_branch_item(branch, &name.item)
+                    .ok_or(err)?,
+                None => return Err(err),
+            },
+        };
         if self.unresolvable_ids.contains(&r.id()) {
             Err(SqlCatalogError::UnknownItem(name.to_string()))
         } else {

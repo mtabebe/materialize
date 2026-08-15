@@ -910,6 +910,7 @@ impl Coordinator {
                     client_ip,
                     conn_id: conn_id.clone(),
                     authenticated_role: role_id,
+                    branch: None,
                     deferred_lock: None,
                 };
                 let update = self.catalog().state().pack_session_update(&conn, Diff::ONE);

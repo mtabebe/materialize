@@ -252,6 +252,12 @@ pub struct ItemValue {
         proptest(strategy = "proptest::option::of(any_uuid())")
     )]
     pub ephemeral_owner_session: Option<Uuid>,
+    /// `Some(branch)` marks an item a branch substitutes for a production
+    /// object, or one created inside a branch. `None` is a production item.
+    ///
+    /// A branch item shares its production twin's schema and name, so this is
+    /// what keeps the two from colliding.
+    pub branch_id: Option<BranchId>,
 }
 
 #[derive(

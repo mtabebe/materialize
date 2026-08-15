@@ -1045,7 +1045,9 @@ impl ExecuteResponse {
             CreateNetworkPolicy => &[CreatedNetworkPolicy],
             PlanKind::CreateBranch => &[ExecuteResponseKind::CreatedBranch],
             PlanKind::DropBranch => &[ExecuteResponseKind::DroppedBranch],
-            PlanKind::ShowBranches => &[SendingRowsImmediate],
+            PlanKind::ShowBranches
+            | PlanKind::ShowBranchChanges
+            | PlanKind::ExplainCreateBranch => &[SendingRowsImmediate],
             Declare => &[DeclaredCursor],
             DiscardTemp => &[DiscardedTemp],
             DiscardAll => &[DiscardedAll],

@@ -21,9 +21,10 @@ use mz_repr::{CatalogItemId, Datum, RelationDesc, Row, SqlScalarType};
 use mz_sql_parser::ast::display::{AstDisplay, FormatMode};
 use mz_sql_parser::ast::{
     CreateSinkOptionName, CreateSubsourceOptionName, ExternalReferenceExport, ExternalReferences,
-    ObjectType, ShowCreateClusterStatement, ShowCreateConnectionStatement,
-    ShowCreateMaterializedViewStatement, ShowCreateTypeStatement, ShowObjectType,
-    SqlServerConfigOptionName, SystemObjectType, UnresolvedItemName, WithOptionValue,
+    ObjectType, ShowBranchChangesStatement, ShowCreateClusterStatement,
+    ShowCreateConnectionStatement, ShowCreateMaterializedViewStatement, ShowCreateTypeStatement,
+    ShowObjectType, SqlServerConfigOptionName, SystemObjectType, UnresolvedItemName,
+    WithOptionValue,
 };
 use mz_sql_pretty::PrettyConfig;
 use query::QueryContext;
@@ -35,7 +36,7 @@ use crate::ast::{
     ShowCreateSinkStatement, ShowCreateSourceStatement, ShowCreateTableStatement,
     ShowCreateViewStatement, ShowObjectsStatement, ShowStatementFilter, Statement, Value,
 };
-use crate::catalog::{CatalogItemType, SessionCatalog};
+use crate::catalog::{CatalogError, CatalogItemType, SessionCatalog};
 use crate::names::{
     self, Aug, NameSimplifier, ObjectId, ResolvedClusterName, ResolvedDataType,
     ResolvedDatabaseName, ResolvedIds, ResolvedItemName, ResolvedRoleName, ResolvedSchemaName,
@@ -45,8 +46,8 @@ use crate::plan::scope::Scope;
 use crate::plan::statement::ddl::unplan_create_cluster;
 use crate::plan::statement::{StatementContext, StatementDesc, dml};
 use crate::plan::{
-    HirRelationExpr, Params, Plan, PlanError, ShowBranchesPlan, ShowColumnsPlan, ShowCreatePlan,
-    query, transform_ast,
+    HirRelationExpr, Params, Plan, PlanError, ShowBranchChangesPlan, ShowBranchesPlan,
+    ShowColumnsPlan, ShowCreatePlan, query, transform_ast,
 };
 use crate::session::vars;
 
@@ -399,6 +400,39 @@ pub fn plan_show_branches(
         bail_unsupported!("SHOW BRANCHES with a filter");
     }
     Ok(Plan::ShowBranches(ShowBranchesPlan))
+}
+
+pub fn describe_show_branch_changes(
+    _: &StatementContext,
+    ShowBranchChangesStatement { as_sql, .. }: ShowBranchChangesStatement,
+) -> Result<StatementDesc, PlanError> {
+    let desc = if as_sql {
+        RelationDesc::builder()
+            .with_column("sql", SqlScalarType::String.nullable(false))
+            .finish()
+    } else {
+        RelationDesc::builder()
+            .with_column("name", SqlScalarType::String.nullable(false))
+            .with_column("type", SqlScalarType::String.nullable(false))
+            .with_column("change", SqlScalarType::String.nullable(false))
+            .finish()
+    };
+    Ok(StatementDesc::new(Some(desc)))
+}
+
+pub fn plan_show_branch_changes(
+    scx: &StatementContext,
+    ShowBranchChangesStatement { name, as_sql }: ShowBranchChangesStatement,
+) -> Result<Plan, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_BRANCHING)?;
+    let name = crate::normalize::ident(name);
+    if scx.catalog.resolve_branch(&name).is_none() {
+        return Err(CatalogError::UnknownBranch(name).into());
+    }
+    Ok(Plan::ShowBranchChanges(ShowBranchChangesPlan {
+        name,
+        as_sql,
+    }))
 }
 
 pub fn show_objects<'a>(

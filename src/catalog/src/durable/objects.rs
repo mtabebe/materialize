@@ -736,6 +736,9 @@ pub struct Item {
     /// `Some(uuid)` marks a temporary item owned by, and only visible to, the
     /// session with that UUID. `None` is a normal durable item.
     pub ephemeral_owner_session: Option<Uuid>,
+    /// The branch this item belongs to, if any. See
+    /// [`proto::ItemValue::branch_id`].
+    pub branch_id: Option<BranchId>,
 }
 
 impl Item {
@@ -761,6 +764,7 @@ impl DurableType for Item {
                 privileges: self.privileges,
                 extra_versions: self.extra_versions,
                 ephemeral_owner_session: self.ephemeral_owner_session,
+                branch_id: self.branch_id,
             },
         )
     }
@@ -777,6 +781,7 @@ impl DurableType for Item {
             privileges: value.privileges,
             extra_versions: value.extra_versions,
             ephemeral_owner_session: value.ephemeral_owner_session,
+            branch_id: value.branch_id,
         }
     }
 
@@ -1633,6 +1638,7 @@ pub struct ItemValue {
     pub(crate) extra_versions: BTreeMap<RelationVersion, GlobalId>,
     #[cfg_attr(test, proptest(strategy = "proptest::option::of(any_uuid())"))]
     pub(crate) ephemeral_owner_session: Option<Uuid>,
+    pub(crate) branch_id: Option<BranchId>,
 }
 
 impl ItemValue {

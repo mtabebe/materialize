@@ -218,10 +218,10 @@ pub fn describe(
         Statement::Show(ShowStatement::ShowBranches(stmt)) => {
             show::describe_show_branches(&scx, stmt)?
         }
-        // Planned in a later phase; the grammar exists so the surface is
-        // fixed, but neither statement has a plan yet.
-        Statement::Show(ShowStatement::ShowBranchChanges(_))
-        | Statement::ExplainCreateBranch(_) => StatementDesc::new(None),
+        Statement::Show(ShowStatement::ShowBranchChanges(stmt)) => {
+            show::describe_show_branch_changes(&scx, stmt)?
+        }
+        Statement::ExplainCreateBranch(stmt) => ddl::describe_explain_create_branch(&scx, stmt)?,
 
         // SCL statements.
         Statement::Close(stmt) => scl::describe_close(&scx, stmt)?,
@@ -438,10 +438,10 @@ pub fn plan(
         }
         Statement::Show(ShowStatement::ShowObjects(stmt)) => show::show_objects(scx, stmt)?.plan(),
         Statement::Show(ShowStatement::ShowBranches(stmt)) => show::plan_show_branches(scx, stmt),
-        Statement::Show(ShowStatement::ShowBranchChanges(_)) => {
-            bail_unsupported!("SHOW BRANCH CHANGES")
+        Statement::Show(ShowStatement::ShowBranchChanges(stmt)) => {
+            show::plan_show_branch_changes(scx, stmt)
         }
-        Statement::ExplainCreateBranch(_) => bail_unsupported!("EXPLAIN CREATE BRANCH"),
+        Statement::ExplainCreateBranch(stmt) => ddl::plan_explain_create_branch(scx, stmt),
 
         // SCL statements.
         Statement::Close(stmt) => scl::plan_close(scx, stmt),
