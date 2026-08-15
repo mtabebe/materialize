@@ -23,6 +23,7 @@ use mz_adapter_types::compaction::CompactionWindow;
 use mz_adapter_types::connection::ConnectionId;
 use mz_compute_types::ComputeInstanceId;
 use mz_ore::instrument;
+use mz_repr::branch_id::BranchId;
 use mz_repr::{CatalogItemId, GlobalId, Timestamp};
 use mz_storage_types::read_holds::ReadHold;
 use mz_storage_types::read_policy::ReadPolicy;
@@ -400,6 +401,52 @@ impl crate::coord::Coordinator {
         read_holds
     }
 
+    /// Acquires the read holds a branch needs on the live inputs it shares with
+    /// production, and gives the branch ownership of them.
+    ///
+    /// The holds are acquired at the earliest available time and then advanced
+    /// to `branch_ts`, the point the branch forked at. They are *not* pinned
+    /// there: [`Self::downgrade_branch_read_holds`] moves them forward as the
+    /// branch's dataflows progress, which is what keeps a branch from holding
+    /// back production's compaction. A future freeze mode would simply stop
+    /// calling it.
+    // The branch sequencer is the only caller of these three; it lands with
+    // `CREATE BRANCH`.
+    #[allow(dead_code)]
+    pub(crate) fn acquire_branch_read_holds(
+        &mut self,
+        branch_id: BranchId,
+        id_bundle: &CollectionIdBundle,
+        branch_ts: Timestamp,
+    ) {
+        let mut read_holds = self.acquire_read_holds(id_bundle);
+        read_holds.downgrade(branch_ts);
+        let prev = self.branch_read_holds.insert(branch_id, read_holds);
+        assert!(prev.is_none(), "branch {branch_id} already holds reads");
+    }
+
+    /// Advances a branch's read holds to `time`, so a shared input's compaction
+    /// is held back only as far as the branch still needs.
+    ///
+    /// A hold that cannot advance (the branch still needs the older time) stays
+    /// put; `try_downgrade` reports that, and it is not an error here.
+    #[allow(dead_code)]
+    pub(crate) fn downgrade_branch_read_holds(&mut self, branch_id: BranchId, time: Timestamp) {
+        if let Some(read_holds) = self.branch_read_holds.get_mut(&branch_id) {
+            read_holds.downgrade(time);
+        }
+    }
+
+    /// Releases every read hold a branch owns, so production's compaction is no
+    /// longer gated by it.
+    ///
+    /// Dropping a branch that holds nothing is a no-op, which makes teardown
+    /// safe to retry.
+    #[allow(dead_code)]
+    pub(crate) fn release_branch_read_holds(&mut self, branch_id: BranchId) {
+        self.branch_read_holds.remove(&branch_id);
+    }
+
     /// Stash transaction read holds. They will be released when the transaction
     /// is cleaned up.
     pub(crate) fn store_transaction_read_holds(
@@ -417,5 +464,52 @@ impl crate::coord::Coordinator {
                 o.get_mut().merge(read_holds);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mz_repr::GlobalId;
+    use mz_storage_types::read_holds::ReadHold;
+    use timely::progress::Antichain;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::*;
+
+    /// A branch owns its holds, so dropping the branch's entry releases them
+    /// back to the issuer. This is what makes teardown a single drop, and it is
+    /// the property `DROP BRANCH` and expiry both rely on.
+    #[mz_ore::test]
+    fn branch_read_holds_release_on_drop() {
+        let (tx, mut rx) = unbounded_channel();
+        let id = GlobalId::User(1);
+        let hold = ReadHold::with_channel(id, Antichain::from_elem(Timestamp::from(10u64)), tx);
+
+        let mut branch_read_holds: BTreeMap<BranchId, ReadHolds> = BTreeMap::new();
+        let mut holds = ReadHolds::new();
+        holds.storage_holds.insert(id, hold);
+        branch_read_holds.insert(BranchId(1), holds);
+
+        // Advancing the branch's holds releases the older time and takes the
+        // newer one, so the input's compaction is held back only as far as the
+        // branch still needs.
+        branch_read_holds
+            .get_mut(&BranchId(1))
+            .expect("just inserted")
+            .downgrade(Timestamp::from(20u64));
+        let (got_id, mut changes) = rx.try_recv().expect("downgrade should report a change");
+        assert_eq!(got_id, id);
+        assert_eq!(
+            changes.drain().collect::<Vec<_>>(),
+            vec![(Timestamp::from(10u64), -1), (Timestamp::from(20u64), 1)]
+        );
+
+        branch_read_holds.remove(&BranchId(1));
+        let (got_id, mut changes) = rx.try_recv().expect("drop should release the hold");
+        assert_eq!(got_id, id);
+        assert_eq!(
+            changes.drain().collect::<Vec<_>>(),
+            vec![(Timestamp::from(20u64), -1)]
+        );
     }
 }

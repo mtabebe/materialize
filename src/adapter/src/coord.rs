@@ -141,6 +141,7 @@ use mz_persist_client::PersistClient;
 use mz_persist_client::batch::ProtoBatch;
 use mz_persist_client::usage::{ShardsUsageReferenced, StorageUsageClient};
 use mz_repr::adt::numeric::Numeric;
+use mz_repr::branch_id::BranchId;
 use mz_repr::explain::{ExplainConfig, ExplainFormat};
 use mz_repr::global_id::TransientIdGen;
 use mz_repr::optimize::{OptimizerFeatureOverrides, OptimizerFeatures, OverrideFrom};
@@ -2032,6 +2033,15 @@ pub struct Coordinator {
     ///
     /// Upon completing a transaction, these read holds should be dropped.
     txn_read_holds: BTreeMap<ConnectionId, read_policy::ReadHolds>,
+
+    /// For each branch, the read holds on the live inputs it shares with
+    /// production: sources, upstream views, and the output shards of the
+    /// materialized views it did not change.
+    ///
+    /// A branch owns its holds so teardown is a single drop. The holds track
+    /// the branch's own frontier rather than pinning the branch point, which is
+    /// what keeps a branch from taxing production's compaction.
+    branch_read_holds: BTreeMap<BranchId, read_policy::ReadHolds>,
 
     /// Access to the peek fields should be restricted to methods in the [`peek`] API.
     /// A map from pending peek ids to the queue into which responses are sent, and
@@ -4446,6 +4456,11 @@ impl Coordinator {
             .iter()
             .map(|(id, capability)| (id.unhandled().to_string(), format!("{capability:?}")))
             .collect();
+        let branch_read_holds: BTreeMap<_, _> = self
+            .branch_read_holds
+            .iter()
+            .map(|(id, holds)| (id.to_string(), format!("{holds:?}")))
+            .collect();
         let pending_peeks: BTreeMap<_, _> = self
             .pending_peeks
             .iter()
@@ -4472,6 +4487,7 @@ impl Coordinator {
             "global_timelines": global_timelines,
             "active_conns": active_conns,
             "txn_read_holds": txn_read_holds,
+            "branch_read_holds": branch_read_holds,
             "pending_peeks": pending_peeks,
             "client_pending_peeks": client_pending_peeks,
             "pending_linearize_read_txns": pending_linearize_read_txns,
@@ -5102,6 +5118,7 @@ pub fn serve(
                     transient_id_gen: Arc::new(TransientIdGen::new()),
                     active_conns: BTreeMap::new(),
                     txn_read_holds: Default::default(),
+                    branch_read_holds: Default::default(),
                     pending_peeks: BTreeMap::new(),
                     client_pending_peeks: BTreeMap::new(),
                     pending_linearize_read_txns: BTreeMap::new(),
