@@ -11,6 +11,8 @@ mode cockroach
 
 reset-server
 
+replace \d{4}-\d{2}-\d{2} [0-9:.]+\+00  <EXPIRES>
+
 simple conn=mz_system,user=mz_system
 ALTER SYSTEM SET enable_branching = on
 ----
@@ -95,6 +97,14 @@ SET branch = b
 statement ok
 CREATE INDEX t_branch_idx ON t (a)
 
+# A branch never ingests or emits on production's behalf: it reads sources
+# live, and its own sink must write somewhere production does not.
+statement error cannot CREATE SOURCE from within a branch
+CREATE SOURCE s FROM LOAD GENERATOR COUNTER
+
+statement error cannot ALTER SINK from within a branch
+ALTER SINK nonexistent SET (COMMIT INTERVAL = '1s')
+
 statement ok
 RESET branch
 
@@ -109,6 +119,28 @@ query T
 SHOW BRANCH CHANGES b AS SQL
 ----
 CREATE INDEX "t_branch_idx" IN CLUSTER [u2] ON [u3 AS "materialize"."public"."t"] ("a")
+
+# A branch of a cluster with no indexes has nothing to rebuild, so it is ready
+# the moment it exists -- unlike one whose indexes are still warming.
+statement ok
+CREATE CLUSTER empty_prod SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE CLUSTER empty_branch SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE BRANCH nothing FROM CLUSTER empty_prod IN CLUSTER empty_branch
+
+# `b`'s index has had time to rebuild by now, and `nothing` had none to
+# rebuild, so both read ready.
+query TTTT
+SHOW BRANCHES
+----
+b  u1->u2  <EXPIRES>  ready
+nothing  u3->u4  <EXPIRES>  ready
+
+statement ok
+DROP BRANCH nothing
 
 statement ok
 DROP BRANCH b

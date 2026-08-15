@@ -59,6 +59,7 @@ use mz_storage_types::connections::Connection;
 use mz_storage_types::connections::inline::{
     ConnectionResolver, InlinedConnection, ReferencedConnection,
 };
+use mz_storage_types::sinks::StorageSinkConnection;
 use mz_storage_types::sources::{SourceDesc, SourceExportDataConfig, SourceExportDetails};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -360,6 +361,10 @@ impl CatalogItem for LocalItem {
             actual_type: self.item_type,
             expected_type: CatalogItemType::Source,
         })
+    }
+
+    fn sink_connection(&self) -> Option<&StorageSinkConnection<ReferencedConnection>> {
+        None
     }
 
     fn connection(&self) -> Result<Connection<ReferencedConnection>, CatalogError> {

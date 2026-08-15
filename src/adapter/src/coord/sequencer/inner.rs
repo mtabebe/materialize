@@ -2102,6 +2102,38 @@ impl Coordinator {
         Ok(ExecuteResponse::DroppedBranch)
     }
 
+    /// Whether every index a branch rebuilt has finished hydrating.
+    ///
+    /// A branch's materialized views are readable the moment it exists, because
+    /// they read production's output shard; its indexes have to be rebuilt, and
+    /// how long that takes scales with the data. Reporting the two together
+    /// would hide that difference, which is the whole reason this is surfaced.
+    async fn branch_readiness(&self, branch_id: BranchId) -> &'static str {
+        let indexes: Vec<_> = self
+            .catalog()
+            .state()
+            .branch_item_ids(branch_id)
+            .filter_map(|id| match self.catalog().get_entry(&id).item() {
+                CatalogItem::Index(index) => Some((index.cluster_id, index.global_id)),
+                _ => None,
+            })
+            .collect();
+        for (cluster_id, global_id) in indexes {
+            match self
+                .controller
+                .compute
+                .collection_hydrated(cluster_id, global_id)
+                .await
+            {
+                Ok(true) => {}
+                // A collection the controller does not know about yet is
+                // warming, not broken.
+                Ok(false) | Err(_) => return "warming",
+            }
+        }
+        "ready"
+    }
+
     /// Optimizes and installs a branch's indexes on its own cluster.
     ///
     /// An index is the one branch object with in-memory state and no shard to
@@ -2393,7 +2425,7 @@ impl Coordinator {
 
     /// Lists the branches visible to `session`: its own, or every branch for a
     /// superuser.
-    pub(super) fn sequence_show_branches(
+    pub(super) async fn sequence_show_branches(
         &self,
         session: &Session,
     ) -> Result<ExecuteResponse, AdapterError> {
@@ -2401,27 +2433,27 @@ impl Coordinator {
         let mut branches: Vec<_> = self.catalog().state().get_branches(owner).collect();
         branches.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let rows: Vec<_> = branches
-            .into_iter()
-            .map(|branch| {
-                let clusters = branch
-                    .cluster_maps
-                    .iter()
-                    .map(|map| format!("{}->{}", map.prod_cluster_id, map.branch_cluster_id))
-                    .join(",");
-                let expires = match branch.expires_ts {
-                    Some(ts) => Datum::TimestampTz(
-                        mz_ore::now::to_datetime(ts).try_into().expect("must fit"),
-                    ),
-                    None => Datum::Null,
-                };
-                Row::pack_slice(&[
-                    Datum::String(&branch.name),
-                    Datum::String(&clusters),
-                    expires,
-                ])
-            })
-            .collect();
+        let mut rows = Vec::with_capacity(branches.len());
+        for branch in branches {
+            let clusters = branch
+                .cluster_maps
+                .iter()
+                .map(|map| format!("{}->{}", map.prod_cluster_id, map.branch_cluster_id))
+                .join(",");
+            let expires = match branch.expires_ts {
+                Some(ts) => {
+                    Datum::TimestampTz(mz_ore::now::to_datetime(ts).try_into().expect("must fit"))
+                }
+                None => Datum::Null,
+            };
+            let ready = self.branch_readiness(branch.id).await;
+            rows.push(Row::pack_slice(&[
+                Datum::String(&branch.name),
+                Datum::String(&clusters),
+                expires,
+                Datum::String(ready),
+            ]));
+        }
         Ok(Self::send_immediate_rows(rows))
     }
 

@@ -99,9 +99,13 @@ CREATE BRANCH b FROM CLUSTER bc IN CLUSTER quickstart
 # records, which is why the listings below use one.
 replace \d{4}-\d{2}-\d{2} [0-9:.]+\+00  <EXPIRES>
 
+# Whether a branch's indexes have finished rebuilding is a race against the
+# statement, so normalize it here; the deterministic case is asserted below.
+replace \b(ready|warming)\b  <READY>
+
 # `SHOW BRANCHES` is owner-scoped: `materialize` does not see `branchless`'s
 # branch, and cannot drop it by name.
-query TTT
+query TTTT
 SHOW BRANCHES
 ----
 
@@ -119,10 +123,10 @@ CREATE CLUSTER bc2 SIZE 'scale=1,workers=1'
 statement ok
 CREATE BRANCH mine FROM CLUSTER quickstart IN CLUSTER bc2
 
-query TTT
+query TTTT
 SHOW BRANCHES
 ----
-mine  u1->u3  <EXPIRES>
+mine  u1->u3  <EXPIRES>  <READY>
 
 # `EXPIRES IN` overrides the 24h default; the branch still lists.
 statement ok
@@ -131,10 +135,10 @@ DROP BRANCH mine
 statement ok
 CREATE BRANCH mine FROM CLUSTER quickstart IN CLUSTER bc2 WITH (EXPIRES IN '1h')
 
-query TTT
+query TTTT
 SHOW BRANCHES
 ----
-mine  u1->u3  <EXPIRES>
+mine  u1->u3  <EXPIRES>  <READY>
 
 statement ok
 DROP BRANCH mine
@@ -149,10 +153,10 @@ CREATE CLUSTER bc4 SIZE 'scale=1,workers=1'
 statement ok
 CREATE BRANCH multi FROM CLUSTER quickstart IN CLUSTER bc3, FROM CLUSTER bc2 IN CLUSTER bc4
 
-query TTT
+query TTTT
 SHOW BRANCHES
 ----
-multi  u1->u4,u3->u5  <EXPIRES>
+multi  u1->u4,u3->u5  <EXPIRES>  <READY>
 
 statement ok
 DROP BRANCH multi
@@ -223,6 +227,6 @@ EXPLAIN CREATE BRANCH FROM CLUSTER quickstart IN CLUSTER bc
 materialize.public.t  table  forked
 materialize.public.t_idx  index  rebuilt
 
-query TTT
+query TTTT
 SHOW BRANCHES
 ----

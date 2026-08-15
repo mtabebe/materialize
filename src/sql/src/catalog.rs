@@ -40,6 +40,7 @@ use mz_repr::{
 use mz_sql_parser::ast::{Expr, QualifiedReplica, UnresolvedItemName};
 use mz_storage_types::connections::inline::{ConnectionResolver, ReferencedConnection};
 use mz_storage_types::connections::{Connection, ConnectionContext};
+use mz_storage_types::sinks::StorageSinkConnection;
 use mz_storage_types::sources::{SourceDesc, SourceExportDataConfig, SourceExportDetails};
 use proptest_derive::Arbitrary;
 use regex::Regex;
@@ -853,6 +854,9 @@ pub trait CatalogItem {
     /// If the catalog item is not of a type that contains a `SourceDesc`
     /// (i.e., anything other than sources), it returns an error.
     fn source_desc(&self) -> Result<Option<&SourceDesc<ReferencedConnection>>, CatalogError>;
+
+    /// Returns where this item writes, if it is a sink.
+    fn sink_connection(&self) -> Option<&StorageSinkConnection<ReferencedConnection>>;
 
     /// Returns the resolved connection.
     ///

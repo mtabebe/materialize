@@ -756,6 +756,13 @@ pub fn plan_create_source(
     scx: &StatementContext,
     mut stmt: CreateSourceStatement<Aug>,
 ) -> Result<Plan, PlanError> {
+    // A source ingests on its origin cluster, which a branch does not own, and
+    // re-ingesting inside a branch would double-read the upstream. A branch
+    // reads production's sources live instead.
+    if scx.catalog.active_branch().is_some() {
+        sql_bail!("cannot CREATE SOURCE from within a branch; a branch reads sources live");
+    }
+
     let CreateSourceStatement {
         name,
         in_cluster: _,
@@ -3598,6 +3605,24 @@ fn plan_sink(
     // statement.
     let in_cluster = source_sink_cluster_config(scx, &mut stmt.in_cluster)?;
     let create_sql = normalize::create_statement(scx, Statement::CreateSink(stmt))?;
+
+    // A branch must never write to a destination production already writes
+    // to: two writers on one destination is silent corruption, and the whole
+    // point of a branch is that production cannot tell it exists.
+    if scx.catalog.active_branch().is_some() {
+        for item in scx.catalog.get_items() {
+            let Some(connection) = item.sink_connection() else {
+                continue;
+            };
+            if connection.destination() == connection_builder.destination() {
+                sql_bail!(
+                    "sink {} already writes to that destination; a branch's sink must write \
+                     somewhere else",
+                    scx.catalog.resolve_full_name(item.name())
+                );
+            }
+        }
+    }
 
     Ok(Plan::CreateSink(CreateSinkPlan {
         name,
@@ -7831,6 +7856,14 @@ pub fn plan_alter_sink(
         action,
     } = stmt;
 
+    // A branch does not take sinks over, so a sink it resolves is production's
+    // and altering it would change production. Redirecting a branch's output
+    // means creating a sink inside the branch, which is refused above unless it
+    // writes somewhere production does not.
+    if scx.catalog.active_branch().is_some() {
+        sql_bail!("cannot ALTER SINK from within a branch; create a branch sink instead");
+    }
+
     let object_type = ObjectType::Sink;
     let item = resolve_item_or_type(scx, object_type, sink_name.clone(), if_exists)?;
 
@@ -7953,6 +7986,12 @@ pub fn plan_alter_source(
     scx: &mut StatementContext,
     stmt: AlterSourceStatement<Aug>,
 ) -> Result<Plan, PlanError> {
+    // A branch resolves production's source, so altering it would change what
+    // production ingests.
+    if scx.catalog.active_branch().is_some() {
+        sql_bail!("cannot ALTER SOURCE from within a branch");
+    }
+
     let AlterSourceStatement {
         source_name,
         if_exists,

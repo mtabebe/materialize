@@ -312,7 +312,7 @@ impl Coordinator {
                     ctx.retire(result);
                 }
                 Plan::ShowBranches(plan::ShowBranchesPlan) => {
-                    let res = self.sequence_show_branches(ctx.session());
+                    let res = self.sequence_show_branches(ctx.session()).await;
                     ctx.retire(res);
                 }
                 Plan::ShowBranchChanges(plan) => {

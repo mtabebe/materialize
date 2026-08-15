@@ -387,6 +387,7 @@ pub fn describe_show_branches(
                 "expires",
                 SqlScalarType::TimestampTz { precision: None }.nullable(true),
             )
+            .with_column("ready", SqlScalarType::String.nullable(false))
             .finish(),
     )))
 }

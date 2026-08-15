@@ -140,6 +140,22 @@ pub enum StorageSinkConnection<C: ConnectionAccess = InlinedConnection> {
 }
 
 impl<C: ConnectionAccess> StorageSinkConnection<C> {
+    /// What this sink writes to, as the connection it goes through plus the
+    /// name of the thing it writes there.
+    ///
+    /// Two sinks with equal destinations write to the same place, which is
+    /// silent corruption for both. A branch uses this to refuse a sink that
+    /// would write where production already does.
+    pub fn destination(&self) -> (CatalogItemId, String) {
+        match self {
+            StorageSinkConnection::Kafka(k) => (k.connection_id, k.topic.clone()),
+            StorageSinkConnection::Iceberg(i) => (
+                i.catalog_connection_id,
+                format!("{}.{}", i.namespace, i.table),
+            ),
+        }
+    }
+
     /// Determines if `self` is compatible with another `StorageSinkConnection`,
     /// in such a way that it is possible to turn `self` into `other` through a
     /// valid series of transformations (e.g. no transformation or `ALTER

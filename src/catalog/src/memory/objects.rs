@@ -760,6 +760,12 @@ impl mz_sql::catalog::CatalogItem for CatalogCollectionEntry {
         self.entry.source_desc()
     }
 
+    fn sink_connection(
+        &self,
+    ) -> Option<&mz_storage_types::sinks::StorageSinkConnection<ReferencedConnection>> {
+        mz_sql::catalog::CatalogItem::sink_connection(&self.entry)
+    }
+
     fn connection(
         &self,
     ) -> Result<mz_storage_types::connections::Connection<ReferencedConnection>, SqlCatalogError>
@@ -4008,6 +4014,15 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
 
     fn source_desc(&self) -> Result<Option<&SourceDesc<ReferencedConnection>>, SqlCatalogError> {
         self.source_desc()
+    }
+
+    fn sink_connection(
+        &self,
+    ) -> Option<&mz_storage_types::sinks::StorageSinkConnection<ReferencedConnection>> {
+        match self.item() {
+            CatalogItem::Sink(sink) => Some(&sink.connection),
+            _ => None,
+        }
     }
 
     fn connection(
