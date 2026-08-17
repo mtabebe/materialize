@@ -10,3 +10,5 @@
 //! Types related to the arrangement and management of collections.
 
 pub mod manager;
+
+pub mod checkpoint;

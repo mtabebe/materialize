@@ -43,8 +43,6 @@ use timely::PartialOrder;
 use timely::dataflow::operators::generic::OperatorInfo;
 use timely::progress::{Antichain, Timestamp as _, frontier::AntichainRef};
 
-use crate::{DatumContainer, DatumSeq};
-
 /// Names an arrangement within a dataflow, stably across the capture that
 /// writes it and the restore that consumes it.
 ///
@@ -87,13 +85,13 @@ impl std::fmt::Display for ArrangementName {
 /// Every update carries `as_of` as its time, so the time is stored once rather
 /// than per update.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Captured<D = Diff> {
+pub struct Captured<K = Row, V = Row, D = Diff> {
     as_of: Timestamp,
     /// Sorted by `(key, val)`, consolidated, and free of zero diffs.
-    updates: Vec<((Row, Row), D)>,
+    updates: Vec<((K, V), D)>,
 }
 
-impl<D> Captured<D> {
+impl<K, V, D> Captured<K, V, D> {
     /// The time every update in this capture is stamped with.
     pub fn as_of(&self) -> Timestamp {
         self.as_of
@@ -110,8 +108,13 @@ impl<D> Captured<D> {
     }
 
     /// The captured updates, sorted by `(key, val)`.
-    pub fn updates(&self) -> &[((Row, Row), D)] {
+    pub fn updates(&self) -> &[((K, V), D)] {
         &self.updates
+    }
+
+    /// Builds a capture directly. For tests and for decoding a stored checkpoint.
+    pub fn new(as_of: Timestamp, updates: Vec<((K, V), D)>) -> Self {
+        Self { as_of, updates }
     }
 }
 
@@ -122,21 +125,23 @@ impl<D> Captured<D> {
 /// from the trace is `since <= as_of`, which holds while `as_of` is near the
 /// dataflow's frontier. A trace compacted past `as_of` cannot answer, and the
 /// caller must fall back to rebuilding.
-pub fn capture<Tr, D>(trace: &mut Tr, as_of: Timestamp) -> Captured<D>
+pub fn capture<Tr, KC, VC, D>(trace: &mut Tr, as_of: Timestamp) -> Captured<KC::Owned, VC::Owned, D>
 where
     Tr: TraceReader<Time = Timestamp>,
     Tr::Batch: Navigable,
+    KC: BatchContainer,
+    VC: BatchContainer,
     D: Semigroup + Clone,
     for<'a> <Tr::Batch as Navigable>::Cursor:
-        Cursor<Time = Timestamp, Diff = D, Key<'a> = DatumSeq<'a>, Val<'a> = DatumSeq<'a>>,
+        Cursor<Time = Timestamp, Diff = D, Key<'a> = KC::ReadItem<'a>, Val<'a> = VC::ReadItem<'a>>,
 {
     let (mut cursor, storage) = trace.cursor();
-    let mut updates: Vec<((Row, Row), D)> = Vec::new();
+    let mut updates: Vec<((KC::Owned, VC::Owned), D)> = Vec::new();
 
     while let Some(key) = cursor.get_key(&storage) {
-        let key = <DatumContainer as BatchContainer>::into_owned(key);
+        let key = KC::into_owned(key);
         while let Some(val) = cursor.get_val(&storage) {
-            let val = <DatumContainer as BatchContainer>::into_owned(val);
+            let val = VC::into_owned(val);
             if let Some(diff) = accumulate(&mut cursor, &storage, &as_of) {
                 updates.push(((key.clone(), val), diff));
             }
@@ -174,7 +179,13 @@ where
 /// The batch spans `[minimum, as_of + 1)` with `since = as_of`, so the live
 /// batches an operator appends from `as_of + 1` onward are contiguous with it.
 /// [`Trace::insert`] requires that contiguity and treats a gap as an error.
-pub fn rebuild_batch<Bu>(captured: &Captured<<Bu::Input as StackOf>::Diff>) -> Bu::Output
+pub fn rebuild_batch<Bu>(
+    captured: &Captured<
+        <Bu::Input as StackOf>::Key,
+        <Bu::Input as StackOf>::Val,
+        <Bu::Input as StackOf>::Diff,
+    >,
+) -> Bu::Output
 where
     Bu: Builder<Time = Timestamp>,
     Bu::Input: StackOf,
@@ -197,18 +208,27 @@ where
 /// Exists so [`rebuild_batch`] does not have to name the columnation stack a
 /// given builder consumes.
 pub trait StackOf {
+    /// The key type the chunk carries.
+    type Key;
+    /// The value type the chunk carries.
+    type Val;
     /// The diff type the chunk carries.
     type Diff;
     /// Builds a chunk holding `updates`, all stamped `as_of`.
-    fn with_updates(as_of: Timestamp, updates: &[((Row, Row), Self::Diff)]) -> Self;
+    fn with_updates(as_of: Timestamp, updates: &[((Self::Key, Self::Val), Self::Diff)]) -> Self;
 }
 
-impl<D: Clone + columnation::Columnation + 'static> StackOf
-    for ColumnationStack<((Row, Row), Timestamp, D)>
+impl<K, V, D> StackOf for ColumnationStack<((K, V), Timestamp, D)>
+where
+    K: Clone + columnation::Columnation + 'static,
+    V: Clone + columnation::Columnation + 'static,
+    D: Clone + columnation::Columnation + 'static,
 {
+    type Key = K;
+    type Val = V;
     type Diff = D;
 
-    fn with_updates(as_of: Timestamp, updates: &[((Row, Row), D)]) -> Self {
+    fn with_updates(as_of: Timestamp, updates: &[((K, V), D)]) -> Self {
         let mut stack = ColumnationStack::with_capacity(updates.len());
         for ((key, val), diff) in updates {
             stack.copy(&((key.clone(), val.clone()), as_of, diff.clone()));
@@ -432,6 +452,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::DatumContainer;
     use crate::spines::RowRowLayout;
 
     type Layout = RowRowLayout<((Row, Row), Timestamp, Diff)>;
@@ -477,7 +498,7 @@ mod tests {
         trace: &mut RestorableSpine<RowRowBatch>,
         as_of: Timestamp,
     ) -> Vec<((Row, Row), Diff)> {
-        capture(trace, as_of).updates
+        capture::<_, DatumContainer, DatumContainer, _>(trace, as_of).updates
     }
 
     /// Stands in for rendering plan node `node`, building `count` arrangements.
@@ -508,7 +529,7 @@ mod tests {
             <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
         source.insert(batch(as_of, &updates));
 
-        let captured = capture(&mut source, as_of);
+        let captured = capture::<_, DatumContainer, DatumContainer, _>(&mut source, as_of);
         assert_eq!(captured.as_of(), as_of);
         assert_eq!(captured.updates(), &updates[..]);
 
@@ -602,12 +623,14 @@ mod tests {
 
         // As of 5 the second update has not happened yet.
         assert_eq!(
-            capture(&mut source, Timestamp::new(5)).updates(),
+            capture::<_, DatumContainer, DatumContainer, _>(&mut source, Timestamp::new(5))
+                .updates(),
             &[((key.clone(), val.clone()), Diff::ONE)]
         );
         // As of 9 both accumulate.
         assert_eq!(
-            capture(&mut source, Timestamp::new(9)).updates(),
+            capture::<_, DatumContainer, DatumContainer, _>(&mut source, Timestamp::new(9))
+                .updates(),
             &[((key, val), Diff::from(2))]
         );
     }
