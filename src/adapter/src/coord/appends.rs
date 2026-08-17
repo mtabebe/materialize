@@ -1582,6 +1582,7 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::DropBranch(_)
         | Plan::ShowBranches(_)
         | Plan::ShowBranchChanges(_)
+        | Plan::AlterBranchSinkDestination(_)
         | Plan::ExplainCreateBranch(_)
         | Plan::CreateCluster(_)
         | Plan::CreateClusterReplica(_)

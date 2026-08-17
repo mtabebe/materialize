@@ -6244,9 +6244,19 @@ impl<'a> Parser<'a> {
 
         Ok(
             match self
-                .expect_one_of_keywords(&[RESET, SET, RENAME, OWNER])
+                .expect_one_of_keywords(&[RESET, SET, RENAME, OWNER, INTO])
                 .map_no_statement_parser_err()?
             {
+                INTO => {
+                    let connection = self
+                        .parse_create_sink_connection()
+                        .map_parser_err(StatementKind::AlterSink)?;
+                    Statement::AlterSink(AlterSinkStatement {
+                        sink_name: name,
+                        if_exists,
+                        action: AlterSinkAction::ChangeDestination(connection),
+                    })
+                }
                 RESET => {
                     self.expect_token(&Token::LParen)
                         .map_parser_err(StatementKind::AlterIndex)?;
@@ -6368,9 +6378,19 @@ impl<'a> Parser<'a> {
 
         Ok(
             match self
-                .expect_one_of_keywords(&[RESET, SET, RENAME, OWNER])
+                .expect_one_of_keywords(&[RESET, SET, RENAME, OWNER, INTO])
                 .map_no_statement_parser_err()?
             {
+                INTO => {
+                    let connection = self
+                        .parse_create_sink_connection()
+                        .map_parser_err(StatementKind::AlterSink)?;
+                    Statement::AlterSink(AlterSinkStatement {
+                        sink_name: name,
+                        if_exists,
+                        action: AlterSinkAction::ChangeDestination(connection),
+                    })
+                }
                 RESET => {
                     self.expect_token(&Token::LParen)
                         .map_parser_err(StatementKind::AlterSink)?;

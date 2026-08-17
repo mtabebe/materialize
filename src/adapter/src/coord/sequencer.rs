@@ -315,6 +315,12 @@ impl Coordinator {
                     let res = self.sequence_show_branches(ctx.session()).await;
                     ctx.retire(res);
                 }
+                Plan::AlterBranchSinkDestination(plan) => {
+                    let res = self
+                        .sequence_alter_branch_sink_destination(ctx.session(), plan)
+                        .await;
+                    ctx.retire(res);
+                }
                 Plan::ShowBranchChanges(plan) => {
                     let res = self.sequence_show_branch_changes(ctx.session(), plan);
                     ctx.retire(res);

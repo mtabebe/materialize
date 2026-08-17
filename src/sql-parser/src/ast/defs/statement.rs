@@ -2924,6 +2924,9 @@ pub enum AlterSinkAction<T: AstInfo> {
     SetOptions(Vec<CreateSinkOption<T>>),
     ResetOptions(Vec<CreateSinkOptionName>),
     ChangeRelation(T::ItemName),
+    /// Redirects the sink to a different destination. Only meaningful inside a
+    /// branch, whose sink must write somewhere production does not.
+    ChangeDestination(CreateSinkConnection<T>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2943,6 +2946,10 @@ impl<T: AstInfo> AstDisplay for AlterSinkStatement<T> {
         f.write_str(" ");
 
         match &self.action {
+            AlterSinkAction::ChangeDestination(connection) => {
+                f.write_str("INTO ");
+                f.write_node(connection);
+            }
             AlterSinkAction::ChangeRelation(from) => {
                 f.write_str("SET FROM ");
                 f.write_node(from);

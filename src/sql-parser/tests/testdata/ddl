@@ -1943,14 +1943,14 @@ AlterObjectRename(AlterObjectRenameStatement { object_type: Index, if_exists: fa
 parse-statement
 ALTER INDEX i1 misplaced
 ----
-error: Expected one of RESET or SET or RENAME or OWNER, found identifier "misplaced"
+error: Expected one of RESET or SET or RENAME or OWNER or INTO, found identifier "misplaced"
 ALTER INDEX i1 misplaced
                ^
 
 parse-statement
 ALTER INDEX i1
 ----
-error: Expected one of RESET or SET or RENAME or OWNER, found EOF
+error: Expected one of RESET or SET or RENAME or OWNER or INTO, found EOF
 ALTER INDEX i1
               ^
 

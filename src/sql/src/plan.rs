@@ -150,6 +150,7 @@ pub enum Plan {
     DropBranch(DropBranchPlan),
     ShowBranches(ShowBranchesPlan),
     ShowBranchChanges(ShowBranchChangesPlan),
+    AlterBranchSinkDestination(AlterBranchSinkDestinationPlan),
     ExplainCreateBranch(ExplainCreateBranchPlan),
     CreateIndex(CreateIndexPlan),
     CreateType(CreateTypePlan),
@@ -245,7 +246,11 @@ impl Plan {
             StatementKind::AlterNetworkPolicy => &[PlanKind::AlterNetworkPolicy],
             StatementKind::AlterSecret => &[PlanKind::AlterNoop, PlanKind::AlterSecret],
             StatementKind::AlterSetCluster => &[PlanKind::AlterNoop, PlanKind::AlterSetCluster],
-            StatementKind::AlterSink => &[PlanKind::AlterNoop, PlanKind::AlterSink],
+            StatementKind::AlterSink => &[
+                PlanKind::AlterNoop,
+                PlanKind::AlterSink,
+                PlanKind::AlterBranchSinkDestination,
+            ],
             StatementKind::AlterSource => &[
                 PlanKind::AlterNoop,
                 PlanKind::AlterSource,
@@ -365,6 +370,7 @@ impl Plan {
             Plan::DropBranch(_) => "drop branch",
             Plan::ShowBranches(_) => "show branches",
             Plan::ShowBranchChanges(_) => "show branch changes",
+            Plan::AlterBranchSinkDestination(_) => "alter branch sink destination",
             Plan::ExplainCreateBranch(_) => "explain create branch",
             Plan::Comment(_) => "comment",
             Plan::DiscardTemp => "discard temp",
@@ -829,6 +835,20 @@ pub struct DropBranchPlan {
 
 #[derive(Debug, Clone)]
 pub struct ShowBranchesPlan;
+
+/// Redirects a branch's copy of a production sink to a different destination.
+///
+/// The branch does not alter production's sink; it takes over a substitute of
+/// its own, which is what lets it emit without production noticing.
+#[derive(Debug, Clone)]
+pub struct AlterBranchSinkDestinationPlan {
+    /// The production sink the branch substitutes for.
+    pub prod_item_id: CatalogItemId,
+    pub name: QualifiedItemName,
+    pub sink: Sink,
+    pub with_snapshot: bool,
+    pub in_cluster: StorageInstanceId,
+}
 
 #[derive(Debug, Clone)]
 pub struct ShowBranchChangesPlan {

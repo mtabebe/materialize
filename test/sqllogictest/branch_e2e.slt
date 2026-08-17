@@ -144,6 +144,35 @@ nothing  u3->u4  <EXPIRES>  ready
 statement ok
 DROP BRANCH nothing
 
+# A branch redirects its output by taking over a copy of a production sink,
+# rather than by altering production's. These gates run before the sink name is
+# resolved, so they are what a user hits first.
+#
+# NOTE: creating a Kafka sink validates against a live broker, which this suite
+# has none of, so the redirect itself is not exercised here. What is exercised is
+# every refusal around it.
+statement ok
+CREATE CONNECTION kc TO KAFKA (BROKER 'localhost:9092', SECURITY PROTOCOL PLAINTEXT) WITH (VALIDATE = false)
+
+statement error ALTER SINK ... INTO is only supported from within a branch
+ALTER SINK snk INTO KAFKA CONNECTION kc (TOPIC 'other')
+
+statement ok
+SET branch = b
+
+statement error cannot ALTER SINK from within a branch, except ALTER SINK ... INTO
+ALTER SINK snk SET (COMMIT INTERVAL = '1s')
+
+statement error cannot ALTER SINK from within a branch, except ALTER SINK ... INTO
+ALTER SINK snk SET FROM t
+
+# Past the gate, so it reaches name resolution.
+statement error unknown catalog item 'snk'
+ALTER SINK snk INTO KAFKA CONNECTION kc (TOPIC 'branch')
+
+statement ok
+RESET branch
+
 # Production is never blocked by a branch, so dropping an object a branch
 # substitutes for succeeds and takes the substitute with it. The branch survives
 # as an invalid record: it describes something that no longer exists, but its

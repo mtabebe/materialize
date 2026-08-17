@@ -77,6 +77,7 @@ use mz_sql_parser::ast::{Raw, RawClusterName, RawItemName};
 use mz_storage_types::sinks::StorageSinkDesc;
 use mz_timestamp_oracle::TimestampOracle;
 // Import `plan` module, but only import select elements to avoid merge conflicts on use statements.
+use crate::coord::timeline::TimelineContext;
 use mz_sql::plan::{
     AlterConnectionAction, AlterConnectionPlan, CreateSourcePlanBundle, ExplainSinkSchemaPlan,
     Explainee, ExplaineeStatement, MutationKind, Params, Plan, PlannedAlterRoleOption,
@@ -1889,23 +1890,6 @@ impl Coordinator {
             )));
         }
 
-        // One oracle read fixes the branch point on every input in the
-        // timeline. A single-cluster branch's inputs are all on
-        // `EpochMilliseconds`; a branch spanning timelines takes one read per
-        // timeline.
-        let branch_point = self.get_local_read_ts().await;
-        let branch_ts = vec![BranchTimestamp {
-            timeline: Timeline::EpochMilliseconds.to_string(),
-            ts: branch_point,
-        }];
-        let branch_name = name.clone();
-
-        let expires_in =
-            expires_in.unwrap_or_else(|| self.catalog().system_config().branch_default_expires());
-        let expires_ts = u64::try_from(expires_in.as_millis())
-            .ok()
-            .and_then(|millis| (self.now()).checked_add(millis));
-
         // A branch substitutes for the indexes its cluster holds and the tables
         // its dataflows can write; everything else it reads in place.
         let mut scope = BranchScope::default();
@@ -1915,6 +1899,54 @@ impl Coordinator {
             scope.tables.extend(cluster_scope.tables);
             scope.shared.extend(cluster_scope.shared);
         }
+
+        // One oracle read per timeline the branch's inputs touch fixes the
+        // branch point for every input on that timeline. Clusters need not share
+        // a timeline: each input is forked and held at the branch point of its
+        // own timeline. In practice user objects are all on
+        // `EpochMilliseconds`, so this is one read.
+        let mut timelines: BTreeSet<Timeline> = BTreeSet::new();
+        let inputs = scope
+            .shared
+            .iter()
+            .copied()
+            .chain(scope.tables.iter().flat_map(|id| {
+                self.catalog()
+                    .get_entry(id)
+                    .global_ids()
+                    .collect::<Vec<_>>()
+            }));
+        for gid in inputs {
+            if let Ok(TimelineContext::TimelineDependent(timeline)) =
+                self.catalog().validate_timeline_context(vec![gid])
+            {
+                timelines.insert(timeline);
+            }
+        }
+        // A branch with no timeline-dependent input still forks and holds at a
+        // point, and every user object lives on this timeline.
+        timelines.insert(Timeline::EpochMilliseconds);
+
+        let mut branch_ts = Vec::with_capacity(timelines.len());
+        for timeline in timelines {
+            let ts = self.get_timestamp_oracle(&timeline).read_ts().await;
+            branch_ts.push(BranchTimestamp {
+                timeline: timeline.to_string(),
+                ts,
+            });
+        }
+        let branch_point = branch_ts
+            .iter()
+            .find(|ts| ts.timeline == Timeline::EpochMilliseconds.to_string())
+            .expect("epoch-milliseconds branch point is always taken")
+            .ts;
+        let branch_name = name.clone();
+
+        let expires_in =
+            expires_in.unwrap_or_else(|| self.catalog().system_config().branch_default_expires());
+        let expires_ts = u64::try_from(expires_in.as_millis())
+            .ok()
+            .and_then(|millis| (self.now()).checked_add(millis));
 
         let mut ops = Vec::new();
         let mut object_identities = Vec::new();
@@ -2103,6 +2135,78 @@ impl Coordinator {
         self.teardown_branch(branch_id, Some(session.conn_id().clone()))
             .await?;
         Ok(ExecuteResponse::DroppedBranch)
+    }
+
+    /// Gives a branch its own copy of a production sink, writing somewhere else.
+    ///
+    /// The production sink is untouched: the branch takes over a substitute,
+    /// which is what lets it emit without production noticing, and which
+    /// disappears with the branch.
+    #[instrument]
+    pub(super) async fn sequence_alter_branch_sink_destination(
+        &mut self,
+        session: &Session,
+        plan::AlterBranchSinkDestinationPlan {
+            prod_item_id,
+            name,
+            sink,
+            with_snapshot,
+            in_cluster,
+        }: plan::AlterBranchSinkDestinationPlan,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let branch_id = session
+            .vars()
+            .branch()
+            .and_then(|name| self.catalog().state().resolve_branch(name))
+            .map(|branch| branch.id)
+            .ok_or_else(|| AdapterError::Unstructured(anyhow!("not inside a branch")))?;
+        let branch_name = session.vars().branch().expect("just resolved").to_string();
+        let prod_entry = self.catalog().get_entry(&prod_item_id).clone();
+        if prod_entry.branch_id.is_some() {
+            return Err(AdapterError::Unstructured(anyhow!(
+                "sink is already the branch's own"
+            )));
+        }
+        let prod_gid = prod_entry.latest_global_id();
+        let (item_id, global_id) = self.allocate_user_id().await?;
+
+        let ops = vec![
+            catalog::Op::AddBranchIdentity {
+                branch_id,
+                identity: BranchObjectIdentity {
+                    prod_global_id: prod_gid,
+                    branch_global_id: global_id,
+                },
+                snapshot_item: BranchSnapshotItem {
+                    global_id: prod_gid,
+                    create_sql: prod_entry.create_sql().to_string(),
+                },
+            },
+            catalog::Op::CreateBranchItem {
+                branch: (branch_name, *session.current_role_id()),
+                id: item_id,
+                global_id,
+                name,
+                item: Some(CatalogItem::Sink(Sink {
+                    create_sql: sink.create_sql,
+                    global_id,
+                    from: sink.from,
+                    connection: sink.connection,
+                    envelope: sink.envelope,
+                    version: sink.version,
+                    with_snapshot,
+                    resolved_ids: prod_entry.item().references().clone(),
+                    cluster_id: in_cluster,
+                    commit_interval: sink.commit_interval,
+                })),
+                owner_id: *prod_entry.owner_id(),
+                privileges: prod_entry.privileges().all_values_owned().collect(),
+                fork_shard: None,
+            },
+        ];
+        self.catalog_transact_with_context(Some(session.conn_id()), None, ops)
+            .await
+            .map(|_| ExecuteResponse::AlteredObject(ObjectType::Sink))
     }
 
     /// Whether every index a branch rebuilt has finished hydrating.

@@ -2410,6 +2410,24 @@ impl<'a> Transaction<'a> {
         }
     }
 
+    /// Replaces the branch with `id`.
+    pub fn update_branch(
+        &mut self,
+        id: BranchId,
+        branch: BranchDescriptor,
+    ) -> Result<(), CatalogError> {
+        let updated = self.branches.update_by_key(
+            BranchDescriptorKey { id },
+            branch.into_key_value().1,
+            self.op_id,
+        )?;
+        if updated {
+            Ok(())
+        } else {
+            Err(SqlCatalogError::UnknownBranch(id.to_string()).into())
+        }
+    }
+
     /// Removes the branch with `id`.
     pub fn remove_branch(&mut self, id: BranchId) -> Result<(), CatalogError> {
         let prev = self

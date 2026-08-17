@@ -198,6 +198,14 @@ pub enum Op {
     DropBranch {
         id: BranchId,
     },
+    /// Records that a branch has substituted its own object for a production
+    /// one after the branch was created, which is how a redirected sink becomes
+    /// branch-owned.
+    AddBranchIdentity {
+        branch_id: BranchId,
+        identity: BranchObjectIdentity,
+        snapshot_item: BranchSnapshotItem,
+    },
     /// Creates an item a branch substitutes for a production object.
     ///
     /// Like [`Op::CreateItem`], except a table binds to `fork_shard` -- the
@@ -1947,6 +1955,22 @@ impl Catalog {
                         details,
                     )?;
                 }
+            }
+            Op::AddBranchIdentity {
+                branch_id,
+                identity,
+                snapshot_item,
+            } => {
+                let mut branch = state
+                    .get_branches(None)
+                    .find(|branch| branch.id == branch_id)
+                    .ok_or_else(|| {
+                        AdapterError::Unstructured(anyhow::anyhow!("unknown branch {branch_id}"))
+                    })?
+                    .clone();
+                branch.object_identities.push(identity);
+                branch.branch_point_snapshot.push(snapshot_item);
+                tx.update_branch(branch_id, branch)?;
             }
             Op::CreateBranchItem {
                 branch: (branch_name, branch_owner),

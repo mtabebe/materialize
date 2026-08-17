@@ -1015,7 +1015,8 @@ impl ExecuteResponse {
             | AlterSink
             | AlterTableAddColumn
             | AlterMaterializedViewApplyReplacement
-            | AlterNetworkPolicy => &[AlteredObject],
+            | AlterNetworkPolicy
+            | AlterBranchSinkDestination => &[AlteredObject],
             AlterDefaultPrivileges => &[AlteredDefaultPrivileges],
             AlterSetCluster => &[AlteredObject],
             AlterRole => &[AlteredRole],

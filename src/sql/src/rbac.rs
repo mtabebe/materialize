@@ -1147,6 +1147,9 @@ fn generate_rbac_requirements(
             item_usage: &CREATE_ITEM_USAGE,
             ..Default::default()
         },
+        // A branch alters its own copy of a sink, which it owns because it owns
+        // the branch; the production sink is untouched.
+        Plan::AlterBranchSinkDestination(_) => RbacRequirements::default(),
         Plan::AlterSink(plan::AlterSinkPlan {
             item_id,
             global_id: _,

@@ -110,3 +110,17 @@ RESET branch
 RESET branch
 =>
 ResetVariable(ResetVariableStatement { variable: Ident("branch") })
+
+parse-statement
+ALTER SINK snk INTO KAFKA CONNECTION kc (TOPIC 'branch')
+----
+ALTER SINK snk INTO KAFKA CONNECTION kc (TOPIC = 'branch')
+=>
+AlterSink(AlterSinkStatement { sink_name: UnresolvedItemName([Ident("snk")]), if_exists: false, action: ChangeDestination(Kafka { connection: Name(UnresolvedItemName([Ident("kc")])), options: [KafkaSinkConfigOption { name: Topic, value: Some(Value(String("branch"))) }], key: None, headers: None }) })
+
+parse-statement
+ALTER SINK IF EXISTS snk INTO KAFKA CONNECTION kc (TOPIC 'branch')
+----
+ALTER SINK IF EXISTS snk INTO KAFKA CONNECTION kc (TOPIC = 'branch')
+=>
+AlterSink(AlterSinkStatement { sink_name: UnresolvedItemName([Ident("snk")]), if_exists: true, action: ChangeDestination(Kafka { connection: Name(UnresolvedItemName([Ident("kc")])), options: [KafkaSinkConfigOption { name: Topic, value: Some(Value(String("branch"))) }], key: None, headers: None }) })

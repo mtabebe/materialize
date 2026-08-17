@@ -1266,7 +1266,7 @@ impl Coordinator {
                 }
                 // A branch's own limit is its per-owner quota, checked where it
                 // is sequenced; it consumes none of the object limits here.
-                Op::CreateBranch { .. } | Op::DropBranch { .. } => {}
+                Op::CreateBranch { .. } | Op::DropBranch { .. } | Op::AddBranchIdentity { .. } => {}
                 // A branch's items substitute for production objects that
                 // already count against these limits.
                 Op::CreateBranchItem { .. } => {}

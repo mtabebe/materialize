@@ -149,15 +149,16 @@ use crate::plan::statement::{StatementContext, StatementDesc, scl};
 use crate::plan::typeconv::CastContext;
 use crate::plan::with_options::{OptionalDuration, OptionalString, TryFromValue};
 use crate::plan::{
-    AlterClusterPlan, AlterClusterPlanStrategy, AlterClusterRenamePlan,
-    AlterClusterReplicaRenamePlan, AlterClusterSwapPlan, AlterConnectionPlan, AlterItemRenamePlan,
-    AlterMaterializedViewApplyReplacementPlan, AlterNetworkPolicyPlan, AlterNoopPlan,
-    AlterOptionParameter, AlterRetainHistoryPlan, AlterRolePlan, AlterSchemaRenamePlan,
-    AlterSchemaSwapPlan, AlterSecretPlan, AlterSetClusterPlan, AlterSinkPlan,
-    AlterSourceTimestampIntervalPlan, AlterSystemResetAllPlan, AlterSystemResetPlan,
-    AlterSystemSetPlan, AlterTablePlan, AutoScalingStrategy, BranchClusterMap, ClusterSchedule,
-    CommentPlan, ComputeReplicaConfig, ComputeReplicaIntrospectionConfig, ConnectionDetails,
-    CreateBranchPlan, CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
+    AlterBranchSinkDestinationPlan, AlterClusterPlan, AlterClusterPlanStrategy,
+    AlterClusterRenamePlan, AlterClusterReplicaRenamePlan, AlterClusterSwapPlan,
+    AlterConnectionPlan, AlterItemRenamePlan, AlterMaterializedViewApplyReplacementPlan,
+    AlterNetworkPolicyPlan, AlterNoopPlan, AlterOptionParameter, AlterRetainHistoryPlan,
+    AlterRolePlan, AlterSchemaRenamePlan, AlterSchemaSwapPlan, AlterSecretPlan,
+    AlterSetClusterPlan, AlterSinkPlan, AlterSourceTimestampIntervalPlan, AlterSystemResetAllPlan,
+    AlterSystemResetPlan, AlterSystemSetPlan, AlterTablePlan, AutoScalingStrategy,
+    BranchClusterMap, ClusterSchedule, CommentPlan, ComputeReplicaConfig,
+    ComputeReplicaIntrospectionConfig, ConnectionDetails, CreateBranchPlan,
+    CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
     CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
     CreateIndexPlan, CreateMaterializedViewPlan, CreateNetworkPolicyPlan, CreateRolePlan,
     CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan,
@@ -7856,12 +7857,18 @@ pub fn plan_alter_sink(
         action,
     } = stmt;
 
-    // A branch does not take sinks over, so a sink it resolves is production's
-    // and altering it would change production. Redirecting a branch's output
-    // means creating a sink inside the branch, which is refused above unless it
-    // writes somewhere production does not.
-    if scx.catalog.active_branch().is_some() {
-        sql_bail!("cannot ALTER SINK from within a branch; create a branch sink instead");
+    // A branch does not take sinks over, so a sink it resolves is production's.
+    // `INTO` gives the branch a substitute of its own to emit from; every other
+    // action would change production's sink, which a branch must not do.
+    match (&action, scx.catalog.active_branch()) {
+        (AlterSinkAction::ChangeDestination(_), None) => {
+            sql_bail!("ALTER SINK ... INTO is only supported from within a branch")
+        }
+        (AlterSinkAction::ChangeDestination(_), Some(_)) => {}
+        (_, Some(_)) => sql_bail!(
+            "cannot ALTER SINK from within a branch, except ALTER SINK ... INTO to redirect it"
+        ),
+        (_, None) => {}
     }
 
     let object_type = ObjectType::Sink;
@@ -7892,7 +7899,18 @@ pub fn plan_alter_sink(
     // Then apply the requested change to the statement
     let mut set_options = vec![];
     let mut reset_options = vec![];
+    let mut redirected = false;
     match action {
+        AlterSinkAction::ChangeDestination(connection) => {
+            if stmt.connection == connection {
+                sql_bail!(
+                    "sink {} already writes there; a branch's sink must write somewhere else",
+                    sink_name
+                );
+            }
+            stmt.connection = connection;
+            redirected = true;
+        }
         AlterSinkAction::ChangeRelation(new_from) => {
             stmt.from = new_from;
         }
@@ -7953,6 +7971,18 @@ pub fn plan_alter_sink(
     let Plan::CreateSink(mut plan) = plan_sink(scx, stmt)? else {
         bail_internal!("plan_sink did not produce a CreateSink plan");
     };
+
+    if redirected {
+        return Ok(Plan::AlterBranchSinkDestination(
+            AlterBranchSinkDestinationPlan {
+                prod_item_id: item.id(),
+                name: plan.name,
+                sink: plan.sink,
+                with_snapshot: plan.with_snapshot,
+                in_cluster: plan.in_cluster,
+            },
+        ));
+    }
 
     plan.sink.version += 1;
 
