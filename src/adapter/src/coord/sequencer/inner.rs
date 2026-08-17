@@ -28,6 +28,7 @@ use mz_catalog::memory::error::ErrorKind;
 use mz_catalog::memory::objects::{
     CatalogItem, Connection, DataSourceDesc, Sink, Source, Table, TableDataSource, Type,
 };
+use mz_controller_types::ClusterId;
 use mz_expr::{
     CollectionPlan, Eval, MapFilterProject, OptimizedMirRelationExpr, ResultSpec, RowSetFinishing,
 };
@@ -51,6 +52,7 @@ use mz_repr::{
     RowIterator, Timestamp,
 };
 use mz_secrets::SecretsReader;
+use mz_sql::ast::visit_mut::VisitMut;
 use mz_sql::ast::{
     AlterSourceAddSubsourceOption, CreateSinkOption, CreateSinkOptionName, CreateSourceOptionName,
     CreateSubsourceOption, CreateSubsourceOptionName, SqlServerConfigOption,
@@ -71,6 +73,7 @@ use mz_sql::plan::{
     StatementContext,
 };
 use mz_sql::pure::{PurifiedSourceExport, generate_subsource_statements};
+use mz_sql_parser::ast::{Raw, RawClusterName, RawItemName};
 use mz_storage_types::sinks::StorageSinkDesc;
 use mz_timestamp_oracle::TimestampOracle;
 // Import `plan` module, but only import select elements to avoid merge conflicts on use statements.
@@ -107,8 +110,8 @@ use tokio::sync::{oneshot, watch};
 use tracing::{Instrument, Span, info, warn};
 
 use crate::CollectionIdBundle;
-use crate::catalog::BranchScope;
 use crate::catalog::{self, Catalog, ConnCatalog, DropObjectInfo, UpdatePrivilegeVariant};
+use crate::catalog::{BranchScope, CatalogState};
 use crate::command::{ExecuteResponse, Response};
 use crate::coord::appends::{
     BuiltinTableAppendNotify, DeferredOp, DeferredPlan, PendingWriteTxn, UserWriteResponder,
@@ -2109,6 +2112,12 @@ impl Coordinator {
     /// how long that takes scales with the data. Reporting the two together
     /// would hide that difference, which is the whole reason this is surfaced.
     async fn branch_readiness(&self, branch_id: BranchId) -> &'static str {
+        // A branch whose production twin or branch cluster was dropped out from
+        // under it describes something that no longer exists, which is a more
+        // important thing to report than how far its indexes got.
+        if !self.catalog().state().branch_is_valid(branch_id) {
+            return "invalid";
+        }
         let indexes: Vec<_> = self
             .catalog()
             .state()
@@ -2410,7 +2419,10 @@ impl Coordinator {
             .into_iter()
             .map(|(name, typ, change, sql)| {
                 if as_sql {
-                    Row::pack_slice(&[Datum::String(&sql)])
+                    Row::pack_slice(&[
+                        Datum::String(&sql),
+                        Datum::String(&production_sql(state, &sql)),
+                    ])
                 } else {
                     Row::pack_slice(&[
                         Datum::String(&name),
@@ -5622,6 +5634,80 @@ impl Coordinator {
             self.catalog_mut().set_dataflow_metainfo(export_id, df_meta);
 
             None
+        }
+    }
+}
+
+/// Rewrites a branch item's `create_sql` to target production.
+///
+/// A branch item names the branch's own identities: the branch's cluster, and
+/// the branch's copy of whatever it reads. That is a faithful description of the
+/// branch and is exactly wrong to paste into production, so the extracted DDL
+/// carries both spellings and this is the one meant to run.
+///
+/// Falls back to the branch's own SQL when a reference cannot be mapped, so an
+/// extraction never silently loses a change.
+fn production_sql(state: &CatalogState, branch_sql: &str) -> String {
+    let Ok(mut stmts) = mz_sql::parse::parse(branch_sql) else {
+        return branch_sql.to_string();
+    };
+    if stmts.len() != 1 {
+        return branch_sql.to_string();
+    }
+    let mut stmt = stmts.remove(0).ast;
+    let mut rewriter = ProductionRewriter {
+        state,
+        unmapped: false,
+    };
+    rewriter.visit_statement_mut(&mut stmt);
+    if rewriter.unmapped {
+        return branch_sql.to_string();
+    }
+    stmt.to_ast_string_stable()
+}
+
+struct ProductionRewriter<'a> {
+    state: &'a CatalogState,
+    unmapped: bool,
+}
+
+impl<'ast> VisitMut<'ast, Raw> for ProductionRewriter<'_> {
+    fn visit_item_name_mut(&mut self, name: &'ast mut RawItemName) {
+        let RawItemName::Id(id, _, _) = name else {
+            return;
+        };
+        let Ok(item_id) = id.parse::<CatalogItemId>() else {
+            return;
+        };
+        let Some(entry) = self.state.try_get_entry(&item_id) else {
+            return;
+        };
+        // Only a branch item needs rewriting; a reference to a production
+        // object is already correct.
+        if entry.branch_id.is_none() {
+            return;
+        }
+        match entry
+            .global_ids()
+            .find_map(|gid| self.state.production_of_branch_global_id(gid))
+            .and_then(|gid| self.state.try_get_entry_by_global_id(&gid))
+        {
+            Some(prod) => *id = prod.id().to_string(),
+            None => self.unmapped = true,
+        }
+    }
+
+    fn visit_cluster_name_mut(&mut self, name: &'ast mut RawClusterName) {
+        let RawClusterName::Resolved(id) = name else {
+            return;
+        };
+        let Ok(cluster_id) = id.parse::<ClusterId>() else {
+            return;
+        };
+        match self.state.production_cluster_for(cluster_id) {
+            Some(prod) => *id = prod.to_string(),
+            // A cluster that is not a branch cluster is production's already.
+            None => {}
         }
     }
 }

@@ -1974,6 +1974,10 @@ impl SessionCatalog for ConnCatalog<'_> {
         self.state.resolve_branch(name).map(|branch| branch.id)
     }
 
+    fn branch_is_valid(&self, branch: BranchId) -> bool {
+        self.state.branch_is_valid(branch)
+    }
+
     fn active_cluster(&self) -> &str {
         &self.cluster
     }

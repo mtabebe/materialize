@@ -1330,6 +1330,10 @@ impl SessionCatalog for CatalogRuntime {
         None
     }
 
+    fn branch_is_valid(&self, _branch: BranchId) -> bool {
+        false
+    }
+
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)] {
         &self.search_path
     }
@@ -2041,6 +2045,10 @@ impl SessionCatalog for TaskCatalog {
 
     fn resolve_branch(&self, name: &str) -> Option<BranchId> {
         self.base.resolve_branch(name)
+    }
+
+    fn branch_is_valid(&self, branch: BranchId) -> bool {
+        self.base.branch_is_valid(branch)
     }
 
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)] {

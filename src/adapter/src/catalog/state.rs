@@ -867,6 +867,16 @@ impl CatalogState {
                     for dependent_id in entry.used_by().iter().rev() {
                         stack.push(Work::Enter(*dependent_id));
                     }
+                    // A branch's substitute for this item is derived from it, so
+                    // it cannot outlive it. It is deliberately *not* in
+                    // `used_by`: a branch is an experiment and must not be able
+                    // to block a production drop, so the substitute is dropped
+                    // along with its twin rather than requiring CASCADE. The
+                    // branch itself survives as an invalid record; see
+                    // `CatalogState::branch_is_valid`.
+                    for substitute in self.branch_substitutes_of(&item_id) {
+                        stack.push(Work::Enter(substitute));
+                    }
                 }
                 Work::Emit(object_id) => dependents.push(object_id),
             }
@@ -1361,6 +1371,57 @@ impl CatalogState {
             .find(|map| map.prod_cluster_id == *prod)
             .map(|map| map.branch_cluster_id)?;
         Some(self.clusters_by_id.get(&branch_cluster_id)?.name.clone())
+    }
+
+    /// Every branch item that substitutes for `prod`.
+    fn branch_substitutes_of(&self, prod: &CatalogItemId) -> Vec<CatalogItemId> {
+        let Some(entry) = self.entry_by_id.get(prod) else {
+            return Vec::new();
+        };
+        let prod_gids: Vec<_> = entry.global_ids().collect();
+        self.branches_by_id
+            .values()
+            .flat_map(|branch| branch.object_identities.iter())
+            .filter(|identity| prod_gids.contains(&identity.prod_global_id))
+            .filter_map(|identity| {
+                self.try_get_entry_by_global_id(&identity.branch_global_id)
+                    .map(|entry| entry.id())
+            })
+            .collect()
+    }
+
+    /// Whether a branch still has everything it was built against.
+    ///
+    /// A branch derives its items from the production objects it substitutes
+    /// for and renders them on the clusters it was mapped to, so dropping
+    /// either leaves it describing something that no longer exists. Production
+    /// is never blocked from that drop, so a branch can be invalidated out from
+    /// under its owner; reporting it is how they find out, and it stays
+    /// droppable so the fork and the retain reference are still reclaimable.
+    pub fn branch_is_valid(&self, branch: BranchId) -> bool {
+        let Some(branch) = self.branches_by_id.get(&branch) else {
+            return false;
+        };
+        branch
+            .cluster_maps
+            .iter()
+            .all(|map| self.clusters_by_id.contains_key(&map.branch_cluster_id))
+            && branch.object_identities.iter().all(|identity| {
+                self.entry_by_global_id
+                    .contains_key(&identity.prod_global_id)
+            })
+    }
+
+    /// The production cluster `branch_cluster` stands in for, if any branch
+    /// maps it.
+    pub fn production_cluster_for(&self, branch_cluster: ClusterId) -> Option<ClusterId> {
+        self.branches_by_id.values().find_map(|branch| {
+            branch
+                .cluster_maps
+                .iter()
+                .find(|map| map.branch_cluster_id == branch_cluster)
+                .map(|map| map.prod_cluster_id)
+        })
     }
 
     /// The identity `branch` substitutes for the production collection `prod`.

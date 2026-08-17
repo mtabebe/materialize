@@ -113,12 +113,14 @@ SHOW BRANCH CHANGES b
 ----
 materialize.public.t_branch_idx  index  added
 
-# The DDL names the branch's cluster (u2) and the branch's table (u3), so what
-# comes back describes the branch, not production.
-query T
+# Two spellings: the branch's own DDL, which names the branch's cluster (u2) and
+# the branch's table (u3), and the same change retargeted at production (u1, u1)
+# so it can be applied there.
+simple
 SHOW BRANCH CHANGES b AS SQL
 ----
-CREATE INDEX "t_branch_idx" IN CLUSTER [u2] ON [u3 AS "materialize"."public"."t"] ("a")
+CREATE INDEX "t_branch_idx" IN CLUSTER [u2] ON [u3 AS "materialize"."public"."t"] ("a"),CREATE INDEX "t_branch_idx" IN CLUSTER [u1] ON [u1 AS "materialize"."public"."t"] ("a")
+COMPLETE 1
 
 # A branch of a cluster with no indexes has nothing to rebuild, so it is ready
 # the moment it exists -- unlike one whose indexes are still warming.
@@ -141,6 +143,40 @@ nothing  u3->u4  <EXPIRES>  ready
 
 statement ok
 DROP BRANCH nothing
+
+# Production is never blocked by a branch, so dropping an object a branch
+# substitutes for succeeds and takes the substitute with it. The branch survives
+# as an invalid record: it describes something that no longer exists, but its
+# fork and retain reference are still reclaimable by dropping it.
+statement ok
+CREATE TABLE doomed (a int)
+
+statement ok
+CREATE CLUSTER doomed_prod SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE INDEX doomed_idx IN CLUSTER doomed_prod ON doomed (a)
+
+statement ok
+CREATE CLUSTER doomed_branch SIZE 'scale=1,workers=1'
+
+statement ok
+CREATE BRANCH dangling FROM CLUSTER doomed_prod IN CLUSTER doomed_branch
+
+statement ok
+DROP TABLE doomed CASCADE
+
+query TTTT
+SHOW BRANCHES
+----
+b  u1->u2  <EXPIRES>  ready
+dangling  u5->u6  <EXPIRES>  invalid
+
+statement error branch dangling is invalid
+SET branch = dangling
+
+statement ok
+DROP BRANCH dangling
 
 statement ok
 DROP BRANCH b

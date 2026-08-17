@@ -410,6 +410,7 @@ pub fn describe_show_branch_changes(
     let desc = if as_sql {
         RelationDesc::builder()
             .with_column("sql", SqlScalarType::String.nullable(false))
+            .with_column("production_sql", SqlScalarType::String.nullable(false))
             .finish()
     } else {
         RelationDesc::builder()

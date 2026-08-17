@@ -115,6 +115,10 @@ pub trait SessionCatalog: fmt::Debug + ExprHumanizer + Send + Sync + ConnectionR
     /// Resolves a branch by name.
     fn resolve_branch(&self, name: &str) -> Option<BranchId>;
 
+    /// Whether a branch still has every object and cluster it was built
+    /// against.
+    fn branch_is_valid(&self, branch: BranchId) -> bool;
+
     /// Returns the resolved search paths for the current user. (Invalid search paths are skipped.)
     fn search_path(&self) -> &[(ResolvedDatabaseSpecifier, SchemaSpecifier)];
 

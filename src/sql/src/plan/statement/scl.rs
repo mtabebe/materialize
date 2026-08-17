@@ -79,8 +79,17 @@ pub fn plan_set_variable(
             let [branch] = &values[..] else {
                 sql_bail!("branch takes exactly one value");
             };
-            if scx.catalog.resolve_branch(branch).is_none() {
+            let Some(branch_id) = scx.catalog.resolve_branch(branch) else {
                 return Err(CatalogError::UnknownBranch(branch.clone()).into());
+            };
+            // An invalid branch resolves names against objects that no longer
+            // exist, so entering it would report confusing failures rather than
+            // the one that matters.
+            if !scx.catalog.branch_is_valid(branch_id) {
+                sql_bail!(
+                    "branch {branch} is invalid: an object or cluster it was built against was \
+                     dropped; DROP BRANCH {branch} to reclaim it"
+                );
             }
         }
     }
