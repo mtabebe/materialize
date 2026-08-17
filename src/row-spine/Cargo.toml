@@ -21,3 +21,8 @@ timely.workspace = true
 
 [features]
 default = ["mz-ore/default", "mz-timely-util/default"]
+
+[dev-dependencies]
+# The crate's spines are generic over the diff, but its own tests instantiate
+# them with `mz_repr::Diff`, whose `Columnation` impl is behind this feature.
+mz-ore = { path = "../ore", default-features = false, features = ["region", "columnation"] }

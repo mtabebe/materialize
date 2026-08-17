@@ -13,6 +13,8 @@
 //! allocations, as well as a `dictionary` encoding wrapper that is able to rewrite
 //! the byte slices to use spare tags in each column to reference common values.
 
+pub mod checkpoint;
+
 pub use self::dictionary::DatumContainer;
 pub use self::dictionary::DatumSeq;
 pub use self::offset_opt::OffsetOptimized;
@@ -28,7 +30,7 @@ pub static DICTIONARY_COMPRESSION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Spines specialized to contain `Row` types in keys and values.
-mod spines {
+pub(crate) mod spines {
     use std::rc::Rc;
 
     use columnation::Columnation;
