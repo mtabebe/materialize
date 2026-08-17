@@ -35,9 +35,9 @@ pub(crate) mod spines {
     use differential_dataflow::trace::implementations::ord_neu::{
         OrdKeyBatch, OrdKeyBuilder, OrdValBatch, OrdValBuilder,
     };
-    use differential_dataflow::trace::implementations::spine_fueled::Spine;
     use differential_dataflow::trace::implementations::{Layout, Update};
     use differential_dataflow::trace::rc_blanket_impls::RcBuilder;
+    use mz_row_spine::checkpoint::RestorableSpine;
     use mz_timely_util::columnation::ColumnationStack;
 
     use mz_row_spine::OffsetOptimized;
@@ -45,13 +45,13 @@ pub(crate) mod spines {
     use crate::typedefs::{KeyBatcher, KeyValBatcher};
 
     /// A spine for generic keys and values.
-    pub type ColValSpine<K, V, T, R> = Spine<Rc<OrdValBatch<MzStack<((K, V), T, R)>>>>;
+    pub type ColValSpine<K, V, T, R> = RestorableSpine<Rc<OrdValBatch<MzStack<((K, V), T, R)>>>>;
     pub type ColValBatcher<K, V, T, R> = KeyValBatcher<K, V, T, R>;
     pub type ColValBuilder<K, V, T, R> =
         RcBuilder<OrdValBuilder<MzStack<((K, V), T, R)>, ColumnationStack<((K, V), T, R)>>>;
 
     /// A spine for generic keys
-    pub type ColKeySpine<K, T, R> = Spine<Rc<OrdKeyBatch<MzStack<((K, ()), T, R)>>>>;
+    pub type ColKeySpine<K, T, R> = RestorableSpine<Rc<OrdKeyBatch<MzStack<((K, ()), T, R)>>>>;
     pub type ColKeyBatcher<K, T, R> = KeyBatcher<K, T, R>;
     pub type ColKeyBuilder<K, T, R> =
         RcBuilder<OrdKeyBuilder<MzStack<((K, ()), T, R)>, ColumnationStack<((K, ()), T, R)>>>;

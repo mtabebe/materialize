@@ -14,7 +14,6 @@ use differential_dataflow::difference::Semigroup;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::arrangement::arrange_core;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
-use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::trace::{Batch, Batcher, Builder, Trace, TraceReader};
 use differential_dataflow::{Collection, Data, ExchangeData, Hashable, VecCollection};
 use timely::Container;
@@ -240,11 +239,12 @@ pub trait ArrangementSize {
 /// * `arranged`: The arrangement to inspect.
 /// * `logic`: Closure that calculates the heap size/capacity/allocations for a batch. The return
 ///    value are size and capacity in bytes, and number of allocations, all in absolute values.
-fn log_arrangement_size_inner<'scope, B, L>(
-    arranged: Arranged<'scope, TraceAgent<Spine<Rc<B>>>>,
+fn log_arrangement_size_inner<'scope, Tr, B, L>(
+    arranged: Arranged<'scope, TraceAgent<Tr>>,
     mut logic: L,
-) -> Arranged<'scope, TraceAgent<Spine<Rc<B>>>>
+) -> Arranged<'scope, TraceAgent<Tr>>
 where
+    Tr: Trace<Batch = Rc<B>> + 'static,
     B: Batch + 'static,
     L: FnMut(&B) -> (usize, usize, usize) + 'static,
 {

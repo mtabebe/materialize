@@ -48,24 +48,37 @@ use crate::{DatumContainer, DatumSeq};
 /// Names an arrangement within a dataflow, stably across the capture that
 /// writes it and the restore that consumes it.
 ///
-/// Capture and restore must derive a name the same way, or a restore silently
-/// populates a trace from the wrong arrangement. The name is therefore derived
-/// from the dataflow's plan, not from anything positional: timely's operator
-/// address is free and arrives in [`Trace::new`], but it shifts whenever the
-/// dataflow's structure changes ahead of it, which fails quietly.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ArrangementName(String);
+/// A name is the plan node that built the arrangement plus which arrangement it
+/// is among those that node built. Both halves come from the plan, so the same
+/// plan names the same arrangements. Timely's operator address would be free,
+/// since it arrives in [`Trace::new`], but it is positional across the whole
+/// dataflow: an unrelated structural change shifts every address after it, and
+/// the restore then populates a trace from a different arrangement without
+/// complaining.
+///
+/// `node` is a plan node id, kept as a `u64` so this crate does not depend on
+/// the compute plan types. Callers pass `LirId`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArrangementName {
+    node: u64,
+    ordinal: u64,
+}
 
 impl ArrangementName {
-    /// Builds a name from a plan-derived path and the arrangement's key.
-    pub fn new(path: impl Into<String>) -> Self {
-        Self(path.into())
+    /// Names the `ordinal`th arrangement built by plan node `node`.
+    pub fn new(node: u64, ordinal: u64) -> Self {
+        Self { node, ordinal }
+    }
+
+    /// The plan node that built the arrangement.
+    pub fn node(&self) -> u64 {
+        self.node
     }
 }
 
 impl std::fmt::Display for ArrangementName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "n{}/{}", self.node, self.ordinal)
     }
 }
 
@@ -213,8 +226,9 @@ impl<D: Clone + columnation::Columnation + 'static> StackOf
 pub struct RestoreRegistry {
     /// Keyed by name, each entry holds the `Vec<B>` for one arrangement's spine.
     pending: BTreeMap<ArrangementName, Box<dyn Any>>,
-    /// The arrangement currently being constructed, set by [`with_name`].
-    building: Vec<ArrangementName>,
+    /// The plan nodes currently being rendered, innermost last, each with the
+    /// number of arrangements built under it so far. Set by [`with_node`].
+    building: Vec<(u64, u64)>,
 }
 
 thread_local! {
@@ -223,20 +237,23 @@ thread_local! {
 
 /// Publishes `batches` as the state for `name` on this worker.
 ///
-/// The next spine constructed inside `with_name(name, ..)` claims them. `B` must
-/// match that spine's batch type exactly; a mismatch leaves the state unclaimed
-/// rather than restoring the wrong thing.
+/// The spine that claims `name` while its plan node renders comes up holding
+/// them. `B` must match that spine's batch type exactly; a mismatch leaves the
+/// state unclaimed rather than restoring the wrong thing.
 pub fn publish<B: 'static>(name: ArrangementName, batches: Vec<B>) {
     REGISTRY.with_borrow_mut(|registry| {
         registry.pending.insert(name, Box::new(batches));
     });
 }
 
-/// Marks `name` as the arrangement being constructed for the duration of `f`.
+/// Renders plan node `node`, naming every arrangement built inside `f` after it.
 ///
-/// Nests, so an operator that builds several arrangements can scope each one.
-pub fn with_name<T>(name: ArrangementName, f: impl FnOnce() -> T) -> T {
-    REGISTRY.with_borrow_mut(|registry| registry.building.push(name));
+/// Arrangements are numbered in construction order within the node, which is
+/// determined by the node's plan, so the same plan numbers them the same way.
+/// Nests, so a node whose rendering renders another still numbers each
+/// separately.
+pub fn with_node<T>(node: u64, f: impl FnOnce() -> T) -> T {
+    REGISTRY.with_borrow_mut(|registry| registry.building.push((node, 0)));
     let result = f();
     REGISTRY.with_borrow_mut(|registry| {
         registry.building.pop();
@@ -260,18 +277,30 @@ pub fn clear() {
     });
 }
 
-/// Takes the state published for the arrangement currently being constructed.
-fn claim<B: 'static>() -> Option<Vec<B>> {
+/// Assigns the next name under the plan node being rendered, and takes any state
+/// published for it.
+///
+/// The name is consumed whether or not state was published for it. Skipping the
+/// ordinal when nothing is restored would renumber the arrangements after it, so
+/// a checkpoint of a subset would restore into the wrong ones.
+fn claim<B: 'static>() -> (Option<ArrangementName>, Option<Vec<B>>) {
     REGISTRY.with_borrow_mut(|registry| {
-        let name = registry.building.last()?.clone();
-        let entry = registry.pending.remove(&name)?;
+        let Some((node, ordinal)) = registry.building.last_mut() else {
+            return (None, None);
+        };
+        let name = ArrangementName::new(*node, *ordinal);
+        *ordinal += 1;
+
+        let Some(entry) = registry.pending.remove(&name) else {
+            return (Some(name), None);
+        };
         match entry.downcast::<Vec<B>>() {
-            Ok(batches) => Some(*batches),
+            Ok(batches) => (Some(name), Some(*batches)),
             Err(entry) => {
                 // Put it back rather than dropping it, so `unclaimed` reports the
                 // mismatch instead of the restore silently starting empty.
                 registry.pending.insert(name, entry);
-                None
+                (Some(name), None)
             }
         }
     })
@@ -288,6 +317,9 @@ fn claim<B: 'static>() -> Option<Vec<B>> {
 /// to gap-fill a region that is not actually a gap.
 pub struct RestorableSpine<B: Batch> {
     inner: Spine<B>,
+    /// The name this spine claimed, absent when it was built outside any
+    /// [`with_node`] scope (a dataflow that is not participating).
+    name: Option<ArrangementName>,
     /// The upper of the restored batch, while the spine still holds it. `None`
     /// once nothing has been restored or the writer has caught up to it.
     restored_upper: Option<Antichain<B::Time>>,
@@ -300,6 +332,11 @@ where
     /// Whether this spine came up populated from a checkpoint.
     pub fn was_restored(&self) -> bool {
         self.restored_upper.is_some()
+    }
+
+    /// The name this spine claimed while its plan node rendered.
+    pub fn name(&self) -> Option<ArrangementName> {
+        self.name
     }
 }
 
@@ -343,15 +380,15 @@ where
 {
     fn new(info: OperatorInfo, logging: Option<Logger>, activator: Option<Activator>) -> Self {
         let mut inner = Spine::new(info, logging, activator);
+        let (name, batches) = claim::<B>();
         let mut restored_upper = None;
-        if let Some(batches) = claim::<B>() {
-            for batch in batches {
-                restored_upper = Some(batch.upper().clone());
-                inner.insert(batch);
-            }
+        for batch in batches.into_iter().flatten() {
+            restored_upper = Some(batch.upper().clone());
+            inner.insert(batch);
         }
         Self {
             inner,
+            name,
             restored_upper,
         }
     }
@@ -443,6 +480,17 @@ mod tests {
         capture(trace, as_of).updates
     }
 
+    /// Stands in for rendering plan node `node`, building `count` arrangements.
+    fn render_node(node: u64, count: usize) -> Vec<RestorableSpine<RowRowBatch>> {
+        with_node(node, || {
+            (0..count)
+                .map(|_| {
+                    <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None)
+                })
+                .collect()
+        })
+    }
+
     #[mz_ore::test]
     fn capture_restore_round_trip() {
         clear();
@@ -456,31 +504,86 @@ mod tests {
         ];
 
         // A trace holding the updates, as a live arrangement would.
-        let info = fake_operator_info();
-        let mut source = <RestorableSpine<RowRowBatch> as Trace>::new(info.clone(), None, None);
+        let mut source =
+            <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
         source.insert(batch(as_of, &updates));
 
         let captured = capture(&mut source, as_of);
         assert_eq!(captured.as_of(), as_of);
         assert_eq!(captured.updates(), &updates[..]);
 
-        // Restore it into a fresh spine, through the registry.
-        let name = ArrangementName::new("test/round-trip");
-        publish(name.clone(), vec![rebuild_batch::<RowRowBuild>(&captured)]);
-        let mut restored = with_name(name, || {
-            <RestorableSpine<RowRowBatch> as Trace>::new(info, None, None)
-        });
+        // Restore it into the arrangement the same plan node builds.
+        let name = ArrangementName::new(7, 0);
+        publish(name, vec![rebuild_batch::<RowRowBuild>(&captured)]);
+        let mut restored = render_node(7, 1);
 
-        assert!(restored.was_restored());
-        assert_eq!(contents(&mut restored, as_of), updates);
+        assert!(restored[0].was_restored());
+        assert_eq!(contents(&mut restored[0], as_of), updates);
         assert!(unclaimed().is_empty());
+    }
+
+    #[mz_ore::test]
+    fn the_same_plan_names_the_same_arrangements() {
+        clear();
+        let first: Vec<_> = render_node(3, 2).iter().map(|s| s.name()).collect();
+        let second: Vec<_> = render_node(3, 2).iter().map(|s| s.name()).collect();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            vec![
+                Some(ArrangementName::new(3, 0)),
+                Some(ArrangementName::new(3, 1))
+            ]
+        );
+
+        // A different node numbers from zero again, so one node's arrangement
+        // count does not shift another's names.
+        let other: Vec<_> = render_node(4, 1).iter().map(|s| s.name()).collect();
+        assert_eq!(other, vec![Some(ArrangementName::new(4, 0))]);
+    }
+
+    #[mz_ore::test]
+    fn an_unrestored_arrangement_still_consumes_its_name() {
+        clear();
+        // Publish for the *second* arrangement only. The first must still take
+        // ordinal 0, or the second would claim it and restore the wrong state.
+        let second = ArrangementName::new(1, 1);
+        let updates = vec![((row(Datum::Int64(9)), row(Datum::String("z"))), Diff::ONE)];
+        publish(second, vec![batch(Timestamp::new(4), &updates)]);
+
+        let mut spines = render_node(1, 2);
+
+        assert!(!spines[0].was_restored());
+        assert_eq!(spines[0].name(), Some(ArrangementName::new(1, 0)));
+        assert!(spines[1].was_restored());
+        assert_eq!(spines[1].name(), Some(second));
+        assert_eq!(contents(&mut spines[1], Timestamp::new(4)), updates);
+        assert!(unclaimed().is_empty());
+    }
+
+    #[mz_ore::test]
+    fn a_spine_outside_any_node_claims_nothing() {
+        clear();
+        publish(
+            ArrangementName::new(0, 0),
+            vec![batch(Timestamp::new(1), &[])],
+        );
+
+        // Dataflows that are not restoring build spines with no node scope, and
+        // must not pick up state published for a plan node.
+        let spine = <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
+
+        assert!(spine.name().is_none());
+        assert!(!spine.was_restored());
+        assert_eq!(unclaimed(), vec![ArrangementName::new(0, 0)]);
     }
 
     #[mz_ore::test]
     fn capture_drops_history_above_as_of() {
         clear();
-        let info = fake_operator_info();
-        let mut source = <RestorableSpine<RowRowBatch> as Trace>::new(info, None, None);
+        let mut source =
+            <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
         let key = row(Datum::Int64(1));
         let val = row(Datum::String("a"));
 
@@ -515,38 +618,30 @@ mod tests {
         let as_of = Timestamp::new(10);
         let updates = vec![((row(Datum::Int64(1)), row(Datum::String("a"))), Diff::ONE)];
 
-        let name = ArrangementName::new("test/gap-fill");
-        publish(name.clone(), vec![batch(as_of, &updates)]);
-        let info = fake_operator_info();
-        let mut restored = with_name(name, || {
-            <RestorableSpine<RowRowBatch> as Trace>::new(info, None, None)
-        });
+        let name = ArrangementName::new(2, 0);
+        publish(name, vec![batch(as_of, &updates)]);
+        let mut restored = render_node(2, 1);
 
         // `TraceAgent::new` starts a writer's upper at `minimum`, so the first
         // append into a restored trace arrives as an empty batch covering an
         // interval the restored batch already holds. Absorbing it is what keeps
         // the spine from treating a non-gap as a gap.
-        let empty = batch(as_of, &[]);
-        restored.insert(empty);
-        assert!(!restored.was_restored());
+        restored[0].insert(batch(as_of, &[]));
+        assert!(!restored[0].was_restored());
 
         // The restored contents survived, and the trace still reads correctly.
-        assert_eq!(contents(&mut restored, as_of), updates);
+        assert_eq!(contents(&mut restored[0], as_of), updates);
     }
 
     #[mz_ore::test]
     fn an_unmatched_name_leaves_state_unclaimed() {
         clear();
-        let published = ArrangementName::new("test/published");
-        publish(published.clone(), vec![batch(Timestamp::new(1), &[])]);
+        let published = ArrangementName::new(99, 0);
+        publish(published, vec![batch(Timestamp::new(1), &[])]);
 
-        let info = fake_operator_info();
-        let other = ArrangementName::new("test/other");
-        let restored = with_name(other, || {
-            <RestorableSpine<RowRowBatch> as Trace>::new(info, None, None)
-        });
+        let spines = render_node(5, 1);
 
-        assert!(!restored.was_restored());
+        assert!(!spines[0].was_restored());
         assert_eq!(unclaimed(), vec![published]);
     }
 

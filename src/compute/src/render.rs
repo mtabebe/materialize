@@ -1118,7 +1118,13 @@ impl<'scope, T: RenderTimestamp + MaybeBucketByTime> Context<'scope, T> {
                 None
             };
 
-            let mut bundle = self.render_plan_expr(node.expr, &collections);
+            // Name every arrangement this node builds after the node, so a
+            // checkpoint of one dataflow restores into the same arrangements of
+            // another rendering of the same plan. Imports are deliberately
+            // outside this: their contents come from persist, not a checkpoint.
+            let mut bundle = mz_row_spine::checkpoint::with_node(lir_id.into(), || {
+                self.render_plan_expr(node.expr, &collections)
+            });
 
             if let Some((operator, operator_id_start)) = metadata {
                 let operator_id_end = self.scope.worker().peek_identifier();

@@ -38,11 +38,11 @@ pub(crate) mod spines {
     use differential_dataflow::trace::implementations::Update;
     use differential_dataflow::trace::implementations::merge_batcher::MergeBatcher;
     use differential_dataflow::trace::implementations::ord_neu::{OrdKeyBatch, OrdValBatch};
-    use differential_dataflow::trace::implementations::spine_fueled::Spine;
     use differential_dataflow::trace::rc_blanket_impls::RcBuilder;
     use mz_repr::Row;
     use mz_timely_util::columnation::{ColInternalMerger, ColumnationStack};
 
+    use crate::checkpoint::RestorableSpine;
     use crate::{DatumContainer, OffsetOptimized};
 
     /// Batcher matching `mz_compute::typedefs::KeyValBatcher`, redeclared
@@ -50,7 +50,7 @@ pub(crate) mod spines {
     type KeyValBatcher<K, V, T, D> = MergeBatcher<ColInternalMerger<(K, V), T, D>>;
     type KeyBatcher<K, T, D> = KeyValBatcher<K, (), T, D>;
 
-    pub type RowRowSpine<T, R> = Spine<Rc<OrdValBatch<RowRowLayout<((Row, Row), T, R)>>>>;
+    pub type RowRowSpine<T, R> = RestorableSpine<Rc<OrdValBatch<RowRowLayout<((Row, Row), T, R)>>>>;
     pub type RowRowBatcher<T, R> = KeyValBatcher<Row, Row, T, R>;
     pub type RowRowBuilder<T, R> = RcBuilder<crate::dictionary::builders::RowRowBuilder<T, R>>;
 
@@ -65,16 +65,18 @@ pub(crate) mod spines {
     pub type RowRowColPagedBuilder<T, R> =
         RcBuilder<crate::dictionary::builders::RowRowColPagedBuilder<T, R>>;
 
-    pub type RowValSpine<V, T, R> = Spine<Rc<OrdValBatch<RowValLayout<((Row, V), T, R)>>>>;
+    pub type RowValSpine<V, T, R> =
+        RestorableSpine<Rc<OrdValBatch<RowValLayout<((Row, V), T, R)>>>>;
     pub type RowValBatcher<V, T, R> = KeyValBatcher<Row, V, T, R>;
     pub type RowValBuilder<V, T, R> =
         RcBuilder<crate::dictionary::builders::RowValBuilder<V, T, R>>;
 
-    pub type RowSpine<T, R> = Spine<Rc<OrdKeyBatch<RowLayout<((Row, ()), T, R)>>>>;
+    pub type RowSpine<T, R> = RestorableSpine<Rc<OrdKeyBatch<RowLayout<((Row, ()), T, R)>>>>;
     pub type RowBatcher<T, R> = KeyBatcher<Row, T, R>;
     pub type RowBuilder<T, R> = RcBuilder<crate::dictionary::builders::RowBuilder<T, R>>;
 
-    pub type ValRowSpine<K, T, R> = Spine<Rc<OrdValBatch<ValRowLayout<((K, Row), T, R)>>>>;
+    pub type ValRowSpine<K, T, R> =
+        RestorableSpine<Rc<OrdValBatch<ValRowLayout<((K, Row), T, R)>>>>;
     pub type ValRowBatcher<K, T, R> = KeyValBatcher<K, Row, T, R>;
     pub type ValRowBuilder<K, T, R> =
         RcBuilder<crate::dictionary::builders::ValRowBuilder<K, T, R>>;
