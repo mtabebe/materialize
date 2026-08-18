@@ -100,8 +100,11 @@ mod tests {
     use timely::dataflow::operators::{Probe, ToStream};
 
     use super::*;
+    use mz_expr::EvalError;
+
     use crate::extensions::arrange::MzArrange;
     use crate::extensions::reduce::MzReduce;
+    use crate::typedefs::{ErrBatcher, ErrBuilder, ErrSpine};
 
     /// The arrangement `mz_arrange` builds, and the one `reduce_core` builds for
     /// its output. Numbered within their plan nodes, as the render loop does.
@@ -217,5 +220,60 @@ mod tests {
     fn an_unrestored_dataflow_is_missing_the_checkpoint() {
         let restored = run(vec![update(1, 11, 5, 1)], None, 5);
         assert_eq!(restored.1, captured(&[((1, 1), 1)], 5));
+    }
+
+    /// The `errs` half restores too. It is a separate arrangement over a
+    /// different key type, so restoring only `oks` would silently drop the
+    /// errors a collection has.
+    #[mz_ore::test]
+    fn a_restored_dataflow_keeps_its_errors() {
+        fn err(msg: &str) -> DataflowErrorSer {
+            DataflowErrorSer::from(EvalError::Internal(msg.into()))
+        }
+        type ErrUpdate = ((DataflowErrorSer, ()), Timestamp, Diff);
+        type ErrCaptured = Captured<DataflowErrorSer, (), Diff>;
+
+        fn run_errs(
+            updates: Vec<ErrUpdate>,
+            restore: Option<ErrCaptured>,
+            as_of: u64,
+        ) -> ErrCaptured {
+            timely::execute_directly(move |worker| {
+                let as_of = Timestamp::new(as_of);
+                checkpoint::clear();
+                if let Some(errs) = &restore {
+                    checkpoint::publish(INPUT, restored_batch::<ErrBuilder<_, _>>(errs));
+                }
+                let (mut trace, probe) = worker.dataflow::<Timestamp, _, _>(|scope| {
+                    let arranged = checkpoint::with_node(INPUT.node(), || {
+                        updates
+                            .to_stream(scope)
+                            .as_collection()
+                            .mz_arrange::<ColumnationChunker<_>, ErrBatcher<_, _>, ErrBuilder<_, _>, ErrSpine<_, _>>(
+                                "Errs",
+                            )
+                    });
+                    let (probe, _stream) = arranged.stream.probe();
+                    (arranged.trace.clone(), probe)
+                });
+                while probe.less_equal(&as_of) {
+                    worker.step();
+                }
+                capture::<_, ColumnationStack<DataflowErrorSer>, ColumnationStack<()>, _>(
+                    &mut trace, as_of,
+                )
+            })
+        }
+
+        let before = vec![((err("first"), ()), Timestamp::new(0), Diff::ONE)];
+        let after = vec![((err("second"), ()), Timestamp::new(5), Diff::ONE)];
+
+        let checkpoint = run_errs(before.clone(), None, 0);
+        assert_eq!(checkpoint.len(), 1);
+
+        let restored = run_errs(after.clone(), Some(checkpoint), 5);
+        let rebuilt = run_errs(before.into_iter().chain(after).collect(), None, 5);
+        assert_eq!(restored, rebuilt);
+        assert_eq!(restored.len(), 2);
     }
 }

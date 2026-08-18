@@ -6811,6 +6811,7 @@ dependencies = [
  "mz-repr",
  "mz-storage-types",
  "serde",
+ "serde_json",
  "timely",
  "tracing",
 ]

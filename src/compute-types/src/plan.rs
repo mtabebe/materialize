@@ -39,6 +39,7 @@ use crate::plan::transform::{Transform, TransformConfig};
 
 mod lowering;
 
+pub mod checkpoint;
 pub mod interpret;
 pub mod join;
 pub mod reduce;
@@ -192,6 +193,12 @@ pub struct LirId(u64);
 impl LirId {
     fn as_u64(&self) -> u64 {
         self.0
+    }
+}
+
+impl From<u64> for LirId {
+    fn from(value: u64) -> Self {
+        LirId(value)
     }
 }
 

@@ -598,6 +598,16 @@ impl RenderPlan {
         self.body.replace_ids(&mut *func);
     }
 
+    /// Enumerate every expression in the plan, including those inside bindings.
+    pub fn exprs(&self) -> Box<dyn Iterator<Item = &Expr> + '_> {
+        let binds = self.binds.iter().flat_map(|stage| {
+            let lets = stage.lets.iter().flat_map(|b| b.value.exprs());
+            let recs = stage.recs.iter().flat_map(|b| b.value.exprs());
+            lets.chain(recs)
+        });
+        Box::new(binds.chain(self.body.exprs()))
+    }
+
     /// Enumerate all identifiers referenced in `Get` operators.
     pub fn depends(&self) -> BTreeSet<Id> {
         let mut result = BTreeSet::new();
@@ -642,6 +652,11 @@ impl LetFreePlan {
                 *id = func(*id);
             }
         }
+    }
+
+    /// Enumerate every expression in the plan.
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        self.nodes.values().map(|node| &node.expr)
     }
 
     /// Enumerate all identifiers referenced in `Get` operators.
