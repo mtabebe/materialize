@@ -533,16 +533,6 @@ impl<B> RestorableSpine<B>
 where
     B: Batch + Clone + 'static,
 {
-    /// Whether this spine came up populated from a checkpoint.
-    pub fn was_restored(&self) -> bool {
-        self.base.is_some()
-    }
-
-    /// The name this spine claimed while its plan node rendered.
-    pub fn name(&self) -> Option<ArrangementName> {
-        self.name
-    }
-
     /// The as-of a capture is waiting on, if one is.
     fn requested(&self) -> Option<B::Time> {
         let capture = self.capture.as_ref()?;
@@ -797,7 +787,7 @@ mod tests {
         publish(name, restored_batch::<RowRowBuild>(&captured));
         let mut restored = render_node(7, 1);
 
-        assert!(restored[0].was_restored());
+        assert!(restored[0].base.is_some());
         assert_eq!(contents(&mut restored[0], as_of), updates);
         assert!(unclaimed().is_empty());
     }
@@ -805,8 +795,8 @@ mod tests {
     #[mz_ore::test]
     fn the_same_plan_names_the_same_arrangements() {
         clear();
-        let first: Vec<_> = render_node(3, 2).iter().map(|s| s.name()).collect();
-        let second: Vec<_> = render_node(3, 2).iter().map(|s| s.name()).collect();
+        let first: Vec<_> = render_node(3, 2).iter().map(|s| s.name).collect();
+        let second: Vec<_> = render_node(3, 2).iter().map(|s| s.name).collect();
 
         assert_eq!(first, second);
         assert_eq!(
@@ -819,7 +809,7 @@ mod tests {
 
         // A different node numbers from zero again, so one node's arrangement
         // count does not shift another's names.
-        let other: Vec<_> = render_node(4, 1).iter().map(|s| s.name()).collect();
+        let other: Vec<_> = render_node(4, 1).iter().map(|s| s.name).collect();
         assert_eq!(other, vec![Some(ArrangementName::new(DATAFLOW, 4, 0))]);
     }
 
@@ -834,10 +824,10 @@ mod tests {
 
         let mut spines = render_node(1, 2);
 
-        assert!(!spines[0].was_restored());
-        assert_eq!(spines[0].name(), Some(ArrangementName::new(DATAFLOW, 1, 0)));
-        assert!(spines[1].was_restored());
-        assert_eq!(spines[1].name(), Some(second));
+        assert!(!spines[0].base.is_some());
+        assert_eq!(spines[0].name, Some(ArrangementName::new(DATAFLOW, 1, 0)));
+        assert!(spines[1].base.is_some());
+        assert_eq!(spines[1].name, Some(second));
         assert_eq!(contents(&mut spines[1], Timestamp::new(4)), updates);
         assert!(unclaimed().is_empty());
     }
@@ -854,8 +844,8 @@ mod tests {
         // must not pick up state published for a plan node.
         let spine = <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
 
-        assert!(spine.name().is_none());
-        assert!(!spine.was_restored());
+        assert!(spine.name.is_none());
+        assert!(!spine.base.is_some());
         assert_eq!(unclaimed(), vec![ArrangementName::new(DATAFLOW, 0, 0)]);
     }
 
@@ -909,7 +899,7 @@ mod tests {
             batch(as_of, &restored),
         );
         let mut spines = render_node(2, 1);
-        assert!(spines[0].was_restored());
+        assert!(spines[0].base.is_some());
 
         let fresh = vec![((key.clone(), row(Datum::String("b"))), Diff::ONE)];
         spines[0].insert(batch_at(0, 15, Timestamp::new(12), &fresh));
@@ -1015,7 +1005,7 @@ mod tests {
 
         let spines = render_node(5, 1);
 
-        assert!(!spines[0].was_restored());
+        assert!(!spines[0].base.is_some());
         assert_eq!(unclaimed(), vec![published]);
     }
 
