@@ -30,6 +30,8 @@
 //! and the coordinator that issues it, are the next step.
 #![allow(dead_code)]
 
+pub mod format;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
