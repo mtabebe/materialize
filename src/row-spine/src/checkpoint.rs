@@ -53,13 +53,12 @@
 //! also what keeps `read_upper` and `advance_upper` reporting the writer's own
 //! upper, which is what their callers mean.
 //!
-//! **This is why a restored arrangement must not be imported by a dataflow that
-//! is not itself restored.** An import primes through `map_batches`, so the
-//! importer would see only what arrived after the as-of. Exported arrangements,
-//! which anything may import later, are therefore restored by feeding their
-//! captured contents in as operator input instead, which puts them inside the
-//! spine where they behave like any other batch. This wrapper is for the
-//! arrangements internal to a dataflow, which nothing outside it can import.
+//! **This is why a restored arrangement must not be imported by another
+//! dataflow.** An import primes through `map_batches`, so an unrestored importer
+//! would see only what arrived after the as-of, and a restored importer would
+//! have the history replayed into arrangements that already hold its effect.
+//! Peeks are unaffected, since they read through a cursor.
+//! `mz_compute_types::plan::checkpoint::checkpointable` enforces the scope.
 //!
 //! # Cost
 //!
@@ -75,6 +74,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::{Rc, Weak};
 
 use differential_dataflow::difference::{IsZero, Semigroup};
 use differential_dataflow::lattice::Lattice;
@@ -83,7 +83,7 @@ use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::trace::{
     Batch, Builder, Cursor, Description, ExertionLogic, Navigable, Trace, TraceReader,
 };
-use mz_repr::{Diff, Row, Timestamp};
+use mz_repr::{Diff, GlobalId, Row, Timestamp};
 use mz_timely_util::columnation::ColumnationStack;
 use timely::PartialOrder;
 use timely::dataflow::operators::generic::OperatorInfo;
@@ -102,16 +102,30 @@ use timely::progress::{Antichain, Timestamp as _, frontier::AntichainRef};
 ///
 /// `node` is a plan node id, kept as a `u64` so this crate does not depend on
 /// the compute plan types. Callers pass `LirId`.
+///
+/// `dataflow` scopes the rest. Plan node ids restart per dataflow, so without it
+/// two dataflows on a worker would name the same arrangement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArrangementName {
+    dataflow: GlobalId,
     node: u64,
     ordinal: u64,
 }
 
 impl ArrangementName {
-    /// Names the `ordinal`th arrangement built by plan node `node`.
-    pub const fn new(node: u64, ordinal: u64) -> Self {
-        Self { node, ordinal }
+    /// Names the `ordinal`th arrangement built by plan node `node` of the
+    /// dataflow exporting `dataflow`.
+    pub const fn new(dataflow: GlobalId, node: u64, ordinal: u64) -> Self {
+        Self {
+            dataflow,
+            node,
+            ordinal,
+        }
+    }
+
+    /// The dataflow that built the arrangement.
+    pub fn dataflow(&self) -> GlobalId {
+        self.dataflow
     }
 
     /// The plan node that built the arrangement.
@@ -122,7 +136,7 @@ impl ArrangementName {
 
 impl std::fmt::Display for ArrangementName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "n{}/{}", self.node, self.ordinal)
+        write!(f, "{}/n{}/{}", self.dataflow, self.node, self.ordinal)
     }
 }
 
@@ -164,25 +178,50 @@ impl<K, V, D> Captured<K, V, D> {
     }
 }
 
-/// Reads `trace` as of `as_of`, consolidating its history into updates stamped
-/// `as_of`.
+/// Reads `batches` as of `as_of`, consolidating their history into updates
+/// stamped `as_of`.
 ///
-/// This is a read: the live dataflow is never stopped. The one thing it needs
-/// from the trace is `since <= as_of`, which holds while `as_of` is near the
-/// dataflow's frontier. A trace compacted past `as_of` cannot answer, and the
-/// caller must fall back to rebuilding.
-pub fn capture<Tr, KC, VC, D>(trace: &mut Tr, as_of: Timestamp) -> Captured<KC::Owned, VC::Owned, D>
+/// Batches rather than a trace, because an arrangement internal to a dataflow
+/// can only hand out its batches: nothing outside holds a handle to it. See
+/// [`CaptureSlot`].
+///
+/// A capture is a read, so the live dataflow is never stopped. The one thing it
+/// needs is `since <= as_of`, which holds while `as_of` is near the dataflow's
+/// frontier. A trace compacted past `as_of` cannot answer, and the caller must
+/// fall back to rebuilding.
+pub fn capture_batches<B, KC, VC, D>(
+    batches: Vec<B>,
+    as_of: Timestamp,
+) -> Captured<KC::Owned, VC::Owned, D>
 where
-    Tr: TraceReader<Time = Timestamp>,
-    Tr::Batch: Navigable,
+    B: Batch<Time = Timestamp> + Navigable,
     KC: BatchContainer,
     VC: BatchContainer,
     D: Semigroup + Clone,
-    for<'a> <Tr::Batch as Navigable>::Cursor:
+    for<'a> B::Cursor:
         Cursor<Time = Timestamp, Diff = D, Key<'a> = KC::ReadItem<'a>, Val<'a> = VC::ReadItem<'a>>,
 {
-    let (mut cursor, storage) = trace.cursor();
-    let mut updates: Vec<((KC::Owned, VC::Owned), D)> = Vec::new();
+    let (cursor, storage) = differential_dataflow::trace::cursor::cursor_list(batches);
+    Captured {
+        as_of,
+        updates: consolidate(cursor, storage, as_of),
+    }
+}
+
+/// Walks a cursor, accumulating each `(key, val)`'s history at or below `as_of`.
+fn consolidate<C, KC, VC>(
+    mut cursor: C,
+    storage: C::Storage,
+    as_of: Timestamp,
+) -> Vec<((KC::Owned, VC::Owned), C::Diff)>
+where
+    C: Cursor<Time = Timestamp>,
+    C::Diff: Semigroup + Clone,
+    KC: BatchContainer,
+    VC: BatchContainer,
+    for<'a> C: Cursor<Key<'a> = KC::ReadItem<'a>, Val<'a> = VC::ReadItem<'a>>,
+{
+    let mut updates: Vec<((KC::Owned, VC::Owned), C::Diff)> = Vec::new();
 
     while let Some(key) = cursor.get_key(&storage) {
         let key = KC::into_owned(key);
@@ -195,8 +234,7 @@ where
         }
         cursor.step_key(&storage);
     }
-
-    Captured { as_of, updates }
+    updates
 }
 
 /// Accumulates the history of the cursor's current `(key, val)` at or below
@@ -285,7 +323,60 @@ where
     }
 }
 
-/// Per-worker store of arrangement state waiting to be restored.
+/// A capture in flight for one arrangement.
+///
+/// Shared between the spine and whoever wants to read it. Nothing outside a
+/// dataflow holds a handle to an arrangement internal to it, and acquiring one
+/// would pin that arrangement's compaction for the life of the process, so a
+/// capture is asked for rather than taken: the requester leaves an as-of here,
+/// and the spine answers the next time its operator runs it.
+///
+/// That is also when the answer becomes possible. A trace can only report its
+/// contents as of a time its own upper has passed, which is exactly the
+/// condition the spine is in a position to notice.
+pub struct CaptureSlot<B: Batch> {
+    /// The as-of a requester is waiting on, cleared once answered.
+    request: Option<B::Time>,
+    /// The spine's answer.
+    answer: Option<Capture<B>>,
+}
+
+/// One arrangement's batches, as handed out for a capture.
+pub struct Capture<B: Batch> {
+    /// The trace's compaction frontier when it answered. A capture as of a time
+    /// this frontier has passed is not the arrangement's contents at that time,
+    /// and the caller must fall back to rebuilding.
+    pub since: Antichain<B::Time>,
+    /// Every batch the trace holds, restored contents included. Batches rather
+    /// than updates because a batch is reference counted, so handing them over
+    /// costs no copy and leaves the reading to a caller that knows the key and
+    /// value types.
+    pub batches: Vec<B>,
+}
+
+impl<B: Batch> Default for CaptureSlot<B> {
+    fn default() -> Self {
+        Self {
+            request: None,
+            answer: None,
+        }
+    }
+}
+
+impl<B: Batch> CaptureSlot<B> {
+    /// Asks the arrangement for its contents as of `as_of`.
+    pub fn request(&mut self, as_of: B::Time) {
+        self.request = Some(as_of);
+    }
+
+    /// Takes the answer, once the arrangement has run far enough to give one.
+    pub fn take(&mut self) -> Option<Capture<B>> {
+        self.answer.take()
+    }
+}
+
+/// Per-worker store of arrangement state waiting to be restored, and of the
+/// arrangements that can be asked for a capture.
 ///
 /// Lives in a thread-local because [`Trace::new`] is called deep inside
 /// operator construction with no channel to pass state through, and a timely
@@ -294,9 +385,13 @@ where
 pub struct RestoreRegistry {
     /// Keyed by name, each entry holds the base batch for one arrangement.
     pending: BTreeMap<ArrangementName, Box<dyn Any>>,
+    /// Keyed by name, each entry is a `Weak<RefCell<CaptureSlot<B>>>` for one
+    /// arrangement. Weak, so registering costs the arrangement nothing and the
+    /// entries of a dropped dataflow report themselves as gone.
+    capturable: BTreeMap<ArrangementName, Weak<dyn Any>>,
     /// The plan nodes currently being rendered, innermost last, each with the
     /// number of arrangements built under it so far. Set by [`with_node`].
-    building: Vec<(u64, u64)>,
+    building: Vec<(GlobalId, u64, u64)>,
 }
 
 thread_local! {
@@ -320,8 +415,8 @@ pub fn publish<B: 'static>(name: ArrangementName, batch: B) {
 /// determined by the node's plan, so the same plan numbers them the same way.
 /// Nests, so a node whose rendering renders another still numbers each
 /// separately.
-pub fn with_node<T>(node: u64, f: impl FnOnce() -> T) -> T {
-    REGISTRY.with_borrow_mut(|registry| registry.building.push((node, 0)));
+pub fn with_node<T>(dataflow: GlobalId, node: u64, f: impl FnOnce() -> T) -> T {
+    REGISTRY.with_borrow_mut(|registry| registry.building.push((dataflow, node, 0)));
     let result = f();
     REGISTRY.with_borrow_mut(|registry| {
         registry.building.pop();
@@ -337,10 +432,36 @@ pub fn unclaimed() -> Vec<ArrangementName> {
     REGISTRY.with_borrow(|registry| registry.pending.keys().cloned().collect())
 }
 
+/// The capture slot for the arrangement named `name`, if it is still live.
+///
+/// `B` must match the arrangement's batch type; a mismatch reads as absent.
+pub fn capture_slot<B: Batch + 'static>(
+    name: ArrangementName,
+) -> Option<Rc<RefCell<CaptureSlot<B>>>> {
+    REGISTRY.with_borrow(|registry| {
+        let slot = registry.capturable.get(&name)?.upgrade()?;
+        slot.downcast::<RefCell<CaptureSlot<B>>>().ok()
+    })
+}
+
+/// The arrangements still live on this worker that can be asked for a capture.
+///
+/// A dataflow that has been dropped leaves its names behind until the registry
+/// is next asked, so this filters rather than trusting the map's keys.
+pub fn capturable() -> Vec<ArrangementName> {
+    REGISTRY.with_borrow_mut(|registry| {
+        registry
+            .capturable
+            .retain(|_, slot| slot.strong_count() > 0);
+        registry.capturable.keys().cloned().collect()
+    })
+}
+
 /// Clears this worker's registry. For tests, and for abandoning a restore.
 pub fn clear() {
     REGISTRY.with_borrow_mut(|registry| {
         registry.pending.clear();
+        registry.capturable.clear();
         registry.building.clear();
     });
 }
@@ -353,10 +474,10 @@ pub fn clear() {
 /// a checkpoint of a subset would restore into the wrong ones.
 fn claim<B: 'static>() -> (Option<ArrangementName>, Option<B>) {
     REGISTRY.with_borrow_mut(|registry| {
-        let Some((node, ordinal)) = registry.building.last_mut() else {
+        let Some((dataflow, node, ordinal)) = registry.building.last_mut() else {
             return (None, None);
         };
-        let name = ArrangementName::new(*node, *ordinal);
+        let name = ArrangementName::new(*dataflow, *node, *ordinal);
         *ordinal += 1;
 
         let Some(entry) = registry.pending.remove(&name) else {
@@ -374,6 +495,19 @@ fn claim<B: 'static>() -> (Option<ArrangementName>, Option<B>) {
     })
 }
 
+/// Registers a fresh capture slot for `name`, returning the spine's half.
+///
+/// The registry keeps only a `Weak`, so an arrangement nobody captures pays a
+/// refcount and nothing else, and a dropped dataflow's entries fall away.
+fn register_capturable<B: Batch + 'static>(name: ArrangementName) -> Rc<RefCell<CaptureSlot<B>>> {
+    let slot = Rc::new(RefCell::new(CaptureSlot::<B>::default()));
+    let erased: Rc<dyn Any> = Rc::<RefCell<CaptureSlot<B>>>::clone(&slot);
+    REGISTRY.with_borrow_mut(|registry| {
+        registry.capturable.insert(name, Rc::downgrade(&erased));
+    });
+    slot
+}
+
 /// A spine that comes up holding a base batch when this worker has state
 /// published for the arrangement being constructed.
 ///
@@ -388,6 +522,11 @@ pub struct RestorableSpine<B: Batch> {
     name: Option<ArrangementName>,
     /// The restored contents, outside the spine's interval accounting.
     base: Option<B>,
+    /// How a capture reaches this spine. The registry holds only a `Weak` to it.
+    capture: Option<Rc<RefCell<CaptureSlot<B>>>>,
+    /// The compaction frontier a caller asked for while a pending capture held
+    /// it back, applied once the capture is answered.
+    deferred_compaction: Option<Antichain<B::Time>>,
 }
 
 impl<B> RestorableSpine<B>
@@ -402,6 +541,49 @@ where
     /// The name this spine claimed while its plan node rendered.
     pub fn name(&self) -> Option<ArrangementName> {
         self.name
+    }
+
+    /// The as-of a capture is waiting on, if one is.
+    fn requested(&self) -> Option<B::Time> {
+        let capture = self.capture.as_ref()?;
+        let request = capture.borrow().request.clone();
+        request
+    }
+
+    /// Answers a pending capture, once this trace has run past its as-of.
+    ///
+    /// Called from every method an operator drives the spine through, since
+    /// there is no other moment at which the spine gets to act.
+    fn serve_capture(&mut self) {
+        let Some(as_of) = self.requested() else {
+            return;
+        };
+
+        // A trace cannot report its contents as of a time it has not reached.
+        let mut upper = Antichain::new();
+        self.inner.read_upper(&mut upper);
+        if upper.less_equal(&as_of) {
+            return;
+        }
+
+        let since = self.inner.get_logical_compaction().to_owned();
+        let mut batches = self
+            .inner
+            .batches_through(Antichain::new().borrow())
+            .expect("a cursor through the whole trace is always available");
+        if let Some(base) = &self.base {
+            batches.push(base.clone());
+        }
+
+        let capture = self.capture.clone().expect("checked by `requested`");
+        let mut slot = capture.borrow_mut();
+        slot.request = None;
+        slot.answer = Some(Capture { since, batches });
+        drop(slot);
+
+        if let Some(frontier) = self.deferred_compaction.take() {
+            self.inner.set_logical_compaction(frontier.borrow());
+        }
     }
 }
 
@@ -426,7 +608,20 @@ where
         Some(batches)
     }
 
+    /// Held back at a pending capture's as-of, so the capture can still be
+    /// answered, and released to the frontier the caller asked for as soon as
+    /// it has been. Reporting a frontier behind the one requested is always
+    /// sound: it promises more, not less.
     fn set_logical_compaction(&mut self, frontier: AntichainRef<Self::Time>) {
+        self.serve_capture();
+        if let Some(as_of) = self.requested()
+            && !frontier.less_equal(&as_of)
+        {
+            self.deferred_compaction = Some(frontier.to_owned());
+            self.inner
+                .set_logical_compaction(Antichain::from_elem(as_of).borrow());
+            return;
+        }
         self.inner.set_logical_compaction(frontier)
     }
 
@@ -435,6 +630,7 @@ where
     }
 
     fn set_physical_compaction(&mut self, frontier: AntichainRef<'_, Self::Time>) {
+        self.serve_capture();
         self.inner.set_physical_compaction(frontier)
     }
 
@@ -458,10 +654,18 @@ where
     fn new(info: OperatorInfo, logging: Option<Logger>, activator: Option<Activator>) -> Self {
         let inner = Spine::new(info, logging, activator);
         let (name, base) = claim::<B>();
-        Self { inner, name, base }
+        let capture = name.map(register_capturable::<B>);
+        Self {
+            inner,
+            name,
+            base,
+            capture,
+            deferred_compaction: None,
+        }
     }
 
     fn exert(&mut self) {
+        self.serve_capture();
         self.inner.exert()
     }
 
@@ -470,7 +674,10 @@ where
     }
 
     fn insert(&mut self, batch: Self::Batch) {
-        self.inner.insert(batch)
+        self.inner.insert(batch);
+        // After the insert, so a capture whose as-of this batch reaches past is
+        // answered as soon as it can be rather than a round later.
+        self.serve_capture();
     }
 
     fn close(&mut self) {
@@ -494,6 +701,8 @@ mod tests {
     type Layout = RowRowLayout<((Row, Row), Timestamp, Diff)>;
     type RowRowBatch = Rc<OrdValBatch<Layout>>;
     type RowRowBuild = crate::RowRowBuilder<Timestamp, Diff>;
+
+    const DATAFLOW: GlobalId = GlobalId::User(1);
 
     fn row(datum: Datum) -> Row {
         Row::pack_slice(&[datum])
@@ -534,12 +743,26 @@ mod tests {
         trace: &mut RestorableSpine<RowRowBatch>,
         as_of: Timestamp,
     ) -> Vec<((Row, Row), Diff)> {
-        capture::<_, DatumContainer, DatumContainer, _>(trace, as_of).updates
+        let batches = trace
+            .batches_through(Antichain::new().borrow())
+            .expect("a cursor through the whole trace");
+        capture_batches::<_, DatumContainer, DatumContainer, _>(batches, as_of).updates
+    }
+
+    /// Reads a whole trace, as a capture of an exported arrangement would.
+    fn read_all(
+        trace: &mut RestorableSpine<RowRowBatch>,
+        as_of: Timestamp,
+    ) -> Captured<Row, Row, Diff> {
+        let batches = trace
+            .batches_through(Antichain::new().borrow())
+            .expect("a cursor through the whole trace");
+        capture_batches::<_, DatumContainer, DatumContainer, _>(batches, as_of)
     }
 
     /// Stands in for rendering plan node `node`, building `count` arrangements.
     fn render_node(node: u64, count: usize) -> Vec<RestorableSpine<RowRowBatch>> {
-        with_node(node, || {
+        with_node(DATAFLOW, node, || {
             (0..count)
                 .map(|_| {
                     <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None)
@@ -565,12 +788,12 @@ mod tests {
             <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
         source.insert(batch_at(0, 11, as_of, &updates));
 
-        let captured = capture::<_, DatumContainer, DatumContainer, _>(&mut source, as_of);
+        let captured = read_all(&mut source, as_of);
         assert_eq!(captured.as_of(), as_of);
         assert_eq!(captured.updates(), &updates[..]);
 
         // Restore it into the arrangement the same plan node builds.
-        let name = ArrangementName::new(7, 0);
+        let name = ArrangementName::new(DATAFLOW, 7, 0);
         publish(name, restored_batch::<RowRowBuild>(&captured));
         let mut restored = render_node(7, 1);
 
@@ -589,15 +812,15 @@ mod tests {
         assert_eq!(
             first,
             vec![
-                Some(ArrangementName::new(3, 0)),
-                Some(ArrangementName::new(3, 1))
+                Some(ArrangementName::new(DATAFLOW, 3, 0)),
+                Some(ArrangementName::new(DATAFLOW, 3, 1))
             ]
         );
 
         // A different node numbers from zero again, so one node's arrangement
         // count does not shift another's names.
         let other: Vec<_> = render_node(4, 1).iter().map(|s| s.name()).collect();
-        assert_eq!(other, vec![Some(ArrangementName::new(4, 0))]);
+        assert_eq!(other, vec![Some(ArrangementName::new(DATAFLOW, 4, 0))]);
     }
 
     #[mz_ore::test]
@@ -605,14 +828,14 @@ mod tests {
         clear();
         // Publish for the *second* arrangement only. The first must still take
         // ordinal 0, or the second would claim it and restore the wrong state.
-        let second = ArrangementName::new(1, 1);
+        let second = ArrangementName::new(DATAFLOW, 1, 1);
         let updates = vec![((row(Datum::Int64(9)), row(Datum::String("z"))), Diff::ONE)];
         publish(second, batch(Timestamp::new(4), &updates));
 
         let mut spines = render_node(1, 2);
 
         assert!(!spines[0].was_restored());
-        assert_eq!(spines[0].name(), Some(ArrangementName::new(1, 0)));
+        assert_eq!(spines[0].name(), Some(ArrangementName::new(DATAFLOW, 1, 0)));
         assert!(spines[1].was_restored());
         assert_eq!(spines[1].name(), Some(second));
         assert_eq!(contents(&mut spines[1], Timestamp::new(4)), updates);
@@ -622,7 +845,10 @@ mod tests {
     #[mz_ore::test]
     fn a_spine_outside_any_node_claims_nothing() {
         clear();
-        publish(ArrangementName::new(0, 0), batch(Timestamp::new(1), &[]));
+        publish(
+            ArrangementName::new(DATAFLOW, 0, 0),
+            batch(Timestamp::new(1), &[]),
+        );
 
         // Dataflows that are not restoring build spines with no node scope, and
         // must not pick up state published for a plan node.
@@ -630,7 +856,7 @@ mod tests {
 
         assert!(spine.name().is_none());
         assert!(!spine.was_restored());
-        assert_eq!(unclaimed(), vec![ArrangementName::new(0, 0)]);
+        assert_eq!(unclaimed(), vec![ArrangementName::new(DATAFLOW, 0, 0)]);
     }
 
     #[mz_ore::test]
@@ -656,14 +882,12 @@ mod tests {
 
         // As of 5 the second update has not happened yet.
         assert_eq!(
-            capture::<_, DatumContainer, DatumContainer, _>(&mut source, Timestamp::new(5))
-                .updates(),
+            read_all(&mut source, Timestamp::new(5)).updates(),
             &[((key.clone(), val.clone()), Diff::ONE)]
         );
         // As of 9 both accumulate.
         assert_eq!(
-            capture::<_, DatumContainer, DatumContainer, _>(&mut source, Timestamp::new(9))
-                .updates(),
+            read_all(&mut source, Timestamp::new(9)).updates(),
             &[((key, val), Diff::from(2))]
         );
     }
@@ -680,7 +904,10 @@ mod tests {
         let key = row(Datum::Int64(1));
         let restored = vec![((key.clone(), row(Datum::String("a"))), Diff::ONE)];
 
-        publish(ArrangementName::new(2, 0), batch(as_of, &restored));
+        publish(
+            ArrangementName::new(DATAFLOW, 2, 0),
+            batch(as_of, &restored),
+        );
         let mut spines = render_node(2, 1);
         assert!(spines[0].was_restored());
 
@@ -705,7 +932,7 @@ mod tests {
         let as_of = Timestamp::new(10);
         let updates = vec![((row(Datum::Int64(1)), row(Datum::String("a"))), Diff::ONE)];
 
-        publish(ArrangementName::new(8, 0), batch(as_of, &updates));
+        publish(ArrangementName::new(DATAFLOW, 8, 0), batch(as_of, &updates));
         let mut spines = render_node(8, 1);
 
         let mut replayed = 0;
@@ -720,10 +947,70 @@ mod tests {
         assert_eq!(contents(&mut spines[0], as_of), updates);
     }
 
+    /// An arrangement internal to a dataflow is held by nobody, so a capture is
+    /// left for it and answered by the spine the next time its operator runs it.
+    #[mz_ore::test]
+    fn a_capture_is_answered_once_the_trace_reaches_its_as_of() {
+        clear();
+        let as_of = Timestamp::new(5);
+        let restored = vec![((row(Datum::Int64(1)), row(Datum::String("a"))), Diff::ONE)];
+        publish(
+            ArrangementName::new(DATAFLOW, 11, 0),
+            batch(Timestamp::new(2), &restored),
+        );
+        let mut spines = render_node(11, 1);
+        let slot =
+            capture_slot::<RowRowBatch>(ArrangementName::new(DATAFLOW, 11, 0)).expect("registered");
+
+        slot.borrow_mut().request(as_of);
+        spines[0].exert();
+        assert!(
+            slot.borrow_mut().take().is_none(),
+            "answered before the trace reached the as-of"
+        );
+
+        let fresh = vec![((row(Datum::Int64(2)), row(Datum::String("b"))), Diff::ONE)];
+        spines[0].insert(batch_at(0, 8, Timestamp::new(3), &fresh));
+
+        let capture = slot.borrow_mut().take().expect("answered");
+        assert!(capture.since.less_equal(&as_of));
+        // Restored contents included: the capture is the arrangement's state,
+        // not just what this dataflow appended to it.
+        let mut all = restored;
+        all.extend(fresh);
+        all.sort();
+        let read = capture_batches::<_, DatumContainer, DatumContainer, _>(capture.batches, as_of);
+        assert_eq!(read.updates(), &all[..]);
+    }
+
+    /// Compaction is held at a pending capture's as-of, and released the moment
+    /// the capture is answered. Holding it any longer would make every dataflow
+    /// pay for a capture nobody asked it for.
+    #[mz_ore::test]
+    fn a_pending_capture_holds_compaction_at_its_as_of() {
+        clear();
+        let as_of = Timestamp::new(5);
+        let asked_for = Antichain::from_elem(Timestamp::new(10));
+        let mut spines = render_node(12, 1);
+        let slot =
+            capture_slot::<RowRowBatch>(ArrangementName::new(DATAFLOW, 12, 0)).expect("registered");
+        slot.borrow_mut().request(as_of);
+
+        spines[0].set_logical_compaction(asked_for.borrow());
+        assert_eq!(
+            spines[0].get_logical_compaction().to_owned(),
+            Antichain::from_elem(as_of)
+        );
+
+        spines[0].insert(batch_at(0, 8, Timestamp::new(3), &[]));
+        assert!(slot.borrow_mut().take().is_some());
+        assert_eq!(spines[0].get_logical_compaction().to_owned(), asked_for);
+    }
+
     #[mz_ore::test]
     fn an_unmatched_name_leaves_state_unclaimed() {
         clear();
-        let published = ArrangementName::new(99, 0);
+        let published = ArrangementName::new(DATAFLOW, 99, 0);
         publish(published, batch(Timestamp::new(1), &[]));
 
         let spines = render_node(5, 1);

@@ -1122,7 +1122,7 @@ impl<'scope, T: RenderTimestamp + MaybeBucketByTime> Context<'scope, T> {
             // checkpoint of one dataflow restores into the same arrangements of
             // another rendering of the same plan. Imports are deliberately
             // outside this: their contents come from persist, not a checkpoint.
-            let mut bundle = mz_row_spine::checkpoint::with_node(lir_id.into(), || {
+            let mut bundle = mz_row_spine::checkpoint::with_node(object_id, lir_id.into(), || {
                 self.render_plan_expr(node.expr, &collections)
             });
 
