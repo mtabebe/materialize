@@ -22,6 +22,52 @@
 //! `new` consults [`RestoreRegistry`] reaches those as well as the ones we
 //! build ourselves.
 //!
+//! # Restored state sits beside the spine, not inside it
+//!
+//! Restored contents are held as a *base batch* the wrapper owns, not inserted
+//! into the spine. A spine's batches must tile `[minimum, upper)` with no gap,
+//! and the operator that writes into a trace always starts its writer at
+//! `Time::minimum()` regardless of what the trace already holds
+//! (`TraceAgent::new` hardcodes it, and `reduce_core` starts its own
+//! `lower_limit` there). A batch covering `[minimum, as_of + 1)` inside the
+//! spine therefore collides with the operator's first append, and neither the
+//! batch nor the append can be retagged.
+//!
+//! Beside the spine, none of that arises: the spine tiles from `minimum`
+//! exactly as it would with no restore, and the base batch is folded in on the
+//! read path. The base batch's description is `[minimum, minimum)`, which says
+//! what it is: state that predates the interval accounting rather than a step
+//! within it. That is also what makes it unconditionally readable, since no
+//! query frontier can straddle an empty interval.
+//!
+//! # The base batch is read-visible and replay-invisible
+//!
+//! [`TraceReader::batches_through`] includes it, so every accumulated-state read
+//! sees it: a `join` joining a new batch against the other side, a `reduce`
+//! reading its source trace and differencing against its prior output.
+//!
+//! [`TraceReader::map_batches`] does not, so it is invisible to
+//! `TraceAgent::new_listener`, which replays a trace's batches to prime a
+//! late-attaching consumer. Replaying it would be a double apply: the consumer
+//! is itself restored and already holds the result of that data. Excluding it is
+//! also what keeps `read_upper` and `advance_upper` reporting the writer's own
+//! upper, which is what their callers mean.
+//!
+//! **This is why a restored arrangement must not be imported by a dataflow that
+//! is not itself restored.** An import primes through `map_batches`, so the
+//! importer would see only what arrived after the as-of. Exported arrangements,
+//! which anything may import later, are therefore restored by feeding their
+//! captured contents in as operator input instead, which puts them inside the
+//! spine where they behave like any other batch. This wrapper is for the
+//! arrangements internal to a dataflow, which nothing outside it can import.
+//!
+//! # Cost
+//!
+//! The base batch never merges with the spine's batches, so a key retracted
+//! after the restore keeps both its base entry and its retraction rather than
+//! annihilating. It is already consolidated at one time, so nothing is lost to
+//! missed compaction, but the space is held for the arrangement's lifetime.
+//!
 //! A capture holds no history below its as-of. The restored trace's `since` is
 //! the as-of, and nothing reads a trace below its `since`, so history would be
 //! dead weight.
@@ -64,7 +110,7 @@ pub struct ArrangementName {
 
 impl ArrangementName {
     /// Names the `ordinal`th arrangement built by plan node `node`.
-    pub fn new(node: u64, ordinal: u64) -> Self {
+    pub const fn new(node: u64, ordinal: u64) -> Self {
         Self { node, ordinal }
     }
 
@@ -174,12 +220,15 @@ where
     total.filter(|total| !total.is_zero())
 }
 
-/// Rebuilds a single batch holding a capture's contents.
+/// Rebuilds a capture's contents into the single base batch a restore holds
+/// beside its spine.
 ///
-/// The batch spans `[minimum, as_of + 1)` with `since = as_of`, so the live
-/// batches an operator appends from `as_of + 1` onward are contiguous with it.
-/// [`Trace::insert`] requires that contiguity and treats a gap as an error.
-pub fn rebuild_batch<Bu>(
+/// The description is `[minimum, minimum)` with `since = as_of`: an empty
+/// interval, because this batch is not a step in the trace's interval
+/// accounting but the state that predates it. The updates inside are all
+/// stamped `as_of`, which is above that interval, so this batch is only ever
+/// correct beside a spine rather than in one.
+pub fn restored_batch<Bu>(
     captured: &Captured<
         <Bu::Input as StackOf>::Key,
         <Bu::Input as StackOf>::Val,
@@ -190,10 +239,9 @@ where
     Bu: Builder<Time = Timestamp>,
     Bu::Input: StackOf,
 {
-    let upper = captured.as_of.step_forward();
     let description = Description::new(
         Antichain::from_elem(Timestamp::minimum()),
-        Antichain::from_elem(upper),
+        Antichain::from_elem(Timestamp::minimum()),
         Antichain::from_elem(captured.as_of),
     );
 
@@ -244,7 +292,7 @@ where
 /// worker is a thread.
 #[derive(Default)]
 pub struct RestoreRegistry {
-    /// Keyed by name, each entry holds the `Vec<B>` for one arrangement's spine.
+    /// Keyed by name, each entry holds the base batch for one arrangement.
     pending: BTreeMap<ArrangementName, Box<dyn Any>>,
     /// The plan nodes currently being rendered, innermost last, each with the
     /// number of arrangements built under it so far. Set by [`with_node`].
@@ -255,14 +303,14 @@ thread_local! {
     static REGISTRY: RefCell<RestoreRegistry> = RefCell::new(RestoreRegistry::default());
 }
 
-/// Publishes `batches` as the state for `name` on this worker.
+/// Publishes `batch` as the state for `name` on this worker.
 ///
 /// The spine that claims `name` while its plan node renders comes up holding
-/// them. `B` must match that spine's batch type exactly; a mismatch leaves the
+/// it. `B` must match that spine's batch type exactly; a mismatch leaves the
 /// state unclaimed rather than restoring the wrong thing.
-pub fn publish<B: 'static>(name: ArrangementName, batches: Vec<B>) {
+pub fn publish<B: 'static>(name: ArrangementName, batch: B) {
     REGISTRY.with_borrow_mut(|registry| {
-        registry.pending.insert(name, Box::new(batches));
+        registry.pending.insert(name, Box::new(batch));
     });
 }
 
@@ -303,7 +351,7 @@ pub fn clear() {
 /// The name is consumed whether or not state was published for it. Skipping the
 /// ordinal when nothing is restored would renumber the arrangements after it, so
 /// a checkpoint of a subset would restore into the wrong ones.
-fn claim<B: 'static>() -> (Option<ArrangementName>, Option<Vec<B>>) {
+fn claim<B: 'static>() -> (Option<ArrangementName>, Option<B>) {
     REGISTRY.with_borrow_mut(|registry| {
         let Some((node, ordinal)) = registry.building.last_mut() else {
             return (None, None);
@@ -314,8 +362,8 @@ fn claim<B: 'static>() -> (Option<ArrangementName>, Option<Vec<B>>) {
         let Some(entry) = registry.pending.remove(&name) else {
             return (Some(name), None);
         };
-        match entry.downcast::<Vec<B>>() {
-            Ok(batches) => (Some(name), Some(*batches)),
+        match entry.downcast::<B>() {
+            Ok(batch) => (Some(name), Some(*batch)),
             Err(entry) => {
                 // Put it back rather than dropping it, so `unclaimed` reports the
                 // mismatch instead of the restore silently starting empty.
@@ -326,23 +374,20 @@ fn claim<B: 'static>() -> (Option<ArrangementName>, Option<Vec<B>>) {
     })
 }
 
-/// A spine that comes up populated when this worker has state published for the
-/// arrangement being constructed.
+/// A spine that comes up holding a base batch when this worker has state
+/// published for the arrangement being constructed.
 ///
-/// Delegates everything to [`Spine`]. The one behaviour it adds is absorbing a
-/// redundant empty batch over an interval a restored batch already covers:
-/// [`differential_dataflow::operators::arrange::TraceAgent::new`] starts its
-/// writer's upper at `Time::minimum()` regardless of what the trace already
-/// holds, so an operator's first append into a restored trace can ask the spine
-/// to gap-fill a region that is not actually a gap.
+/// The spine itself is untouched by a restore, so the operator writing into it
+/// tiles from `Time::minimum()` exactly as it would with no restore. See the
+/// module docs for why the base batch sits beside the spine, and for the
+/// read-visible/replay-invisible split that makes it safe.
 pub struct RestorableSpine<B: Batch> {
     inner: Spine<B>,
     /// The name this spine claimed, absent when it was built outside any
     /// [`with_node`] scope (a dataflow that is not participating).
     name: Option<ArrangementName>,
-    /// The upper of the restored batch, while the spine still holds it. `None`
-    /// once nothing has been restored or the writer has caught up to it.
-    restored_upper: Option<Antichain<B::Time>>,
+    /// The restored contents, outside the spine's interval accounting.
+    base: Option<B>,
 }
 
 impl<B> RestorableSpine<B>
@@ -351,7 +396,7 @@ where
 {
     /// Whether this spine came up populated from a checkpoint.
     pub fn was_restored(&self) -> bool {
-        self.restored_upper.is_some()
+        self.base.is_some()
     }
 
     /// The name this spine claimed while its plan node rendered.
@@ -369,7 +414,16 @@ where
     type Batch = B;
 
     fn batches_through(&mut self, upper: AntichainRef<Self::Time>) -> Option<Vec<Self::Batch>> {
-        self.inner.batches_through(upper)
+        let mut batches = self.inner.batches_through(upper)?;
+        // Included whatever `upper` is: the base batch is the state the trace
+        // held before this dataflow's accounting begins, so every cut over the
+        // trace includes it. Its empty description is what makes that sound,
+        // since no frontier can straddle an empty interval.
+        match &self.base {
+            Some(base) if !base.is_empty() => batches.push(base.clone()),
+            _ => {}
+        }
+        Some(batches)
     }
 
     fn set_logical_compaction(&mut self, frontier: AntichainRef<Self::Time>) {
@@ -388,6 +442,9 @@ where
         self.inner.get_physical_compaction()
     }
 
+    /// Does **not** yield the base batch. Callers use this to replay the batches
+    /// that moved past the trace and to read the writer's upper, and the base
+    /// batch is neither.
     fn map_batches<F: FnMut(&Self::Batch)>(&self, f: F) {
         self.inner.map_batches(f)
     }
@@ -399,18 +456,9 @@ where
     B::Time: Lattice + Ord + Clone,
 {
     fn new(info: OperatorInfo, logging: Option<Logger>, activator: Option<Activator>) -> Self {
-        let mut inner = Spine::new(info, logging, activator);
-        let (name, batches) = claim::<B>();
-        let mut restored_upper = None;
-        for batch in batches.into_iter().flatten() {
-            restored_upper = Some(batch.upper().clone());
-            inner.insert(batch);
-        }
-        Self {
-            inner,
-            name,
-            restored_upper,
-        }
+        let inner = Spine::new(info, logging, activator);
+        let (name, base) = claim::<B>();
+        Self { inner, name, base }
     }
 
     fn exert(&mut self) {
@@ -422,18 +470,6 @@ where
     }
 
     fn insert(&mut self, batch: Self::Batch) {
-        // An empty batch that only re-covers what a restored batch already holds
-        // is the writer catching up to the trace, not a gap to fill.
-        if let Some(restored_upper) = &self.restored_upper
-            && batch.is_empty()
-            && PartialOrder::less_equal(batch.upper(), restored_upper)
-        {
-            if batch.upper() == restored_upper {
-                self.restored_upper = None;
-            }
-            return;
-        }
-        self.restored_upper = None;
         self.inner.insert(batch)
     }
 
@@ -485,13 +521,13 @@ mod tests {
         builder.done(description)
     }
 
-    /// Builds the single batch a restore would insert.
+    /// Builds the base batch a restore would hold.
     fn batch(as_of: Timestamp, updates: &[((Row, Row), Diff)]) -> RowRowBatch {
         let captured = Captured {
             as_of,
             updates: updates.to_vec(),
         };
-        rebuild_batch::<RowRowBuild>(&captured)
+        restored_batch::<RowRowBuild>(&captured)
     }
 
     fn contents(
@@ -527,7 +563,7 @@ mod tests {
         // A trace holding the updates, as a live arrangement would.
         let mut source =
             <RestorableSpine<RowRowBatch> as Trace>::new(fake_operator_info(), None, None);
-        source.insert(batch(as_of, &updates));
+        source.insert(batch_at(0, 11, as_of, &updates));
 
         let captured = capture::<_, DatumContainer, DatumContainer, _>(&mut source, as_of);
         assert_eq!(captured.as_of(), as_of);
@@ -535,7 +571,7 @@ mod tests {
 
         // Restore it into the arrangement the same plan node builds.
         let name = ArrangementName::new(7, 0);
-        publish(name, vec![rebuild_batch::<RowRowBuild>(&captured)]);
+        publish(name, restored_batch::<RowRowBuild>(&captured));
         let mut restored = render_node(7, 1);
 
         assert!(restored[0].was_restored());
@@ -571,7 +607,7 @@ mod tests {
         // ordinal 0, or the second would claim it and restore the wrong state.
         let second = ArrangementName::new(1, 1);
         let updates = vec![((row(Datum::Int64(9)), row(Datum::String("z"))), Diff::ONE)];
-        publish(second, vec![batch(Timestamp::new(4), &updates)]);
+        publish(second, batch(Timestamp::new(4), &updates));
 
         let mut spines = render_node(1, 2);
 
@@ -586,10 +622,7 @@ mod tests {
     #[mz_ore::test]
     fn a_spine_outside_any_node_claims_nothing() {
         clear();
-        publish(
-            ArrangementName::new(0, 0),
-            vec![batch(Timestamp::new(1), &[])],
-        );
+        publish(ArrangementName::new(0, 0), batch(Timestamp::new(1), &[]));
 
         // Dataflows that are not restoring build spines with no node scope, and
         // must not pick up state published for a plan node.
@@ -635,32 +668,63 @@ mod tests {
         );
     }
 
+    /// The operator writing into a restored trace starts at `Time::minimum()`
+    /// and overshoots the as-of with a batch carrying data. That is the case an
+    /// earlier design could not express, since a batch's description cannot be
+    /// retagged and no filler can bridge `[minimum, X)` to a trace already at
+    /// `as_of + 1`.
     #[mz_ore::test]
-    fn restored_spine_absorbs_the_writers_gap_fill() {
+    fn a_restored_spine_takes_the_operators_first_batch() {
+        clear();
+        let as_of = Timestamp::new(10);
+        let key = row(Datum::Int64(1));
+        let restored = vec![((key.clone(), row(Datum::String("a"))), Diff::ONE)];
+
+        publish(ArrangementName::new(2, 0), batch(as_of, &restored));
+        let mut spines = render_node(2, 1);
+        assert!(spines[0].was_restored());
+
+        let fresh = vec![((key.clone(), row(Datum::String("b"))), Diff::ONE)];
+        spines[0].insert(batch_at(0, 15, Timestamp::new(12), &fresh));
+
+        // Both halves read back, and the restored half is unchanged by the
+        // append that straddled it.
+        let mut all = restored.clone();
+        all.extend(fresh);
+        all.sort();
+        assert_eq!(contents(&mut spines[0], Timestamp::new(14)), all);
+        assert_eq!(contents(&mut spines[0], as_of), restored);
+    }
+
+    /// The base batch is state that predates this dataflow, so it must not be
+    /// replayed to a consumer priming itself off the trace, and must not move
+    /// the writer's upper.
+    #[mz_ore::test]
+    fn the_base_batch_is_not_replayed() {
         clear();
         let as_of = Timestamp::new(10);
         let updates = vec![((row(Datum::Int64(1)), row(Datum::String("a"))), Diff::ONE)];
 
-        let name = ArrangementName::new(2, 0);
-        publish(name, vec![batch(as_of, &updates)]);
-        let mut restored = render_node(2, 1);
+        publish(ArrangementName::new(8, 0), batch(as_of, &updates));
+        let mut spines = render_node(8, 1);
 
-        // `TraceAgent::new` starts a writer's upper at `minimum`, so the first
-        // append into a restored trace arrives as an empty batch covering an
-        // interval the restored batch already holds. Absorbing it is what keeps
-        // the spine from treating a non-gap as a gap.
-        restored[0].insert(batch(as_of, &[]));
-        assert!(!restored[0].was_restored());
+        let mut replayed = 0;
+        spines[0].map_batches(|_| replayed += 1);
+        assert_eq!(replayed, 0);
 
-        // The restored contents survived, and the trace still reads correctly.
-        assert_eq!(contents(&mut restored[0], as_of), updates);
+        let mut upper = Antichain::new();
+        spines[0].read_upper(&mut upper);
+        assert_eq!(upper, Antichain::from_elem(Timestamp::minimum()));
+
+        // Still readable, which is the whole point of holding it beside the spine.
+        assert_eq!(contents(&mut spines[0], as_of), updates);
     }
 
     #[mz_ore::test]
     fn an_unmatched_name_leaves_state_unclaimed() {
         clear();
         let published = ArrangementName::new(99, 0);
-        publish(published, vec![batch(Timestamp::new(1), &[])]);
+        publish(published, batch(Timestamp::new(1), &[]));
 
         let spines = render_node(5, 1);
 

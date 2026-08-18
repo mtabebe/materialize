@@ -23,7 +23,7 @@
 //!
 //! `capture_exported` has no caller yet: the coordinator side that requests a
 //! capture is the next step, and landing the read path first is what lets the
-//! test below prove a real `mz_arrange` restores.
+//! tests below prove a whole dataflow restores.
 #![allow(dead_code)]
 
 use differential_dataflow::trace::TraceReader;
@@ -94,62 +94,128 @@ pub fn capture_exported(
 mod tests {
     use differential_dataflow::AsCollection;
     use mz_repr::{Datum, Row};
-    use mz_row_spine::checkpoint::{self};
+    use mz_row_spine::checkpoint::{self, ArrangementName, restored_batch};
     use mz_row_spine::{RowRowBatcher, RowRowBuilder, RowRowSpine};
     use mz_timely_util::columnation::ColumnationChunker;
     use timely::dataflow::operators::{Probe, ToStream};
 
     use super::*;
     use crate::extensions::arrange::MzArrange;
+    use crate::extensions::reduce::MzReduce;
+
+    /// The arrangement `mz_arrange` builds, and the one `reduce_core` builds for
+    /// its output. Numbered within their plan nodes, as the render loop does.
+    const INPUT: ArrangementName = ArrangementName::new(1, 0);
+    const REDUCED: ArrangementName = ArrangementName::new(2, 0);
+
+    type RowRowBuild = RowRowBuilder<Timestamp, Diff>;
+    type Update = ((Row, Row), Timestamp, Diff);
 
     fn row(n: i64) -> Row {
         Row::pack_slice(&[Datum::Int64(n)])
     }
 
-    /// Captures a real `mz_arrange`'s trace and asserts it reports the
-    /// arrangement's contents.
-    ///
-    /// The restore half of this loop is deliberately not asserted here. Feeding a
-    /// pre-populated spine to a live `mz_arrange` does not work: `Spine::insert`
-    /// requires each batch's `lower` to equal the trace's current `upper`, the
-    /// operator's writer always starts at `Time::minimum()`, and `Batch` exposes
-    /// no way to build an empty batch over a chosen description, so nothing can
-    /// bridge the two. See the phase plan's decision log.
-    #[mz_ore::test]
-    fn capture_reads_a_live_arrangement() {
-        let updates: Vec<((Row, Row), Timestamp, Diff)> = vec![
-            ((row(1), row(10)), Timestamp::new(0), Diff::ONE),
-            ((row(2), row(20)), Timestamp::new(0), Diff::from(2)),
-        ];
-        let expected: Vec<((Row, Row), Diff)> = updates
+    fn update(key: i64, val: i64, time: u64, diff: i64) -> Update {
+        ((row(key), row(val)), Timestamp::new(time), Diff::from(diff))
+    }
+
+    fn captured(updates: &[((i64, i64), i64)], as_of: u64) -> Captured<Row, Row, Diff> {
+        let updates = updates
             .iter()
-            .map(|((k, v), _, d)| ((k.clone(), v.clone()), *d))
+            .map(|((k, v), d)| ((row(*k), row(*v)), Diff::from(*d)))
             .collect();
+        Captured::new(Timestamp::new(as_of), updates)
+    }
 
-        let captured = timely::execute_directly(move |worker| {
+    /// Runs a dataflow that arranges `updates` and counts the values per key,
+    /// returning both arrangements as of `as_of`.
+    ///
+    /// With `restore` set, both arrangements come up holding it and `updates`
+    /// carries only what happened after the checkpoint, which is the shape a
+    /// branch's source read gives (`SnapshotMode::Exclude` from the as-of).
+    fn run(
+        updates: Vec<Update>,
+        restore: Option<(Captured<Row, Row, Diff>, Captured<Row, Row, Diff>)>,
+        as_of: u64,
+    ) -> (Captured<Row, Row, Diff>, Captured<Row, Row, Diff>) {
+        timely::execute_directly(move |worker| {
+            let as_of = Timestamp::new(as_of);
             checkpoint::clear();
-            let as_of = Timestamp::new(0);
+            if let Some((input, reduced)) = &restore {
+                checkpoint::publish(INPUT, restored_batch::<RowRowBuild>(input));
+                checkpoint::publish(REDUCED, restored_batch::<RowRowBuild>(reduced));
+            }
 
-            let (mut trace, probe) = worker.dataflow::<Timestamp, _, _>(|scope| {
-                let arranged = checkpoint::with_node(1, || {
+            let (mut input, mut reduced, probe) = worker.dataflow::<Timestamp, _, _>(|scope| {
+                let arranged = checkpoint::with_node(INPUT.node(), || {
                     updates
                         .to_stream(scope)
                         .as_collection()
-                        .mz_arrange::<ColumnationChunker<_>, RowRowBatcher<_, _>, RowRowBuilder<_, _>, RowRowSpine<_, _>>(
-                            "Captured",
+                        .mz_arrange::<ColumnationChunker<_>, RowRowBatcher<_, _>, RowRowBuild, RowRowSpine<_, _>>(
+                            "Input",
                         )
                 });
-                let (probe, _stream) = arranged.stream.probe();
-                (arranged.trace.clone(), probe)
+                let input = arranged.trace.clone();
+                let reduced = checkpoint::with_node(REDUCED.node(), || {
+                    arranged
+                        .mz_reduce_abelian::<_, RowRowBuild, RowRowSpine<_, _>, DatumContainer>(
+                            "Count",
+                            |_key, input, output| {
+                                let count = i64::try_from(input.len()).expect("small");
+                                output.push((Row::pack_slice(&[Datum::Int64(count)]), Diff::ONE));
+                            },
+                        )
+                });
+                let (probe, _stream) = reduced.stream.probe();
+                (input, reduced.trace.clone(), probe)
             });
             while probe.less_equal(&as_of) {
                 worker.step();
             }
+            assert!(checkpoint::unclaimed().is_empty());
 
-            capture::<_, DatumContainer, DatumContainer, _>(&mut trace, as_of)
-        });
+            (
+                capture::<_, DatumContainer, DatumContainer, _>(&mut input, as_of),
+                capture::<_, DatumContainer, DatumContainer, _>(&mut reduced, as_of),
+            )
+        })
+    }
 
-        assert_eq!(captured.as_of(), Timestamp::new(0));
-        assert_eq!(captured.updates(), &expected[..]);
+    #[mz_ore::test]
+    fn capture_reads_a_live_arrangement() {
+        let updates = vec![update(1, 10, 0, 1), update(2, 20, 0, 2)];
+        let (input, reduced) = run(updates, None, 0);
+
+        assert_eq!(input, captured(&[((1, 10), 1), ((2, 20), 2)], 0));
+        assert_eq!(reduced, captured(&[((1, 1), 1), ((2, 1), 1)], 0));
+    }
+
+    /// A dataflow restored from a checkpoint, then advanced, ends up exactly
+    /// where the same dataflow rebuilt from scratch does.
+    ///
+    /// This covers the arrangement `reduce_core` builds for its own output,
+    /// which is the case that decides the mechanism: nobody outside differential
+    /// can write into it, so it can only be restored at construction.
+    #[mz_ore::test]
+    fn a_restored_dataflow_follows_forward() {
+        let before = vec![update(1, 10, 0, 1), update(2, 20, 0, 1)];
+        // A new value for key 1, so the count it already reported must be
+        // retracted and replaced rather than accumulated onto.
+        let after = vec![update(1, 11, 5, 1)];
+
+        let checkpoint = run(before.clone(), None, 0);
+        let restored = run(after.clone(), Some(checkpoint), 5);
+
+        let rebuilt = run(before.into_iter().chain(after).collect(), None, 5);
+        assert_eq!(restored, rebuilt);
+        assert_eq!(restored.1, captured(&[((1, 2), 1), ((2, 1), 1)], 5));
+    }
+
+    /// Without a restore the same dataflow sees only what arrived after the
+    /// checkpoint, so the equivalence above is the restore's doing.
+    #[mz_ore::test]
+    fn an_unrestored_dataflow_is_missing_the_checkpoint() {
+        let restored = run(vec![update(1, 11, 5, 1)], None, 5);
+        assert_eq!(restored.1, captured(&[((1, 1), 1)], 5));
     }
 }
