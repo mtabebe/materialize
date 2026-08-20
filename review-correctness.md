@@ -1,3 +1,12 @@
+---
+status: ready-for-review
+category: metrics
+title: PR #38149 review — correctness-under-adversity lens
+updated: 2026-08-20
+branch: pr-38149
+outcome: No blocking correctness issues; one should-fix doc drift on mz_objects.type comment.
+---
+
 # PR #38149 review — lens: correctness under adversity
 
 **Verdict: No blocking correctness issues found through this lens.** The change is
