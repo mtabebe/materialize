@@ -59,7 +59,7 @@
 
 use std::any::Any;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::pin::Pin;
@@ -471,6 +471,9 @@ pub(crate) struct DifferentialIntrospectionConfig {
     pub(crate) statistics_interval: Duration,
     pub(crate) statistics_interval_receiver: watch::Receiver<Duration>,
     pub(crate) statistics_retention_duration: Duration,
+    /// Ids whose statistics the synthetic-catalog toolkit seeded, which the scraper must
+    /// not evict for inactivity.
+    pub(crate) synthetic_statistics: Arc<Mutex<BTreeSet<GlobalId>>>,
     pub(crate) metrics: StorageControllerMetrics,
     pub(crate) introspection_tokens: Arc<Mutex<BTreeMap<GlobalId, Box<dyn Any + Send + Sync>>>>,
 }
@@ -626,6 +629,7 @@ where
                     // These do a shallow copy.
                     introspection_config.collection_manager,
                     Arc::clone(&introspection_config.source_statistics),
+                    Arc::clone(&introspection_config.synthetic_statistics),
                     prev,
                     introspection_config.statistics_interval.clone(),
                     introspection_config.statistics_interval_receiver.clone(),
@@ -658,6 +662,7 @@ where
                     self.id.clone(),
                     introspection_config.collection_manager,
                     Arc::clone(&introspection_config.sink_statistics),
+                    Arc::clone(&introspection_config.synthetic_statistics),
                     prev,
                     introspection_config.statistics_interval,
                     introspection_config.statistics_interval_receiver,

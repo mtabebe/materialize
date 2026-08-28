@@ -31,7 +31,7 @@ use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::memory::objects::{
     CatalogItem, DataSourceDesc, Role, Source, Table, TableDataSource,
 };
-use mz_catalog::synthetic::{self, GenerateRequest, HistoryRequest};
+use mz_catalog::synthetic::{self, GenerateRequest, HistoryRequest, StatsRequest, StatsSeed};
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{instrument, soft_panic_or_log};
@@ -323,6 +323,11 @@ impl Coordinator {
 
                 Command::InjectSyntheticHistory { request, tx } => {
                     let result = self.inject_synthetic_history(request);
+                    let _ = tx.send(result);
+                }
+
+                Command::InjectSyntheticStats { request, tx } => {
+                    let result = self.inject_synthetic_stats(request);
                     let _ = tx.send(result);
                 }
 
@@ -2128,6 +2133,34 @@ impl Coordinator {
             .storage
             .append_introspection_updates(request.kind.introspection_type(), rows);
         Ok(count)
+    }
+
+    /// Sets the statistics an object reports, for an object that reports none of its own.
+    ///
+    /// A direct write to the raw statistics shard would be retracted at the next
+    /// reconcile, which drives the shard to match the controller's in-memory map. The map
+    /// is the durable-enough injection point, and only until the environment restarts.
+    #[mz_ore::instrument(level = "debug")]
+    fn inject_synthetic_stats(&mut self, request: StatsRequest) -> Result<(), AdapterError> {
+        let system_config = self.catalog().system_config();
+        if !system_config.allow_unsafe() {
+            return Err(AdapterError::Unsupported(
+                "synthetic catalog state injection",
+            ));
+        }
+        synthetic::require_disposable_env(system_config).map_err(AdapterError::Unstructured)?;
+
+        match request.seed().map_err(AdapterError::Unstructured)? {
+            StatsSeed::Source(update, replica_id) => self
+                .controller
+                .storage
+                .seed_source_statistics(update, replica_id),
+            StatsSeed::Sink(update, replica_id) => self
+                .controller
+                .storage
+                .seed_sink_statistics(update, replica_id),
+        }
+        Ok(())
     }
 
     /// Creates synthetic Tier 0 objects, returning their ids.

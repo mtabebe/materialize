@@ -68,7 +68,8 @@ use mz_storage_client::healthcheck::{
 };
 use mz_storage_client::metrics::StorageControllerMetrics;
 use mz_storage_client::statistics::{
-    ControllerSinkStatistics, ControllerSourceStatistics, WebhookStatistics,
+    ControllerSinkStatistics, ControllerSourceStatistics, SinkStatisticsUpdate,
+    SourceStatisticsUpdate, WebhookStatistics,
 };
 use mz_storage_client::storage_collections::StorageCollections;
 use mz_storage_types::configuration::StorageConfiguration;
@@ -192,6 +193,10 @@ pub struct Controller {
     /// Consolidated metrics updates to periodically write. We do not eagerly initialize this,
     /// and its contents are entirely driven by `StorageResponse::StatisticsUpdates`'s.
     sink_statistics: Arc<Mutex<BTreeMap<(GlobalId, Option<ReplicaId>), ControllerSinkStatistics>>>,
+    /// Ids whose statistics the synthetic-catalog toolkit seeded. They get no organic
+    /// updates, so the scraper would evict them for inactivity; this keeps them until
+    /// something drops them. In memory only, so a restart clears both the seeds and this.
+    synthetic_statistics: Arc<Mutex<BTreeSet<GlobalId>>>,
     /// A way to update the statistics interval in the statistics tasks.
     statistics_interval_sender: Sender<Duration>,
 
@@ -2510,6 +2515,39 @@ impl StorageController for Controller {
         self.collection_manager.blind_write(id, updates);
     }
 
+    fn seed_source_statistics(
+        &mut self,
+        update: SourceStatisticsUpdate,
+        replica_id: Option<ReplicaId>,
+    ) {
+        let id = update.id;
+        let mut stats = ControllerSourceStatistics::new(id, replica_id);
+        stats.incorporate(update);
+        self.source_statistics
+            .lock()
+            .expect("poisoned")
+            .source_statistics
+            .insert((id, replica_id), stats);
+        self.synthetic_statistics
+            .lock()
+            .expect("poisoned")
+            .insert(id);
+    }
+
+    fn seed_sink_statistics(&mut self, update: SinkStatisticsUpdate, replica_id: ReplicaId) {
+        let id = update.id;
+        let mut stats = ControllerSinkStatistics::new(id, replica_id);
+        stats.incorporate(update);
+        self.sink_statistics
+            .lock()
+            .expect("poisoned")
+            .insert((id, Some(replica_id)), stats);
+        self.synthetic_statistics
+            .lock()
+            .expect("poisoned")
+            .insert(id);
+    }
+
     fn append_status_introspection_updates(
         &mut self,
         type_: IntrospectionType,
@@ -2682,6 +2720,7 @@ impl StorageController for Controller {
             introspection_tokens: _,
             source_statistics: _,
             sink_statistics: _,
+            synthetic_statistics: _,
             statistics_interval_sender: _,
             instances,
             initialized,
@@ -2888,6 +2927,7 @@ where
                 webhook_statistics: BTreeMap::new(),
             })),
             sink_statistics: Arc::new(Mutex::new(BTreeMap::new())),
+            synthetic_statistics: Arc::new(Mutex::new(BTreeSet::new())),
             statistics_interval_sender,
             instances: BTreeMap::new(),
             initialized: false,
@@ -3245,6 +3285,7 @@ where
                     statistics_interval: self.config.parameters.statistics_interval.clone(),
                     statistics_interval_receiver: self.statistics_interval_sender.subscribe(),
                     statistics_retention_duration,
+                    synthetic_statistics: Arc::clone(&self.synthetic_statistics),
                     metrics: self.metrics.clone(),
                     introspection_tokens: Arc::clone(&self.introspection_tokens),
                 };

@@ -15,7 +15,7 @@ use axum_extra::TypedHeader;
 use headers::ContentType;
 use http::StatusCode;
 use mz_adapter::catalog::InjectedAuditEvent;
-use mz_catalog::synthetic::{GenerateRequest, HistoryRequest};
+use mz_catalog::synthetic::{GenerateRequest, HistoryRequest, StatsRequest};
 
 use crate::http::AuthedClient;
 
@@ -75,6 +75,16 @@ pub async fn handle_inject_synthetic_history(
             TypedHeader(ContentType::json()),
             serde_json::json!({ "rows": rows }).to_string(),
         )),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+pub async fn handle_inject_synthetic_stats(
+    mut client: AuthedClient,
+    Json(request): Json<StatsRequest>,
+) -> impl IntoResponse {
+    match client.client.inject_synthetic_stats(request).await {
+        Ok(()) => Ok(StatusCode::OK),
         Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
     }
 }

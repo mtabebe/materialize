@@ -439,6 +439,10 @@ impl HttpServer {
                     routing::post(catalog::handle_inject_synthetic_history),
                 )
                 .route(
+                    "/api/catalog/inject-synthetic-stats",
+                    routing::post(catalog::handle_inject_synthetic_stats),
+                )
+                .route(
                     "/api/coordinator/check",
                     routing::get(catalog::handle_coordinator_check),
                 )

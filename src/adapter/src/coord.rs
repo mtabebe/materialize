@@ -525,6 +525,7 @@ impl Message {
                 Command::InjectAuditEvents { .. } => "inject-audit-events",
                 Command::InjectSyntheticObjects { .. } => "inject-synthetic-objects",
                 Command::InjectSyntheticHistory { .. } => "inject-synthetic-history",
+                Command::InjectSyntheticStats { .. } => "inject-synthetic-stats",
                 Command::RegisterConnectionCancelWatch { .. } => "register-connection-cancel-watch",
                 Command::CreateInternalSubscribe { .. } => "create-internal-subscribe",
                 Command::AttemptWrite { .. } => "attempt-write",

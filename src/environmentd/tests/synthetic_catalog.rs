@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use mz_catalog::synthetic::{
-    self, GenerateRequest, HistoryRequest, SyntheticHistoryKind, SyntheticItemKind,
+    self, GenerateRequest, HistoryRequest, StatsRequest, SyntheticHistoryKind, SyntheticItemKind,
 };
 use mz_environmentd::test_util::{self, TestServerWithRuntime};
 use mz_ore::retry::Retry;
@@ -29,6 +29,11 @@ const SYNTHETIC_SINK_ID: &str = "u9999";
 
 /// The default `keep_n_sink_status_history_entries`.
 const RETAINED_ROWS: usize = 5;
+
+const MESSAGES_STAGED: u64 = 12_345;
+
+/// How many one-second retention windows to hold the seeded statistics through.
+const RETENTION_WINDOWS: usize = 10;
 
 /// Objects injected while the environment is down come back on the next boot, and cost
 /// nothing beyond catalog metadata: no storage collection, and so no dataflow over one.
@@ -275,4 +280,85 @@ fn assert_history_rows(server: &TestServerWithRuntime) {
         sinks, 0,
         "the history is supposed to have no sink behind it"
     );
+}
+
+/// Statistics seeded for a sink that produces none of its own show up in the aggregating
+/// view and stay there.
+///
+/// Staying is the interesting half: the scraper evicts an entry that has stopped being
+/// updated, and a synthetic entry is quiet by construction, so it survives only because
+/// the scraper is told to keep it.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_stats_injected_online() {
+    let server = test_util::TestHarness::default()
+        .unsafe_mode()
+        // Short enough that a quiet entry would be gone well before the loop below ends.
+        .with_system_parameter_default(
+            "storage_statistics_retention_duration".to_string(),
+            "1s".to_string(),
+        )
+        .with_system_parameter_default("storage_statistics_interval".to_string(), "1s".to_string())
+        .start_blocking();
+    declare_disposable(&server);
+
+    let response = inject_stats(server.internal_http_local_addr());
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+
+    let mut client = server.connect(postgres::NoTls).unwrap();
+    Retry::default()
+        .max_duration(Duration::from_secs(60))
+        .retry(|_| match seeded_messages(&mut client) {
+            Some(MESSAGES_STAGED) => Ok(()),
+            other => Err(format!("{other:?}")),
+        })
+        .unwrap();
+
+    for _ in 0..RETENTION_WINDOWS {
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(
+            seeded_messages(&mut client),
+            Some(MESSAGES_STAGED),
+            "the seeded statistics were evicted"
+        );
+    }
+
+    let sinks: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mz_sinks WHERE id = $1",
+            &[&SYNTHETIC_SINK_ID],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        sinks, 0,
+        "the statistics are supposed to have no sink behind them"
+    );
+}
+
+fn inject_stats(addr: SocketAddr) -> reqwest::blocking::Response {
+    let request = StatsRequest::Sink {
+        object_id: SYNTHETIC_SINK_ID.to_string(),
+        replica_id: "u1".to_string(),
+        messages_staged: MESSAGES_STAGED,
+        messages_committed: MESSAGES_STAGED,
+        bytes_staged: 4096,
+        bytes_committed: 4096,
+    };
+    reqwest::blocking::Client::new()
+        .post(format!("http://{addr}/api/catalog/inject-synthetic-stats"))
+        .header("x-materialize-user", "mz_system")
+        .json(&request)
+        .send()
+        .unwrap()
+}
+
+fn seeded_messages(client: &mut postgres::Client) -> Option<u64> {
+    client
+        .query_opt(
+            "SELECT messages_staged::bigint FROM mz_internal.mz_sink_statistics WHERE id = $1",
+            &[&SYNTHETIC_SINK_ID],
+        )
+        .unwrap()
+        .map(|row| u64::try_from(row.get::<_, i64>(0)).expect("counters are non-negative"))
 }

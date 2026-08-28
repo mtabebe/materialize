@@ -59,7 +59,7 @@ use timely::progress::frontier::MutableAntichain;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::client::{AppendOnlyUpdate, StatusUpdate, TableData};
-use crate::statistics::WebhookStatistics;
+use crate::statistics::{SinkStatisticsUpdate, SourceStatisticsUpdate, WebhookStatistics};
 
 #[derive(
     Clone,
@@ -756,6 +756,21 @@ pub trait StorageController: Debug {
         type_: IntrospectionType,
         updates: Vec<StatusUpdate>,
     );
+
+    /// Sets the in-memory statistics for a source, so that `mz_source_statistics` reports
+    /// them for an object that produces none of its own.
+    ///
+    /// For modelling only. The seeded entry is kept from being evicted for inactivity,
+    /// but it lives only in memory: a restart drops it, and the next bootstrap's
+    /// dangling-statistics reconcile would drop it anyway.
+    fn seed_source_statistics(
+        &mut self,
+        update: SourceStatisticsUpdate,
+        replica_id: Option<ReplicaId>,
+    );
+
+    /// Like [`StorageController::seed_source_statistics`], for a sink.
+    fn seed_sink_statistics(&mut self, update: SinkStatisticsUpdate, replica_id: ReplicaId);
 
     /// Updates the desired state of the given introspection type.
     ///

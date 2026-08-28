@@ -1276,6 +1276,15 @@ impl SessionClient {
             .await
     }
 
+    /// Sets the statistics an object reports, for an object that reports none of its own.
+    pub async fn inject_synthetic_stats(
+        &mut self,
+        request: mz_catalog::synthetic::StatsRequest,
+    ) -> Result<(), AdapterError> {
+        self.send_without_session(|tx| Command::InjectSyntheticStats { request, tx })
+            .await
+    }
+
     /// Terminates the client session.
     pub async fn terminate(&mut self) {
         let conn_id = self.session().conn_id().clone();
@@ -1404,6 +1413,7 @@ impl SessionClient {
                 | Command::InjectAuditEvents { .. }
                 | Command::InjectSyntheticObjects { .. }
                 | Command::InjectSyntheticHistory { .. }
+                | Command::InjectSyntheticStats { .. }
                 | Command::RegisterConnectionCancelWatch { .. }
                 | Command::CreateInternalSubscribe { .. }
                 | Command::AttemptWrite { .. }

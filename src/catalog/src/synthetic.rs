@@ -28,7 +28,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
-use mz_controller_types::ClusterId;
+use mz_controller_types::{ClusterId, ReplicaId};
 use mz_ore::collections::HashSet;
 use mz_repr::role_id::RoleId;
 use mz_repr::{CatalogItemId, Diff, GlobalId, Row};
@@ -41,6 +41,7 @@ use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{Ident, UnresolvedItemName};
 use mz_storage_client::client::{Status, StatusUpdate};
 use mz_storage_client::controller::IntrospectionType;
+use mz_storage_client::statistics::{Gauge, SinkStatisticsUpdate, SourceStatisticsUpdate};
 use serde::{Deserialize, Serialize};
 
 use crate::durable::Transaction;
@@ -416,6 +417,112 @@ pub fn render_history_rows(
             Ok((Row::from(update), Diff::ONE))
         })
         .collect()
+}
+
+/// Numbers to report for an object that produces none of its own.
+///
+/// The aggregating views group by id and replica without joining back to `mz_sources` or
+/// `mz_sinks`, so an id with nothing behind it still shows up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum StatsRequest {
+    Source {
+        object_id: String,
+        /// A source may leave this out, the way a webhook source does.
+        replica_id: Option<String>,
+        #[serde(default)]
+        messages_received: u64,
+        #[serde(default)]
+        bytes_received: u64,
+        #[serde(default)]
+        updates_staged: u64,
+        #[serde(default)]
+        updates_committed: u64,
+        #[serde(default)]
+        snapshot_committed: bool,
+        #[serde(default)]
+        offset_known: Option<u64>,
+        #[serde(default)]
+        offset_committed: Option<u64>,
+    },
+    Sink {
+        object_id: String,
+        replica_id: String,
+        #[serde(default)]
+        messages_staged: u64,
+        #[serde(default)]
+        messages_committed: u64,
+        #[serde(default)]
+        bytes_staged: u64,
+        #[serde(default)]
+        bytes_committed: u64,
+    },
+}
+
+/// The seed a [`StatsRequest`] asks for, ready for the controller.
+pub enum StatsSeed {
+    Source(SourceStatisticsUpdate, Option<ReplicaId>),
+    Sink(SinkStatisticsUpdate, ReplicaId),
+}
+
+impl StatsRequest {
+    /// The object the numbers are about.
+    pub fn object_id(&self) -> Result<GlobalId, anyhow::Error> {
+        let object_id = match self {
+            StatsRequest::Source { object_id, .. } | StatsRequest::Sink { object_id, .. } => {
+                object_id
+            }
+        };
+        GlobalId::from_str(object_id).map_err(|_| anyhow!("{object_id} is not an object id"))
+    }
+
+    pub fn seed(&self) -> Result<StatsSeed, anyhow::Error> {
+        let id = self.object_id()?;
+        Ok(match self {
+            StatsRequest::Source {
+                replica_id,
+                messages_received,
+                bytes_received,
+                updates_staged,
+                updates_committed,
+                snapshot_committed,
+                offset_known,
+                offset_committed,
+                ..
+            } => {
+                let replica_id = replica_id.as_deref().map(parse_replica_id).transpose()?;
+                let mut update = SourceStatisticsUpdate::new(id);
+                update.messages_received = (*messages_received).into();
+                update.bytes_received = (*bytes_received).into();
+                update.updates_staged = (*updates_staged).into();
+                update.updates_committed = (*updates_committed).into();
+                update.snapshot_committed = Gauge::gauge(*snapshot_committed);
+                update.offset_known = Gauge::gauge(*offset_known);
+                update.offset_committed = Gauge::gauge(*offset_committed);
+                StatsSeed::Source(update, replica_id)
+            }
+            StatsRequest::Sink {
+                replica_id,
+                messages_staged,
+                messages_committed,
+                bytes_staged,
+                bytes_committed,
+                ..
+            } => {
+                let replica_id = parse_replica_id(replica_id)?;
+                let mut update = SinkStatisticsUpdate::new(id);
+                update.messages_staged = (*messages_staged).into();
+                update.messages_committed = (*messages_committed).into();
+                update.bytes_staged = (*bytes_staged).into();
+                update.bytes_committed = (*bytes_committed).into();
+                StatsSeed::Sink(update, replica_id)
+            }
+        })
+    }
+}
+
+fn parse_replica_id(replica_id: &str) -> Result<ReplicaId, anyhow::Error> {
+    ReplicaId::from_str(replica_id).map_err(|_| anyhow!("{replica_id} is not a replica id"))
 }
 
 #[cfg(test)]

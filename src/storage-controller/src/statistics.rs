@@ -10,7 +10,7 @@
 //! A tokio task (and support machinery) for producing storage statistics.
 
 use std::any::Any;
-use std::collections::{BTreeMap, btree_map};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -52,6 +52,7 @@ pub(super) fn spawn_statistics_scraper<StatsWrapper, Stats>(
     statistics_collection_id: GlobalId,
     collection_mgmt: CollectionManager,
     shared_stats: Arc<Mutex<StatsWrapper>>,
+    synthetic_ids: Arc<Mutex<BTreeSet<GlobalId>>>,
     previous_values: Vec<Row>,
     initial_interval: Duration,
     mut interval_updated: Receiver<Duration>,
@@ -132,10 +133,16 @@ where
                     {
                         let mut shared_stats = shared_stats.lock().expect("poisoned");
 
+                        // Statistics seeded by the synthetic-catalog toolkit get no
+                        // organic updates, so eviction by inactivity would drop them
+                        // within the retention window no matter how recently they were
+                        // asked for. They stay until they are dropped explicitly.
+                        let synthetic_ids = synthetic_ids.lock().expect("poisoned");
                         let now = Instant::now();
-                        shared_stats.as_mut_stats().retain(|_key, stat| {
+                        shared_stats.as_mut_stats().retain(|(id, _replica_id), stat| {
                             let inactive_time = now - stat.last_updated();
                             inactive_time < statistics_retention_duration
+                                || synthetic_ids.contains(id)
                         });
 
                         for (_, stats) in shared_stats.as_mut_stats().iter_mut() {
