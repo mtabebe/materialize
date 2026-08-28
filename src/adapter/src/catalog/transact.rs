@@ -2024,7 +2024,13 @@ impl Catalog {
                 for item_id in delta.items {
                     let entry = state.get_entry(&item_id);
 
-                    if entry.item().is_storage_collection() {
+                    // Symmetric to the create path: a metadata-only object never had a
+                    // storage collection registered, so there is none to drop. Naming it
+                    // here panics `prepare_state`, which looks every dropped id up in the
+                    // collections the controller knows about.
+                    if entry.item().is_storage_collection()
+                        && !synthetic::is_metadata_only(*entry.owner_id())
+                    {
                         storage_collections_to_drop.extend(entry.global_ids());
                     }
 

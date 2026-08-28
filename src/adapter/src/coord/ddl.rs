@@ -21,7 +21,8 @@ use mz_adapter_types::compaction::SINCE_GRANULARITY;
 use mz_adapter_types::connection::ConnectionId;
 use mz_audit_log::VersionedEvent;
 use mz_catalog::SYSTEM_CONN_ID;
-use mz_catalog::memory::objects::{CatalogItem, DataSourceDesc, Sink};
+use mz_catalog::memory::objects::{CatalogEntry, CatalogItem, DataSourceDesc, Sink};
+use mz_catalog::synthetic;
 use mz_cluster_client::ReplicaId;
 use mz_controller::clusters::ReplicaLocation;
 use mz_controller_types::ClusterId;
@@ -1223,6 +1224,18 @@ impl Coordinator {
         Ok(res?)
     }
 
+    /// How many of `entries` a resource limit governs.
+    ///
+    /// Synthetic objects are left out. They model a catalog larger than the limits allow,
+    /// which is what the toolkit is for, so counting them would make a real `CREATE` fail
+    /// because of a fleet that only exists to be modelled. Creating them is exempt for the
+    /// same reason, so the two directions agree.
+    fn limited_count<'a>(entries: impl Iterator<Item = &'a CatalogEntry>) -> usize {
+        entries
+            .filter(|entry| !synthetic::is_synthetic(*entry.owner_id()))
+            .count()
+    }
+
     /// Validate all resource limits in a catalog transaction and return an error if that limit is
     /// exceeded.
     fn validate_resource_limits(
@@ -1288,6 +1301,12 @@ impl Coordinator {
                         }
                     }
                 }
+                // A synthetic object is modelling a catalog larger than these limits
+                // allow, which is the whole reason it exists, so it does not count
+                // against them. The disposable-environment gate is what bounds it
+                // instead. This also makes the online path agree with the offline one,
+                // which writes durable rows and never reaches this check.
+                Op::CreateItem { owner_id, .. } if synthetic::is_synthetic(*owner_id) => (),
                 Op::CreateItem { name, item, .. } => {
                     *new_objects_per_schema
                         .entry((
@@ -1475,7 +1494,11 @@ impl Coordinator {
         let mut current_mysql_connections = 0;
         let mut current_sql_server_connections = 0;
         let mut current_kafka_connections = 0;
-        for c in self.catalog().user_connections() {
+        for c in self
+            .catalog()
+            .user_connections()
+            .filter(|entry| !synthetic::is_synthetic(*entry.owner_id()))
+        {
             let connection = c
                 .connection()
                 .expect("`user_connections()` only returns connection objects");
@@ -1530,7 +1553,7 @@ impl Coordinator {
             MAX_AWS_PRIVATELINK_CONNECTIONS.name(),
         )?;
         self.validate_resource_limit(
-            self.catalog().user_tables().count(),
+            Self::limited_count(self.catalog().user_tables()),
             new_tables,
             SystemVars::max_tables,
             "table",
@@ -1540,6 +1563,7 @@ impl Coordinator {
         let current_sources: usize = self
             .catalog()
             .user_sources()
+            .filter(|entry| !synthetic::is_synthetic(*entry.owner_id()))
             .filter_map(|source| source.source())
             .map(|source| source.user_controllable_persist_shard_count())
             .sum::<i64>()
@@ -1554,14 +1578,14 @@ impl Coordinator {
             MAX_SOURCES.name(),
         )?;
         self.validate_resource_limit(
-            self.catalog().user_sinks().count(),
+            Self::limited_count(self.catalog().user_sinks()),
             new_sinks,
             SystemVars::max_sinks,
             "sink",
             MAX_SINKS.name(),
         )?;
         self.validate_resource_limit(
-            self.catalog().user_materialized_views().count(),
+            Self::limited_count(self.catalog().user_materialized_views()),
             new_materialized_views,
             SystemVars::max_materialized_views,
             "materialized view",
@@ -1627,7 +1651,14 @@ impl Coordinator {
             let current_items = self
                 .catalog()
                 .try_get_schema(&database_spec, &schema_spec, conn_id)
-                .map(|schema| schema.items.len())
+                .map(|schema| {
+                    Self::limited_count(
+                        schema
+                            .items
+                            .values()
+                            .map(|item_id| self.catalog().get_entry(item_id)),
+                    )
+                })
                 .unwrap_or(0);
             self.validate_resource_limit(
                 current_items,
@@ -1638,7 +1669,7 @@ impl Coordinator {
             )?;
         }
         self.validate_resource_limit(
-            self.catalog().user_secrets().count(),
+            Self::limited_count(self.catalog().user_secrets()),
             new_secrets,
             SystemVars::max_secrets,
             "secret",

@@ -448,9 +448,11 @@ fn tier1_request(kind: SyntheticItemKind, on: Option<String>) -> GenerateRequest
 #[mz_ore::test]
 #[cfg_attr(miri, ignore)] // too slow
 fn test_synthetic_purge_round_trips() {
-    let server = test_util::TestHarness::default()
+    let tmpdir = TempDir::new().unwrap();
+    let harness = test_util::TestHarness::default()
         .unsafe_mode()
-        .start_blocking();
+        .data_directory(tmpdir.path());
+    let server = harness.clone().start_blocking();
     declare_disposable(&server);
 
     let mut client = server.connect(postgres::NoTls).unwrap();
@@ -520,4 +522,90 @@ fn purge(addr: SocketAddr) -> serde_json::Value {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
     response.json().unwrap()
+}
+
+/// The object limits bound what a user creates, not what the toolkit models: seeding a
+/// catalog larger than `max_tables` allows is the point of it.
+///
+/// Synthetic objects are invisible to the limits in both directions. Counting them when
+/// creating would refuse the batch; counting them afterwards would refuse a real `CREATE`
+/// because of a fleet that only exists to be modelled. The offline path writes durable
+/// rows and never reaches the check at all, so this is also what keeps the two front-ends
+/// agreeing about the same batch.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_objects_ignore_object_limits() {
+    let server = test_util::TestHarness::default()
+        .unsafe_mode()
+        .with_system_parameter_default("max_tables".to_string(), "1".to_string())
+        .start_blocking();
+    declare_disposable(&server);
+
+    let response = inject(server.internal_http_local_addr(), SyntheticItemKind::Table);
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+
+    let mut client = server.connect(postgres::NoTls).unwrap();
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mz_tables WHERE name LIKE 'synthetic%'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(count, i64::try_from(COUNT).unwrap());
+
+    // A real table still fits: the synthetic fleet does not crowd it out.
+    client.batch_execute("CREATE TABLE real_t (a int)").unwrap();
+
+    // And the limit still bounds real objects, which is the half that must not change.
+    let err = client
+        .batch_execute("CREATE TABLE real_t2 (a int)")
+        .unwrap_err();
+    let message = err.as_db_error().expect("a database error").message();
+    assert!(
+        message.contains("max_tables"),
+        "unexpected error: {message}"
+    );
+}
+
+/// Purging after a restart is a different path from purging what this session created.
+///
+/// Boot is what puts the objects through the durable path, and dropping one whose storage
+/// collection was never registered has to stay as much of a no-op as creating it was.
+/// Naming it to the storage controller panics the coordinator, which a same-session purge
+/// never reaches.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_purge_after_restart() {
+    let tmpdir = TempDir::new().unwrap();
+    let harness = test_util::TestHarness::default()
+        .unsafe_mode()
+        .data_directory(tmpdir.path());
+
+    let objects_before = {
+        let server = harness.clone().start_blocking();
+        declare_disposable(&server);
+        let mut client = server.connect(postgres::NoTls).unwrap();
+        let objects_before = object_count(&mut client);
+
+        for kind in [
+            SyntheticItemKind::Table,
+            SyntheticItemKind::MaterializedView,
+        ] {
+            let response = inject(server.internal_http_local_addr(), kind);
+            assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+        }
+        objects_before
+    };
+
+    let server = harness.start_blocking();
+    let report = purge(server.internal_http_local_addr());
+    assert_eq!(
+        report["objects"].as_u64(),
+        Some(2 * COUNT),
+        "unexpected report: {report}"
+    );
+
+    let mut client = server.connect(postgres::NoTls).unwrap();
+    assert_eq!(object_count(&mut client), objects_before);
 }
