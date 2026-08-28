@@ -41,6 +41,7 @@ use mz_catalog::memory::objects::{
     CatalogEntry, CatalogItem, ClusterConfig, ClusterVariant, DataSourceDesc, DefaultPrivileges,
     ReconfigurationState, ReconfigurationStatus, ReconfigurationTarget, SourceReferences,
 };
+use mz_catalog::synthetic;
 use mz_cluster_controller::ctx::RefreshWindowDecision;
 use mz_controller::clusters::{ManagedReplicaLocation, ReplicaConfig, ReplicaLocation};
 use mz_controller_types::{ClusterId, ReplicaId};
@@ -1669,6 +1670,9 @@ impl Catalog {
                 state.check_unstable_dependencies(&item)?;
 
                 match &item {
+                    // A metadata-only object owns no shard, so it must stay out of the
+                    // storage collections this transaction prepares.
+                    _ if synthetic::is_metadata_only(owner_id) => (),
                     CatalogItem::Table(table) => {
                         let gids: Vec<_> = table.global_ids().collect();
                         assert_eq!(gids.len(), 1);

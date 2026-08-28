@@ -7,16 +7,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Tests for the synthetic catalog state toolkit's offline injection.
+//! Tests for the synthetic catalog state toolkit.
 
 #![recursion_limit = "256"]
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::anyhow;
-use mz_catalog::synthetic::{self, GenerateSpec, SyntheticItemKind};
-use mz_environmentd::test_util;
+use mz_catalog::synthetic::{self, GenerateRequest, SyntheticItemKind};
+use mz_environmentd::test_util::{self, TestServerWithRuntime};
 use mz_ore::retry::Retry;
+use reqwest::StatusCode;
 use tempfile::TempDir;
 
 const COUNT: u64 = 4;
@@ -26,66 +27,121 @@ const COUNT: u64 = 4;
 ///
 /// Booting at all is half the assertion. Every durable row is re-planned at boot, so a
 /// generated `create_sql` that does not plan takes the environment down with it.
-#[mz_ore::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+#[mz_ore::test]
 #[cfg_attr(miri, ignore)] // too slow
-async fn test_synthetic_tier0_objects_are_metadata_only() {
+fn test_synthetic_objects_injected_offline() {
     let tmpdir = TempDir::new().unwrap();
     let harness = test_util::TestHarness::default()
         .unsafe_mode()
         .data_directory(tmpdir.path());
 
-    // Boot once to create the catalog, and declare the environment disposable. This has
-    // to be an `ALTER SYSTEM SET`, not a harness default: the offline gate reads the
-    // durable setting, which is the only thing it can see with the environment down.
     {
-        let server = harness.clone().start().await;
-        let client = server.connect().internal().await.unwrap();
-        client
-            .batch_execute("ALTER SYSTEM SET enable_synthetic_catalog_state = on")
-            .await
-            .unwrap();
+        let server = harness.clone().start_blocking();
+        declare_disposable(&server);
     }
 
-    harness
-        .with_durable_catalog(|tx| {
-            let database = tx
-                .get_databases()
-                .find(|database| database.name == "materialize")
-                .ok_or_else(|| anyhow!("no materialize database"))?;
-            let schema = tx
-                .get_schemas()
-                .find(|schema| schema.database_id == Some(database.id) && schema.name == "public")
-                .ok_or_else(|| anyhow!("no public schema"))?;
-            let cluster_id = tx
-                .get_clusters()
-                .find(|cluster| cluster.name == "quickstart")
-                .map(|cluster| cluster.id);
-
+    // The environment has to be down for this, so it gets a runtime of its own rather
+    // than borrowing one from a server.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime
+        .block_on(harness.with_durable_catalog(|tx| {
             for kind in [
                 SyntheticItemKind::Table,
                 SyntheticItemKind::MaterializedView,
             ] {
-                synthetic::generate_objects(
-                    tx,
-                    &GenerateSpec {
-                        kind,
-                        count: COUNT,
-                        schema_id: schema.id,
-                        database_name: database.name.clone(),
-                        schema_name: schema.name.clone(),
-                        name_prefix: "synthetic".to_string(),
-                        columns: 3,
-                        cluster_id,
-                    },
-                )?;
+                let spec = request(kind).resolve(tx)?;
+                synthetic::generate_objects(tx, &spec)?;
             }
             Ok(())
-        })
-        .await
+        }))
         .unwrap();
+    drop(runtime);
 
-    let server = harness.start().await;
-    let client = server.connect().await.unwrap();
+    let server = harness.start_blocking();
+    assert_metadata_only(&server);
+}
+
+/// The same objects, created into a running environment, appear without a restart and
+/// are just as inert. Restarting then runs them through the boot path, so the online and
+/// offline halves of the toolkit converge on the same rows.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_objects_injected_online() {
+    let tmpdir = TempDir::new().unwrap();
+    let harness = test_util::TestHarness::default()
+        .unsafe_mode()
+        .data_directory(tmpdir.path());
+
+    {
+        let server = harness.clone().start_blocking();
+        declare_disposable(&server);
+        for kind in [
+            SyntheticItemKind::Table,
+            SyntheticItemKind::MaterializedView,
+        ] {
+            let response = inject(server.internal_http_local_addr(), kind);
+            assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+        }
+        assert_metadata_only(&server);
+    }
+
+    let server = harness.start_blocking();
+    assert_metadata_only(&server);
+}
+
+/// Injection needs both gates. Unsafe mode says "this is a debug build", the disposable
+/// declaration says "this environment in particular".
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_injection_requires_both_gates() {
+    let server = test_util::TestHarness::default().start_blocking();
+    let response = inject(server.internal_http_local_addr(), SyntheticItemKind::Table);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.text().unwrap().contains("not supported"));
+    drop(server);
+
+    let server = test_util::TestHarness::default()
+        .unsafe_mode()
+        .start_blocking();
+    let response = inject(server.internal_http_local_addr(), SyntheticItemKind::Table);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.text().unwrap().contains("disposable environments"));
+}
+
+fn request(kind: SyntheticItemKind) -> GenerateRequest {
+    GenerateRequest {
+        kind,
+        count: COUNT,
+        database: "materialize".to_string(),
+        schema: "public".to_string(),
+        name_prefix: "synthetic".to_string(),
+        columns: 3,
+        cluster: "quickstart".to_string(),
+    }
+}
+
+/// Declares the environment disposable durably, which is what the offline path can see.
+fn declare_disposable(server: &TestServerWithRuntime) {
+    server
+        .connect_internal(postgres::NoTls)
+        .unwrap()
+        .batch_execute("ALTER SYSTEM SET enable_synthetic_catalog_state = on")
+        .unwrap();
+}
+
+fn inject(addr: SocketAddr, kind: SyntheticItemKind) -> reqwest::blocking::Response {
+    reqwest::blocking::Client::new()
+        .post(format!(
+            "http://{addr}/api/catalog/inject-synthetic-objects"
+        ))
+        .header("x-materialize-user", "mz_system")
+        .json(&request(kind))
+        .send()
+        .unwrap()
+}
+
+fn assert_metadata_only(server: &TestServerWithRuntime) {
+    let mut client = server.connect(postgres::NoTls).unwrap();
 
     for relation in ["mz_tables", "mz_materialized_views"] {
         let count: i64 = client
@@ -93,44 +149,33 @@ async fn test_synthetic_tier0_objects_are_metadata_only() {
                 &format!("SELECT count(*) FROM {relation} WHERE name LIKE 'synthetic%'"),
                 &[],
             )
-            .await
             .unwrap()
             .get(0);
         assert_eq!(count, i64::try_from(COUNT).unwrap(), "{relation}");
     }
 
-    // A real table is the positive control for the Tier 0 claim: it is registered after
-    // boot, so once its shard is visible, any registration boot made is visible too.
-    client
-        .batch_execute("CREATE TABLE real_t (a int)")
-        .await
-        .unwrap();
+    // A real table is the positive control: it is registered last, so once its shard is
+    // visible, any shard the synthetic objects registered is visible too.
+    client.batch_execute("CREATE TABLE real_t (a int)").unwrap();
     Retry::default()
         .max_duration(Duration::from_secs(60))
-        .retry_async(|_| async {
-            let shards = synthetic_and_real_shards(&client).await;
-            match shards {
+        .retry(|_| {
+            let row = client
+                .query_one(
+                    "SELECT
+                         count(*) FILTER (WHERE o.name LIKE 'synthetic%'),
+                         count(*) FILTER (WHERE o.name = 'real_t')
+                     FROM mz_internal.mz_storage_shards s
+                     JOIN mz_objects o ON o.id = s.object_id",
+                    &[],
+                )
+                .unwrap();
+            match (row.get::<_, i64>(0), row.get::<_, i64>(1)) {
                 (_, 0) => Err("real table has no shard yet"),
                 (0, _) => Ok(()),
                 (synthetic, _) => panic!("{synthetic} synthetic objects registered a shard"),
             }
         })
-        .await
         .unwrap();
-}
-
-/// The number of shards registered for synthetic objects and for `real_t`.
-async fn synthetic_and_real_shards(client: &tokio_postgres::Client) -> (i64, i64) {
-    let row = client
-        .query_one(
-            "SELECT
-                 count(*) FILTER (WHERE o.name LIKE 'synthetic%'),
-                 count(*) FILTER (WHERE o.name = 'real_t')
-             FROM mz_internal.mz_storage_shards s
-             JOIN mz_objects o ON o.id = s.object_id",
-            &[],
-        )
-        .await
-        .unwrap();
-    (row.get(0), row.get(1))
+    client.batch_execute("DROP TABLE real_t").unwrap();
 }

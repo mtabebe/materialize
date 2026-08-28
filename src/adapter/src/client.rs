@@ -1248,6 +1248,23 @@ impl SessionClient {
         .await
     }
 
+    /// Creates synthetic Tier 0 objects in a running environment, returning their ids.
+    ///
+    /// The coordinator refuses unless the environment is in unsafe mode and has declared
+    /// itself disposable.
+    pub async fn inject_synthetic_objects(
+        &mut self,
+        request: mz_catalog::synthetic::GenerateRequest,
+    ) -> Result<Vec<CatalogItemId>, AdapterError> {
+        let conn_id = self.session().conn_id().clone();
+        self.send_without_session(|tx| Command::InjectSyntheticObjects {
+            request,
+            conn_id,
+            tx,
+        })
+        .await
+    }
+
     /// Terminates the client session.
     pub async fn terminate(&mut self) {
         let conn_id = self.session().conn_id().clone();
@@ -1374,6 +1391,7 @@ impl SessionClient {
                 | Command::ExplainTimestamp { .. }
                 | Command::FrontendStatementLogging(..)
                 | Command::InjectAuditEvents { .. }
+                | Command::InjectSyntheticObjects { .. }
                 | Command::RegisterConnectionCancelWatch { .. }
                 | Command::CreateInternalSubscribe { .. }
                 | Command::AttemptWrite { .. }

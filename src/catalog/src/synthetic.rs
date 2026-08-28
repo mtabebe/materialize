@@ -26,6 +26,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
+use itertools::Itertools;
 use mz_controller_types::ClusterId;
 use mz_ore::collections::HashSet;
 use mz_repr::CatalogItemId;
@@ -37,9 +38,9 @@ use mz_sql::session::user::MZ_SYNTHETIC_ROLE_ID;
 use mz_sql::session::vars::{ENABLE_SYNTHETIC_CATALOG_STATE, SystemVars, VarInput};
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{Ident, UnresolvedItemName};
+use serde::{Deserialize, Serialize};
 
 use crate::durable::Transaction;
-use crate::memory::objects::CatalogEntry;
 
 /// How much of a real object's machinery a synthetic object pays for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,21 +91,24 @@ fn not_disposable() -> anyhow::Error {
     )
 }
 
-/// Whether the boot path must treat `entry` as catalog metadata and nothing else.
+/// Whether an object with this owner is catalog metadata and nothing else.
 ///
-/// The three bootstrap loops that give an item real effects (storage registration,
-/// dataflow planning, dataflow instantiation) each skip such an entry. Every synthetic
-/// object is [`EffectsTier::MetadataOnly`] today; a tier that ships real effects will
-/// need a way to tell the two apart in the durable row.
-pub fn is_metadata_only(entry: &CatalogEntry) -> bool {
-    is_synthetic(*entry.owner_id())
+/// Every seam that would give an item real effects asks this and skips: the three
+/// bootstrap loops, the storage collections a catalog transaction prepares, and the
+/// controller implications of a committed catalog change. Every synthetic object is
+/// [`EffectsTier::MetadataOnly`] today, so this is the same question as
+/// [`is_synthetic`] with a different contract: a tier that ships real effects will need
+/// a way to tell the two apart in the durable row, and only this one changes.
+pub fn is_metadata_only(owner_id: RoleId) -> bool {
+    is_synthetic(owner_id)
 }
 
 /// The self-contained shapes the generator can synthesize.
 ///
 /// Each one plans without resolving a name, so a generated object cannot brick a boot
 /// by referencing something that is gone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SyntheticItemKind {
     Table,
     View,
@@ -145,6 +149,65 @@ impl FromStr for SyntheticItemKind {
     }
 }
 
+/// A batch of synthetic objects to create, named the way a caller names things.
+///
+/// Resolving the names needs a catalog, and the two front-ends have different ones: the
+/// offline tool has a durable [`Transaction`], the coordinator has its in-memory state.
+/// Both resolve into a [`GenerateSpec`], so what they write agrees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateRequest {
+    pub kind: SyntheticItemKind,
+    pub count: u64,
+    pub database: String,
+    pub schema: String,
+    /// Prefixes every generated object name. The allocated id is appended, so a second
+    /// batch with the same prefix cannot collide with the first.
+    pub name_prefix: String,
+    pub columns: usize,
+    /// The cluster synthetic materialized views are created in. Ignored for the shapes
+    /// that do not name one.
+    pub cluster: String,
+}
+
+impl GenerateRequest {
+    /// Resolves this request's names against the durable catalog.
+    pub fn resolve(&self, tx: &Transaction) -> Result<GenerateSpec, anyhow::Error> {
+        let database = tx
+            .get_databases()
+            .find(|database| database.name == self.database)
+            .ok_or_else(|| anyhow!("unknown database {}", self.database))?;
+        let schema = tx
+            .get_schemas()
+            .find(|schema| schema.database_id == Some(database.id) && schema.name == self.schema)
+            .ok_or_else(|| anyhow!("unknown schema {}.{}", self.database, self.schema))?;
+        let cluster_id = tx
+            .get_clusters()
+            .find(|cluster| cluster.name == self.cluster)
+            .map(|cluster| cluster.id);
+        Ok(self.with_ids(schema.id, cluster_id))
+    }
+
+    /// Completes this request with ids a caller resolved itself.
+    pub fn with_ids(&self, schema_id: SchemaId, cluster_id: Option<ClusterId>) -> GenerateSpec {
+        GenerateSpec {
+            kind: self.kind,
+            count: self.count,
+            schema_id,
+            database_name: self.database.clone(),
+            schema_name: self.schema.clone(),
+            name_prefix: self.name_prefix.clone(),
+            columns: self.columns,
+            cluster_id,
+        }
+    }
+}
+
+/// One generated object, ready to be written or planned.
+pub struct SyntheticItem {
+    pub name: String,
+    pub create_sql: String,
+}
+
 /// A batch of synthetic objects to write into the durable catalog.
 #[derive(Debug, Clone)]
 pub struct GenerateSpec {
@@ -175,6 +238,41 @@ pub fn generate_objects(
     tx: &mut Transaction,
     spec: &GenerateSpec,
 ) -> Result<Vec<CatalogItemId>, anyhow::Error> {
+    let ids = tx.allocate_user_item_ids(spec.count)?;
+    let item_ids: Vec<_> = ids.iter().map(|(item_id, _)| *item_id).collect();
+    let items = render_objects(spec, &item_ids)?;
+
+    let privileges = vec![rbac::owner_privilege(
+        spec.kind.object_type(),
+        MZ_SYNTHETIC_ROLE_ID,
+    )];
+    let temporary_oids = HashSet::new();
+    for ((item_id, global_id), item) in ids.into_iter().zip_eq(items) {
+        tx.insert_user_item(
+            item_id,
+            global_id,
+            spec.schema_id,
+            &item.name,
+            item.create_sql,
+            MZ_SYNTHETIC_ROLE_ID,
+            privileges.clone(),
+            &temporary_oids,
+            BTreeMap::new(),
+            None,
+        )?;
+    }
+    Ok(item_ids)
+}
+
+/// Renders the name and `create_sql` of one object per id.
+///
+/// The name carries the id so that a second batch with the same prefix cannot collide
+/// with the first, and the SQL is self-contained so that re-planning it at boot cannot
+/// fail on a missing dependency.
+pub fn render_objects(
+    spec: &GenerateSpec,
+    item_ids: &[CatalogItemId],
+) -> Result<Vec<SyntheticItem>, anyhow::Error> {
     if spec.columns == 0 {
         bail!("a synthetic object needs at least one column");
     }
@@ -182,31 +280,14 @@ pub fn generate_objects(
         bail!("a synthetic materialized view needs a cluster");
     }
 
-    let privileges = vec![rbac::owner_privilege(
-        spec.kind.object_type(),
-        MZ_SYNTHETIC_ROLE_ID,
-    )];
-    let temporary_oids = HashSet::new();
-
-    let ids = tx.allocate_user_item_ids(spec.count)?;
-    let mut item_ids = Vec::with_capacity(ids.len());
-    for (item_id, global_id) in ids {
-        let name = format!("{}_{}", spec.name_prefix, item_id);
-        tx.insert_user_item(
-            item_id,
-            global_id,
-            spec.schema_id,
-            &name,
-            render_create_sql(spec, &name)?,
-            MZ_SYNTHETIC_ROLE_ID,
-            privileges.clone(),
-            &temporary_oids,
-            BTreeMap::new(),
-            None,
-        )?;
-        item_ids.push(item_id);
-    }
-    Ok(item_ids)
+    item_ids
+        .iter()
+        .map(|item_id| {
+            let name = format!("{}_{}", spec.name_prefix, item_id);
+            let create_sql = render_create_sql(spec, &name)?;
+            Ok(SyntheticItem { name, create_sql })
+        })
+        .collect()
 }
 
 /// The literal, type pairs generated columns cycle through.

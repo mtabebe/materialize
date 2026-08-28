@@ -431,6 +431,10 @@ impl HttpServer {
                     routing::post(catalog::handle_inject_audit_events),
                 )
                 .route(
+                    "/api/catalog/inject-synthetic-objects",
+                    routing::post(catalog::handle_inject_synthetic_objects),
+                )
+                .route(
                     "/api/coordinator/check",
                     routing::get(catalog::handle_coordinator_check),
                 )

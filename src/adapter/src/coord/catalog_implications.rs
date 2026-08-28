@@ -37,6 +37,7 @@ use mz_catalog::memory::objects::{
     CatalogItem, Cluster, ClusterReplica, Connection, DataSourceDesc, Index, MaterializedView,
     MetricSink, Secret, Sink, Source, StateDiff, Table, TableDataSource, View,
 };
+use mz_catalog::synthetic;
 use mz_cloud_resources::VpcEndpointConfig;
 use mz_compute_client::logging::LogVariant;
 use mz_compute_client::protocol::response::PeekResponse;
@@ -120,6 +121,10 @@ impl Coordinator {
                     connection: _,
                     parsed_full_name: _,
                 } => {
+                    // A metadata-only object has no controller state to create or drop.
+                    if synthetic::is_metadata_only(durable_item.owner_id) {
+                        continue;
+                    }
                     let entry = catalog_implications
                         .entry(durable_item.id.clone())
                         .or_insert_with(|| CatalogImplication::None);

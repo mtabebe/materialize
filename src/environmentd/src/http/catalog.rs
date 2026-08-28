@@ -15,6 +15,7 @@ use axum_extra::TypedHeader;
 use headers::ContentType;
 use http::StatusCode;
 use mz_adapter::catalog::InjectedAuditEvent;
+use mz_catalog::synthetic::GenerateRequest;
 
 use crate::http::AuthedClient;
 
@@ -48,6 +49,20 @@ pub async fn handle_inject_audit_events(
     match client.client.inject_audit_events(events).await {
         Ok(()) => Ok(StatusCode::OK),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+pub async fn handle_inject_synthetic_objects(
+    mut client: AuthedClient,
+    Json(request): Json<GenerateRequest>,
+) -> impl IntoResponse {
+    match client.client.inject_synthetic_objects(request).await {
+        Ok(item_ids) => Ok((
+            TypedHeader(ContentType::json()),
+            serde_json::json!({ "ids": item_ids.iter().map(ToString::to_string).collect::<Vec<_>>() })
+                .to_string(),
+        )),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 

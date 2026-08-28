@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use clap::Parser;
 use futures::future::FutureExt;
 use mz_adapter::catalog::{Catalog, InitializeStateResult};
@@ -45,7 +45,7 @@ use mz_catalog::durable::{
     BootstrapArgs, OpenableDurableCatalogState, persist_backed_catalog_state,
 };
 use mz_catalog::memory::objects::CatalogItem;
-use mz_catalog::synthetic::{self, GenerateSpec, SyntheticItemKind};
+use mz_catalog::synthetic::{self, GenerateRequest, SyntheticItemKind};
 use mz_cloud_resources::AwsExternalIdPrefix;
 use mz_license_keys::ValidatedLicenseKey;
 use mz_orchestrator_tracing::{StaticTracingConfig, TracingCliArgs};
@@ -659,29 +659,16 @@ async fn generate_objects(
     let mut tx = state.transaction().await?;
     synthetic::require_disposable_env_durable(&tx)?;
 
-    let database = tx
-        .get_databases()
-        .find(|database| database.name == args.database)
-        .ok_or_else(|| anyhow!("unknown database {}", args.database))?;
-    let schema = tx
-        .get_schemas()
-        .find(|schema| schema.database_id == Some(database.id) && schema.name == args.schema)
-        .ok_or_else(|| anyhow!("unknown schema {}.{}", args.database, args.schema))?;
-    let cluster_id = tx
-        .get_clusters()
-        .find(|cluster| cluster.name == args.cluster)
-        .map(|cluster| cluster.id);
-
-    let spec = GenerateSpec {
+    let request = GenerateRequest {
         kind: args.item_type,
         count: args.count,
-        schema_id: schema.id,
-        database_name: args.database,
-        schema_name: args.schema,
+        database: args.database,
+        schema: args.schema,
         name_prefix: args.name_prefix,
         columns: args.columns,
-        cluster_id,
+        cluster: args.cluster,
     };
+    let spec = request.resolve(&tx)?;
     let item_ids = synthetic::generate_objects(&mut tx, &spec)?;
 
     let commit_ts = tx.upper();

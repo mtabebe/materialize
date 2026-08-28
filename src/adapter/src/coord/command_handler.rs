@@ -24,23 +24,25 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::LocalBoxFuture;
+use itertools::Itertools;
 use mz_adapter_types::connection::{ConnectionId, ConnectionIdType};
 use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::memory::objects::{
     CatalogItem, DataSourceDesc, Role, Source, Table, TableDataSource,
 };
+use mz_catalog::synthetic::{self, GenerateRequest};
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{instrument, soft_panic_or_log};
 use mz_repr::role_id::RoleId;
-use mz_repr::{Diff, GlobalId, SqlScalarType, Timestamp};
+use mz_repr::{CatalogItemId, Diff, GlobalId, SqlScalarType, Timestamp};
 use mz_sql::ast::{
     AlterConnectionAction, AlterConnectionStatement, AlterSourceAction, AstInfo, ConstantVisitor,
     CopyRelation, CopyStatement, CreateSourceOptionName, Raw, Statement, StatementKind,
     SubscribeStatement,
 };
 use mz_sql::catalog::RoleAttributesRaw;
-use mz_sql::names::{Aug, PartialItemName, ResolvedIds};
+use mz_sql::names::{Aug, ItemQualifiers, PartialItemName, QualifiedItemName, ResolvedIds};
 use mz_sql::plan::{
     AbortTransactionPlan, CommitTransactionPlan, CreateRolePlan, Params, Plan,
     StatementClassification, TransactionType,
@@ -50,7 +52,7 @@ use mz_sql::pure::{
 };
 use mz_sql::rbac;
 use mz_sql::rbac::CREATE_ITEM_USAGE;
-use mz_sql::session::user::User;
+use mz_sql::session::user::{MZ_SYNTHETIC_ROLE_ID, User};
 use mz_sql::session::vars::{
     EndTransactionAction, NETWORK_POLICY, OwnedVarInput, STATEMENT_LOGGING_SAMPLE_RATE,
     TRANSACTION_ISOLATION_VAR_NAME, Value, Var, check_transaction_isolation_feature_flag,
@@ -67,6 +69,7 @@ use tracing::{Instrument, debug_span, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
+use crate::catalog::LocalExpressionCache;
 use crate::command::{
     CatalogSnapshot, Command, ExecuteResponse, Response, SASLChallengeResponse,
     SASLVerifyProofResponse, StartupResponse, SuperuserAttribute,
@@ -88,6 +91,9 @@ use crate::webhook::{
 use crate::{AppendWebhookError, ExecuteContext, catalog, metrics};
 
 use super::{ExecuteContextExtra, ExecuteContextGuard};
+
+/// How many synthetic objects one catalog transaction creates.
+const SYNTHETIC_INJECT_BATCH: usize = 1_000;
 
 /// The login status of a role, used by authentication handlers to check role
 /// existence and login permission before proceeding to credential verification.
@@ -302,6 +308,15 @@ impl Coordinator {
                     let result = self
                         .catalog_transact_with_context(Some(&conn_id), None, ops)
                         .await;
+                    let _ = tx.send(result);
+                }
+
+                Command::InjectSyntheticObjects {
+                    request,
+                    conn_id,
+                    tx,
+                } => {
+                    let result = self.inject_synthetic_objects(&conn_id, request).await;
                     let _ = tx.send(result);
                 }
 
@@ -2070,6 +2085,85 @@ impl Coordinator {
     /// startup, i.e. that are present in `active_conns`. A failed startup
     /// leaves no state behind (see `handle_startup_inner`), so no Terminate
     /// may be sent for it.
+    /// Creates synthetic Tier 0 objects, returning their ids.
+    ///
+    /// The objects are ordinary catalog items owned by `mz_synthetic`, committed through
+    /// the same `Op::CreateItem` a real `CREATE` uses. What makes them cost nothing is
+    /// that every seam downstream of the commit asks
+    /// [`mz_catalog::synthetic::is_metadata_only`] and skips them, so no storage
+    /// collection is prepared and no controller implication is applied.
+    ///
+    /// Batched because the point of the toolkit is catalogs of a size nobody would
+    /// create by hand, and one commit is one `compare_and_append`.
+    #[mz_ore::instrument(level = "debug")]
+    async fn inject_synthetic_objects(
+        &mut self,
+        conn_id: &ConnectionId,
+        request: GenerateRequest,
+    ) -> Result<Vec<CatalogItemId>, AdapterError> {
+        let system_config = self.catalog().system_config();
+        if !system_config.allow_unsafe() {
+            return Err(AdapterError::Unsupported(
+                "synthetic catalog state injection",
+            ));
+        }
+        synthetic::require_disposable_env(system_config).map_err(AdapterError::Unstructured)?;
+
+        let (qualifiers, spec) = {
+            let state = self.catalog().state();
+            let schema = state.resolve_schema(
+                None,
+                Some(&request.database),
+                &request.schema,
+                &SYSTEM_CONN_ID,
+            )?;
+            let cluster_id = state.resolve_cluster(&request.cluster).ok().map(|c| c.id);
+            let qualifiers = ItemQualifiers {
+                database_spec: schema.name.database.clone(),
+                schema_spec: schema.id.clone(),
+            };
+            (
+                qualifiers,
+                request.with_ids(schema.id.clone().into(), cluster_id),
+            )
+        };
+
+        let ids = self.allocate_user_ids(spec.count).await?;
+        let item_ids: Vec<_> = ids.iter().map(|(item_id, _)| *item_id).collect();
+        let items =
+            synthetic::render_objects(&spec, &item_ids).map_err(AdapterError::Unstructured)?;
+
+        let mut ops = Vec::with_capacity(SYNTHETIC_INJECT_BATCH);
+        for ((item_id, global_id), item) in ids.into_iter().zip_eq(items) {
+            let catalog_item = self.catalog().state().deserialize_item(
+                global_id,
+                &item.create_sql,
+                &BTreeMap::new(),
+                &mut LocalExpressionCache::Closed,
+                None,
+            )?;
+            ops.push(catalog::Op::CreateItem {
+                id: item_id,
+                name: QualifiedItemName {
+                    qualifiers: qualifiers.clone(),
+                    item: item.name,
+                },
+                item: catalog_item,
+                owner_id: MZ_SYNTHETIC_ROLE_ID,
+            });
+            if ops.len() == SYNTHETIC_INJECT_BATCH {
+                let batch = std::mem::take(&mut ops);
+                self.catalog_transact_with_context(Some(conn_id), None, batch)
+                    .await?;
+            }
+        }
+        if !ops.is_empty() {
+            self.catalog_transact_with_context(Some(conn_id), None, ops)
+                .await?;
+        }
+        Ok(item_ids)
+    }
+
     #[mz_ore::instrument(level = "debug")]
     async fn handle_terminate(&mut self, conn_id: ConnectionId) {
         // If the session doesn't exist in `active_conns`, then this method will panic later on.

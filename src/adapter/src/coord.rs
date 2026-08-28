@@ -523,6 +523,7 @@ impl Message {
                 Command::FrontendStatementLogging(..) => "frontend-statement-logging",
                 Command::StartCopyFromStdin { .. } => "start-copy-from-stdin",
                 Command::InjectAuditEvents { .. } => "inject-audit-events",
+                Command::InjectSyntheticObjects { .. } => "inject-synthetic-objects",
                 Command::RegisterConnectionCancelWatch { .. } => "register-connection-cancel-watch",
                 Command::CreateInternalSubscribe { .. } => "create-internal-subscribe",
                 Command::AttemptWrite { .. } => "attempt-write",
@@ -2676,7 +2677,7 @@ impl Coordinator {
             // Nothing to install for a synthetic Tier 0 object: no collection was
             // registered to hold a read policy, and `bootstrap_dataflow_plans` left it
             // without a physical plan to ship.
-            if synthetic::is_metadata_only(entry) {
+            if synthetic::is_metadata_only(*entry.owner_id()) {
                 continue;
             }
             debug!(
@@ -3351,7 +3352,7 @@ impl Coordinator {
         for entry in catalog.entries() {
             // A synthetic Tier 0 object owns no shard, so the storage controller must
             // never learn of a collection for it.
-            if synthetic::is_metadata_only(entry) {
+            if synthetic::is_metadata_only(*entry.owner_id()) {
                 continue;
             }
             match entry.item() {
@@ -3687,7 +3688,7 @@ impl Coordinator {
         for entry in ordered_catalog_entries {
             // A synthetic Tier 0 object never ships a dataflow, and its inputs are not
             // registered, so there is nothing to optimize it into.
-            if synthetic::is_metadata_only(entry) {
+            if synthetic::is_metadata_only(*entry.owner_id()) {
                 continue;
             }
             match entry.item() {
