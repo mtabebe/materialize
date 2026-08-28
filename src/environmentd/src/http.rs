@@ -443,6 +443,10 @@ impl HttpServer {
                     routing::post(catalog::handle_inject_synthetic_stats),
                 )
                 .route(
+                    "/api/catalog/purge-synthetic",
+                    routing::post(catalog::handle_purge_synthetic),
+                )
+                .route(
                     "/api/coordinator/check",
                     routing::get(catalog::handle_coordinator_check),
                 )

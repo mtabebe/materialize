@@ -2548,6 +2548,20 @@ impl StorageController for Controller {
             .insert(id);
     }
 
+    fn drop_seeded_statistics(&mut self) -> usize {
+        let seeded = std::mem::take(&mut *self.synthetic_statistics.lock().expect("poisoned"));
+        self.source_statistics
+            .lock()
+            .expect("poisoned")
+            .source_statistics
+            .retain(|(id, _), _| !seeded.contains(id));
+        self.sink_statistics
+            .lock()
+            .expect("poisoned")
+            .retain(|(id, _), _| !seeded.contains(id));
+        seeded.len()
+    }
+
     fn append_status_introspection_updates(
         &mut self,
         type_: IntrospectionType,

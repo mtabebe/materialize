@@ -19,7 +19,7 @@ use enum_kinds::EnumKind;
 use futures::Stream;
 use mz_adapter_types::connection::{ConnectionId, ConnectionIdType};
 use mz_auth::password::Password;
-use mz_catalog::synthetic::{GenerateRequest, HistoryRequest, StatsRequest};
+use mz_catalog::synthetic::{GenerateRequest, HistoryRequest, PurgeReport, StatsRequest};
 use mz_cluster_client::ReplicaId;
 use mz_compute_types::ComputeInstanceId;
 use mz_compute_types::dataflows::DataflowDescription;
@@ -220,6 +220,11 @@ pub enum Command {
     InjectSyntheticStats {
         request: StatsRequest,
         tx: oneshot::Sender<Result<(), AdapterError>>,
+    },
+
+    PurgeSynthetic {
+        conn_id: ConnectionId,
+        tx: oneshot::Sender<Result<PurgeReport, AdapterError>>,
     },
 
     Terminate {
@@ -528,6 +533,7 @@ impl Command {
             | Command::InjectSyntheticObjects { .. }
             | Command::InjectSyntheticHistory { .. }
             | Command::InjectSyntheticStats { .. }
+            | Command::PurgeSynthetic { .. }
             | Command::RegisterConnectionCancelWatch { .. }
             | Command::CreateInternalSubscribe { .. }
             | Command::AttemptWrite { .. }
@@ -576,6 +582,7 @@ impl Command {
             | Command::InjectSyntheticObjects { .. }
             | Command::InjectSyntheticHistory { .. }
             | Command::InjectSyntheticStats { .. }
+            | Command::PurgeSynthetic { .. }
             | Command::RegisterConnectionCancelWatch { .. }
             | Command::CreateInternalSubscribe { .. }
             | Command::AttemptWrite { .. }

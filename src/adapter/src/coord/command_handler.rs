@@ -32,7 +32,7 @@ use mz_catalog::memory::objects::{
     CatalogItem, DataSourceDesc, Role, Source, Table, TableDataSource,
 };
 use mz_catalog::synthetic::{
-    self, EffectsTier, GenerateRequest, HistoryRequest, StatsRequest, StatsSeed,
+    self, EffectsTier, GenerateRequest, HistoryRequest, PurgeReport, StatsRequest, StatsSeed,
 };
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
@@ -45,7 +45,9 @@ use mz_sql::ast::{
     SubscribeStatement,
 };
 use mz_sql::catalog::RoleAttributesRaw;
-use mz_sql::names::{Aug, ItemQualifiers, PartialItemName, QualifiedItemName, ResolvedIds};
+use mz_sql::names::{
+    Aug, ItemQualifiers, ObjectId, PartialItemName, QualifiedItemName, ResolvedIds,
+};
 use mz_sql::plan::{
     AbortTransactionPlan, CommitTransactionPlan, CreateRolePlan, Params, Plan,
     StatementClassification, TransactionType,
@@ -72,7 +74,7 @@ use tracing::{Instrument, debug_span, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
-use crate::catalog::LocalExpressionCache;
+use crate::catalog::{DropObjectInfo, LocalExpressionCache};
 use crate::command::{
     CatalogSnapshot, Command, ExecuteResponse, Response, SASLChallengeResponse,
     SASLVerifyProofResponse, StartupResponse, SuperuserAttribute,
@@ -330,6 +332,11 @@ impl Coordinator {
 
                 Command::InjectSyntheticStats { request, tx } => {
                     let result = self.inject_synthetic_stats(request);
+                    let _ = tx.send(result);
+                }
+
+                Command::PurgeSynthetic { conn_id, tx } => {
+                    let result = self.purge_synthetic(&conn_id).await;
                     let _ = tx.send(result);
                 }
 
@@ -2131,10 +2138,74 @@ impl Coordinator {
         let rows = synthetic::render_history_rows(&request, self.now_datetime())
             .map_err(AdapterError::Unstructured)?;
         let count = rows.len();
+        let type_ = request.kind.introspection_type();
+        self.synthetic_history
+            .entry(type_)
+            .or_default()
+            .extend(rows.iter().map(|(row, _diff)| row.clone()));
         self.controller
             .storage
-            .append_introspection_updates(request.kind.introspection_type(), rows);
+            .append_introspection_updates(type_, rows);
         Ok(count)
+    }
+
+    /// Removes everything the toolkit injected that is still reachable.
+    ///
+    /// Idempotent: a second run finds nothing and reports zeros. Dropping an object
+    /// cascades, the way `DROP ... CASCADE` does, because anything built on a synthetic
+    /// object is itself part of the modelled situation.
+    ///
+    /// Not everything is reachable. Injected history rows and seeded statistics are
+    /// tracked in memory, so a restart loses the handle on them: the statistics are gone
+    /// with it, but the history rows stay until they age out.
+    #[mz_ore::instrument(level = "debug")]
+    async fn purge_synthetic(
+        &mut self,
+        conn_id: &ConnectionId,
+    ) -> Result<PurgeReport, AdapterError> {
+        let system_config = self.catalog().system_config();
+        if !system_config.allow_unsafe() {
+            return Err(AdapterError::Unsupported(
+                "synthetic catalog state injection",
+            ));
+        }
+        synthetic::require_disposable_env(system_config).map_err(AdapterError::Unstructured)?;
+
+        let synthetic_items: Vec<_> = self
+            .catalog()
+            .entries()
+            .filter(|entry| synthetic::is_synthetic(*entry.owner_id()))
+            .map(|entry| ObjectId::Item(entry.id()))
+            .collect();
+        let to_drop = self.catalog().object_dependents(&synthetic_items, conn_id);
+        let objects = to_drop.len();
+        for batch in to_drop.chunks(SYNTHETIC_INJECT_BATCH) {
+            let ops = vec![catalog::Op::DropObjects(
+                batch
+                    .iter()
+                    .cloned()
+                    .map(DropObjectInfo::manual_drop_from_object_id)
+                    .collect(),
+            )];
+            self.catalog_transact_with_context(Some(conn_id), None, ops)
+                .await?;
+        }
+
+        let mut history_rows = 0;
+        for (type_, rows) in std::mem::take(&mut self.synthetic_history) {
+            history_rows += rows.len();
+            let retractions = rows.into_iter().map(|row| (row, Diff::MINUS_ONE)).collect();
+            self.controller
+                .storage
+                .append_introspection_updates(type_, retractions);
+        }
+
+        let statistics = self.controller.storage.drop_seeded_statistics();
+        Ok(PurgeReport {
+            objects,
+            history_rows,
+            statistics,
+        })
     }
 
     /// Sets the statistics an object reports, for an object that reports none of its own.

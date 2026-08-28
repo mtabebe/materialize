@@ -42,7 +42,7 @@ use mz_catalog::durable::debug::{
     TxnWalShardCollection, UnfinalizedShardsCollection,
 };
 use mz_catalog::durable::{
-    BootstrapArgs, OpenableDurableCatalogState, persist_backed_catalog_state,
+    BootstrapArgs, OpenableDurableCatalogState, Transaction, persist_backed_catalog_state,
 };
 use mz_catalog::memory::objects::CatalogItem;
 use mz_catalog::synthetic::{self, EffectsTier, GenerateRequest, SyntheticItemKind};
@@ -168,6 +168,12 @@ enum Action {
     /// `enable_synthetic_catalog_state` set, which is how an environment declares
     /// itself disposable.
     GenerateObjects(GenerateObjectsArgs),
+    /// Removes every synthetic object from the durable catalog. The environment must be
+    /// down; the objects are gone on its next boot.
+    ///
+    /// Reaches objects only. Injected status history and seeded statistics live in a
+    /// running environment, so they are purged there.
+    PurgeSynthetic,
     /// Checks if the specified catalog could be upgraded from its state to the
     /// adapter catalog at the version of this binary. Prints a success message
     /// or error message. Exits with 0 if the upgrade would succeed, otherwise
@@ -307,6 +313,7 @@ async fn run(args: Args) -> Result<(), anyhow::Error> {
         Action::GenerateObjects(generate_args) => {
             generate_objects(openable_state, generate_args).await
         }
+        Action::PurgeSynthetic => purge_synthetic(openable_state).await,
         Action::UpgradeCheck {
             secrets,
             cluster_replica_sizes,
@@ -641,9 +648,42 @@ async fn epoch(
 }
 
 async fn generate_objects(
-    mut openable_state: Box<dyn OpenableDurableCatalogState>,
+    openable_state: Box<dyn OpenableDurableCatalogState>,
     args: GenerateObjectsArgs,
 ) -> Result<(), anyhow::Error> {
+    let request = GenerateRequest {
+        kind: args.item_type,
+        count: args.count,
+        database: args.database,
+        schema: args.schema,
+        name_prefix: args.name_prefix,
+        columns: args.columns,
+        cluster: args.cluster,
+        tier: args.tier,
+        on: args.on,
+    };
+    let (kind, written) = with_synthetic_catalog(openable_state, |tx| {
+        let spec = request.resolve(tx)?;
+        let item_ids = synthetic::generate_objects(tx, &spec)?;
+        Ok((spec.kind, item_ids.len()))
+    })
+    .await?;
+
+    println!("wrote {written} synthetic {kind}s");
+    Ok(())
+}
+
+/// Opens the catalog read/write, applies `f`, and commits.
+///
+/// The environment must be down: opening read/write fences whatever else holds the
+/// catalog, and nothing reads these rows until the next boot anyway.
+async fn with_synthetic_catalog<F, T>(
+    mut openable_state: Box<dyn OpenableDurableCatalogState>,
+    f: F,
+) -> Result<T, anyhow::Error>
+where
+    F: FnOnce(&mut Transaction) -> Result<T, anyhow::Error>,
+{
     if !openable_state.is_initialized().await? {
         bail!("catalog is not initialized, so there is nothing to inject into");
     }
@@ -665,27 +705,20 @@ async fn generate_objects(
 
     let mut tx = state.transaction().await?;
     synthetic::require_disposable_env_durable(&tx)?;
-
-    let request = GenerateRequest {
-        kind: args.item_type,
-        count: args.count,
-        database: args.database,
-        schema: args.schema,
-        name_prefix: args.name_prefix,
-        columns: args.columns,
-        cluster: args.cluster,
-        tier: args.tier,
-        on: args.on,
-    };
-    let spec = request.resolve(&tx)?;
-    let item_ids = synthetic::generate_objects(&mut tx, &spec)?;
+    let result = f(&mut tx)?;
 
     let commit_ts = tx.upper();
     let _updates = tx.get_and_commit_op_updates();
     tx.commit(commit_ts).await?;
     state.expire().await;
+    Ok(result)
+}
 
-    println!("wrote {} synthetic {}s", item_ids.len(), spec.kind);
+async fn purge_synthetic(
+    openable_state: Box<dyn OpenableDurableCatalogState>,
+) -> Result<(), anyhow::Error> {
+    let purged = with_synthetic_catalog(openable_state, synthetic::purge_objects).await?;
+    println!("purged {purged} synthetic objects");
     Ok(())
 }
 

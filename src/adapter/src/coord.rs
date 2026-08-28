@@ -147,7 +147,7 @@ use mz_repr::explain::{ExplainConfig, ExplainFormat};
 use mz_repr::global_id::TransientIdGen;
 use mz_repr::optimize::{OptimizerFeatureOverrides, OptimizerFeatures, OverrideFrom};
 use mz_repr::role_id::RoleId;
-use mz_repr::{CatalogItemId, Diff, GlobalId, RelationDesc, SqlRelationType, Timestamp};
+use mz_repr::{CatalogItemId, Diff, GlobalId, RelationDesc, Row, SqlRelationType, Timestamp};
 use mz_secrets::cache::CachingSecretsReader;
 use mz_secrets::{SecretsController, SecretsReader};
 use mz_sql::ast::{Raw, Statement};
@@ -163,7 +163,9 @@ use mz_sql::session::vars::{MAX_CREDIT_CONSUMPTION_RATE, SystemVars, Var};
 use mz_sql_parser::ast::ExplainStage;
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_storage_client::client::TableData;
-use mz_storage_client::controller::{CollectionDescription, DataSource, ExportDescription};
+use mz_storage_client::controller::{
+    CollectionDescription, DataSource, ExportDescription, IntrospectionType,
+};
 use mz_storage_types::connections::Connection as StorageConnection;
 use mz_storage_types::connections::ConnectionContext;
 use mz_storage_types::connections::inline::{IntoInlineConnection, ReferencedConnection};
@@ -526,6 +528,7 @@ impl Message {
                 Command::InjectSyntheticObjects { .. } => "inject-synthetic-objects",
                 Command::InjectSyntheticHistory { .. } => "inject-synthetic-history",
                 Command::InjectSyntheticStats { .. } => "inject-synthetic-stats",
+                Command::PurgeSynthetic { .. } => "purge-synthetic",
                 Command::RegisterConnectionCancelWatch { .. } => "register-connection-cancel-watch",
                 Command::CreateInternalSubscribe { .. } => "create-internal-subscribe",
                 Command::AttemptWrite { .. } => "attempt-write",
@@ -2158,6 +2161,12 @@ pub struct Coordinator {
     /// For non-realtime timelines, nothing pushes the timestamps forward, so we must do
     /// it manually.
     advance_timelines_interval: Interval,
+
+    /// Status-history rows the synthetic-catalog toolkit appended, so a purge can retract
+    /// exactly those. An append-only collection has no other handle on them: nothing else
+    /// records which rows came from where, and age-based truncation is the only other way
+    /// they leave. Lost on restart, like the injected statistics.
+    synthetic_history: BTreeMap<IntrospectionType, Vec<Row>>,
 
     /// Serialized DDL. DDL must be serialized because:
     /// - Many of them do off-thread work and need to verify the catalog is in a valid state, but
@@ -5367,6 +5376,7 @@ pub fn serve(
                     occ_write_semaphore: Arc::new(Semaphore::new(max_concurrent_occ_writes)),
                     frontend_read_then_write_enabled,
                     advance_timelines_interval,
+                    synthetic_history: BTreeMap::new(),
                     secrets_controller,
                     caching_secrets_reader,
                     cloud_resource_controller,

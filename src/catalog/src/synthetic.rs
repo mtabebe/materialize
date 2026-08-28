@@ -21,7 +21,7 @@
 //! [`require_disposable_env`], which says "this specific environment is throwaway".
 //! Both are required.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -625,6 +625,32 @@ impl StatsRequest {
 
 fn parse_replica_id(replica_id: &str) -> Result<ReplicaId, anyhow::Error> {
     ReplicaId::from_str(replica_id).map_err(|_| anyhow!("{replica_id} is not a replica id"))
+}
+
+/// What a purge removed, per surface.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct PurgeReport {
+    /// Objects dropped, including anything that depended on them.
+    pub objects: usize,
+    /// Status-history rows retracted.
+    pub history_rows: usize,
+    /// Seeded statistics dropped.
+    pub statistics: usize,
+}
+
+/// Removes every synthetic object from the durable catalog, returning how many.
+///
+/// Dependency order does not matter here: the rows go away together in one transaction,
+/// and nothing reads them until the next boot. An object that something non-synthetic
+/// depends on is left alone, since removing it would break that dependent at boot.
+pub fn purge_objects(tx: &mut Transaction) -> Result<usize, anyhow::Error> {
+    let synthetic: BTreeSet<_> = tx
+        .get_items()
+        .filter(|item| is_synthetic(item.owner_id))
+        .map(|item| item.id)
+        .collect();
+    tx.remove_items(&synthetic)?;
+    Ok(synthetic.len())
 }
 
 #[cfg(test)]

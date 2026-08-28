@@ -2974,6 +2974,17 @@ steps:
     agents:
       queue: hetzner-aarch64-4cpu-8gb
 
+  - id: synthetic-catalog
+    label: "Synthetic catalog state"
+    depends_on: build-aarch64
+    timeout_in_minutes: 45
+    inputs: [test/synthetic-catalog]
+    plugins:
+      - ./ci/plugins/mzcompose:
+          composition: synthetic-catalog
+    agents:
+      queue: hetzner-aarch64-4cpu-8gb
+
   - id: secrets-logging
     topics: [kafka, mysql, postgres]
     label: "Secrets Logging"

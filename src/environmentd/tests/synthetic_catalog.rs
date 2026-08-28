@@ -443,3 +443,81 @@ fn tier1_request(kind: SyntheticItemKind, on: Option<String>) -> GenerateRequest
         on,
     }
 }
+
+/// Purge takes the environment back to where it started, and running it again is a no-op.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_purge_round_trips() {
+    let server = test_util::TestHarness::default()
+        .unsafe_mode()
+        .start_blocking();
+    declare_disposable(&server);
+
+    let mut client = server.connect(postgres::NoTls).unwrap();
+    let objects_before = object_count(&mut client);
+
+    for kind in [
+        SyntheticItemKind::Table,
+        SyntheticItemKind::MaterializedView,
+    ] {
+        let response = inject(server.internal_http_local_addr(), kind);
+        assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+    }
+    let response = inject_history(
+        server.internal_http_local_addr(),
+        &history_request(vec!["stalled"; RETAINED_ROWS]),
+    );
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+    let response = inject_stats(server.internal_http_local_addr());
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+    assert!(object_count(&mut client) > objects_before);
+
+    let report = purge(server.internal_http_local_addr());
+    assert_eq!(
+        report["objects"].as_u64(),
+        Some(2 * COUNT),
+        "unexpected report: {report}"
+    );
+    assert_eq!(
+        report["history_rows"].as_u64(),
+        Some(u64::try_from(RETAINED_ROWS).unwrap())
+    );
+    assert_eq!(report["statistics"].as_u64(), Some(1));
+    assert_eq!(object_count(&mut client), objects_before);
+
+    Retry::default()
+        .max_duration(Duration::from_secs(60))
+        .retry(|_| {
+            let rows: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM mz_internal.mz_sink_status_history WHERE sink_id = $1",
+                    &[&SYNTHETIC_SINK_ID],
+                )
+                .unwrap()
+                .get(0);
+            (rows == 0).then_some(()).ok_or(rows)
+        })
+        .unwrap();
+
+    let report = purge(server.internal_http_local_addr());
+    assert_eq!(report["objects"].as_u64(), Some(0), "{report}");
+    assert_eq!(report["history_rows"].as_u64(), Some(0));
+    assert_eq!(report["statistics"].as_u64(), Some(0));
+}
+
+fn object_count(client: &mut postgres::Client) -> i64 {
+    client
+        .query_one("SELECT count(*) FROM mz_objects", &[])
+        .unwrap()
+        .get(0)
+}
+
+fn purge(addr: SocketAddr) -> serde_json::Value {
+    let response = reqwest::blocking::Client::new()
+        .post(format!("http://{addr}/api/catalog/purge-synthetic"))
+        .header("x-materialize-user", "mz_system")
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+    response.json().unwrap()
+}

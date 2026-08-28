@@ -89,6 +89,16 @@ pub async fn handle_inject_synthetic_stats(
     }
 }
 
+pub async fn handle_purge_synthetic(mut client: AuthedClient) -> impl IntoResponse {
+    match client.client.purge_synthetic().await {
+        Ok(report) => Ok((
+            TypedHeader(ContentType::json()),
+            serde_json::to_string(&report).expect("serialization cannot fail"),
+        )),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
 pub async fn handle_coordinator_dump(client: AuthedClient) -> impl IntoResponse {
     let (status, result) = match client.client.dump_coordinator_state().await {
         Ok(dump) => (StatusCode::OK, dump),

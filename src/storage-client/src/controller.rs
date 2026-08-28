@@ -772,6 +772,10 @@ pub trait StorageController: Debug {
     /// Like [`StorageController::seed_source_statistics`], for a sink.
     fn seed_sink_statistics(&mut self, update: SinkStatisticsUpdate, replica_id: ReplicaId);
 
+    /// Drops every statistic that was seeded, returning how many. The scraper retracts
+    /// their rows on its next tick.
+    fn drop_seeded_statistics(&mut self) -> usize;
+
     /// Updates the desired state of the given introspection type.
     ///
     /// Rows passed in `op` MUST have the correct schema for the given

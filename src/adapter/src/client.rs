@@ -1285,6 +1285,15 @@ impl SessionClient {
             .await
     }
 
+    /// Removes everything the synthetic-catalog toolkit injected that is still reachable.
+    pub async fn purge_synthetic(
+        &mut self,
+    ) -> Result<mz_catalog::synthetic::PurgeReport, AdapterError> {
+        let conn_id = self.session().conn_id().clone();
+        self.send_without_session(|tx| Command::PurgeSynthetic { conn_id, tx })
+            .await
+    }
+
     /// Terminates the client session.
     pub async fn terminate(&mut self) {
         let conn_id = self.session().conn_id().clone();
@@ -1414,6 +1423,7 @@ impl SessionClient {
                 | Command::InjectSyntheticObjects { .. }
                 | Command::InjectSyntheticHistory { .. }
                 | Command::InjectSyntheticStats { .. }
+                | Command::PurgeSynthetic { .. }
                 | Command::RegisterConnectionCancelWatch { .. }
                 | Command::CreateInternalSubscribe { .. }
                 | Command::AttemptWrite { .. }
