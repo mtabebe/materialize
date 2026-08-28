@@ -2390,6 +2390,17 @@ feature_flags!(
         default: true,
         enable_for_item_parsing: false,
     },
+    {
+        // The never-prod backstop for the synthetic catalog state toolkit. It stays off
+        // by default everywhere, CI included, against the usual default-on-in-CI
+        // convention: injecting synthetic state destroys the catalog it runs against, so
+        // each test that wants it opts in explicitly. Unsafe mode gates the same paths
+        // independently; both are required.
+        name: enable_synthetic_catalog_state,
+        desc: "injecting synthetic catalog state, which destroys the catalog it runs against",
+        default: false,
+        enable_for_item_parsing: false,
+    },
 );
 
 impl From<&super::SystemVars> for OptimizerFeatures {
