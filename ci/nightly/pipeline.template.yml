@@ -2975,7 +2975,7 @@ steps:
       queue: hetzner-aarch64-4cpu-8gb
 
   - id: synthetic-catalog
-    label: "Synthetic catalog state"
+    label: "Synthetic catalog state demo"
     depends_on: build-aarch64
     timeout_in_minutes: 45
     inputs: [test/synthetic-catalog]
