@@ -569,7 +569,7 @@ pub enum StatsSeed {
 
 impl StatsRequest {
     /// The object the numbers are about.
-    pub fn object_id(&self) -> Result<GlobalId, anyhow::Error> {
+    fn object_id(&self) -> Result<GlobalId, anyhow::Error> {
         let object_id = match self {
             StatsRequest::Source { object_id, .. } | StatsRequest::Sink { object_id, .. } => {
                 object_id
