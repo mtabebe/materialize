@@ -109,6 +109,7 @@ use mz_catalog::memory::objects::{
     CatalogEntry, CatalogItem, ClusterReplicaProcessStatus, ClusterVariantManaged, Connection,
     DataSourceDesc, ReconfigurationTarget, Table, TableDataSource,
 };
+use mz_catalog::synthetic;
 use mz_cloud_resources::{CloudResourceController, VpcEndpointConfig, VpcEndpointEvent};
 use mz_compute_client::as_of_selection;
 use mz_compute_client::controller::error::{
@@ -2672,6 +2673,12 @@ impl Coordinator {
         let mut privatelink_connections = BTreeMap::new();
 
         for entry in &entries {
+            // Nothing to install for a synthetic Tier 0 object: no collection was
+            // registered to hold a read policy, and `bootstrap_dataflow_plans` left it
+            // without a physical plan to ship.
+            if synthetic::is_metadata_only(entry) {
+                continue;
+            }
             debug!(
                 "coordinator init: installing {} {}",
                 entry.item().typ(),
@@ -3342,6 +3349,11 @@ impl Coordinator {
         let mut compute_collections = vec![];
         let mut collections = vec![];
         for entry in catalog.entries() {
+            // A synthetic Tier 0 object owns no shard, so the storage controller must
+            // never learn of a collection for it.
+            if synthetic::is_metadata_only(entry) {
+                continue;
+            }
             match entry.item() {
                 CatalogItem::Source(source) => {
                     collections.push((
@@ -3673,6 +3685,11 @@ impl Coordinator {
         };
 
         for entry in ordered_catalog_entries {
+            // A synthetic Tier 0 object never ships a dataflow, and its inputs are not
+            // registered, so there is nothing to optimize it into.
+            if synthetic::is_metadata_only(entry) {
+                continue;
+            }
             match entry.item() {
                 CatalogItem::Index(idx) => {
                     // Collect optimizer parameters.
