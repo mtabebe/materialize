@@ -15,11 +15,12 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use futures::future::FutureExt;
 use mz_adapter::catalog::{Catalog, InitializeStateResult};
@@ -44,6 +45,7 @@ use mz_catalog::durable::{
     BootstrapArgs, OpenableDurableCatalogState, persist_backed_catalog_state,
 };
 use mz_catalog::memory::objects::CatalogItem;
+use mz_catalog::synthetic::{self, GenerateSpec, SyntheticItemKind};
 use mz_cloud_resources::AwsExternalIdPrefix;
 use mz_license_keys::ValidatedLicenseKey;
 use mz_orchestrator_tracing::{StaticTracingConfig, TracingCliArgs};
@@ -157,6 +159,15 @@ enum Action {
         #[clap(value_parser = parse_json)]
         key: serde_json::Value,
     },
+    /// Writes synthetic Tier 0 objects into the durable catalog, so a large or
+    /// unusual catalog can be modelled without creating the objects for real. The
+    /// environment must be down; the objects appear on its next boot, owned by
+    /// `mz_synthetic`.
+    ///
+    /// Refuses unless the catalog's system configuration has
+    /// `enable_synthetic_catalog_state` set, which is how an environment declares
+    /// itself disposable.
+    GenerateObjects(GenerateObjectsArgs),
     /// Checks if the specified catalog could be upgraded from its state to the
     /// adapter catalog at the version of this binary. Prints a success message
     /// or error message. Exits with 0 if the upgrade would succeed, otherwise
@@ -168,6 +179,31 @@ enum Action {
         /// Map of cluster name to resource specification. Check the README for latest values.
         cluster_replica_sizes: String,
     },
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct GenerateObjectsArgs {
+    /// How many objects to write.
+    #[clap(long)]
+    count: u64,
+    /// The shape of each object: `table`, `view`, or `materialized-view`.
+    #[clap(long, value_parser = SyntheticItemKind::from_str)]
+    item_type: SyntheticItemKind,
+    /// The database to create the objects in.
+    #[clap(long, default_value = "materialize")]
+    database: String,
+    /// The schema to create the objects in.
+    #[clap(long, default_value = "public")]
+    schema: String,
+    /// Prefixes every generated object name. The allocated id is appended.
+    #[clap(long, default_value = "synthetic")]
+    name_prefix: String,
+    /// How many columns each object has.
+    #[clap(long, default_value_t = 4)]
+    columns: usize,
+    /// The cluster to create synthetic materialized views in.
+    #[clap(long, default_value = "quickstart")]
+    cluster: String,
 }
 
 #[tokio::main]
@@ -261,6 +297,9 @@ async fn run(args: Args) -> Result<(), anyhow::Error> {
             value,
         } => edit(openable_state, collection, key, value).await,
         Action::Delete { collection, key } => delete(openable_state, collection, key).await,
+        Action::GenerateObjects(generate_args) => {
+            generate_objects(openable_state, generate_args).await
+        }
         Action::UpgradeCheck {
             secrets,
             cluster_replica_sizes,
@@ -591,6 +630,66 @@ async fn epoch(
 ) -> Result<(), anyhow::Error> {
     let epoch = openable_state.epoch().await?;
     writeln!(&mut target, "Epoch: {epoch:#?}")?;
+    Ok(())
+}
+
+async fn generate_objects(
+    mut openable_state: Box<dyn OpenableDurableCatalogState>,
+    args: GenerateObjectsArgs,
+) -> Result<(), anyhow::Error> {
+    if !openable_state.is_initialized().await? {
+        bail!("catalog is not initialized, so there is nothing to inject into");
+    }
+
+    let now = SYSTEM_TIME.clone();
+    let mut state = openable_state
+        .open(
+            now().into(),
+            // Only read when initializing a fresh catalog, which the check above ruled out.
+            &BootstrapArgs {
+                default_cluster_replica_size: "SYNTHETIC INJECTION NEVER INITIALIZES A CATALOG"
+                    .into(),
+                default_cluster_replication_factor: 1,
+                bootstrap_role: None,
+                cluster_replica_size_map: ClusterReplicaSizeMap::for_tests(),
+            },
+        )
+        .await?;
+
+    let mut tx = state.transaction().await?;
+    synthetic::require_disposable_env_durable(&tx)?;
+
+    let database = tx
+        .get_databases()
+        .find(|database| database.name == args.database)
+        .ok_or_else(|| anyhow!("unknown database {}", args.database))?;
+    let schema = tx
+        .get_schemas()
+        .find(|schema| schema.database_id == Some(database.id) && schema.name == args.schema)
+        .ok_or_else(|| anyhow!("unknown schema {}.{}", args.database, args.schema))?;
+    let cluster_id = tx
+        .get_clusters()
+        .find(|cluster| cluster.name == args.cluster)
+        .map(|cluster| cluster.id);
+
+    let spec = GenerateSpec {
+        kind: args.item_type,
+        count: args.count,
+        schema_id: schema.id,
+        database_name: args.database,
+        schema_name: args.schema,
+        name_prefix: args.name_prefix,
+        columns: args.columns,
+        cluster_id,
+    };
+    let item_ids = synthetic::generate_objects(&mut tx, &spec)?;
+
+    let commit_ts = tx.upper();
+    let _updates = tx.get_and_commit_op_updates();
+    tx.commit(commit_ts).await?;
+    state.expire().await;
+
+    println!("wrote {} synthetic {}s", item_ids.len(), spec.kind);
     Ok(())
 }
 

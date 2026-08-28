@@ -35,6 +35,7 @@ use mz_adapter_types::bootstrap_builtin_cluster_config::{
 
 use mz_auth::password::Password;
 use mz_catalog::config::ClusterReplicaSizeMap;
+use mz_catalog::durable::{Transaction, persist_backed_catalog_state, test_bootstrap_args};
 use mz_controller::ControllerConfig;
 use mz_dyncfg::ConfigUpdates;
 use mz_license_keys::ValidatedLicenseKey;
@@ -51,7 +52,7 @@ use mz_ore::tracing::{
 use mz_persist_client::PersistLocation;
 use mz_persist_client::cache::PersistClientCache;
 use mz_persist_client::cfg::{CONSENSUS_CONNECTION_POOL_MAX_SIZE, PersistConfig};
-use mz_persist_client::rpc::PersistGrpcPubSubServer;
+use mz_persist_client::rpc::{PersistGrpcPubSubServer, PubSubClientConnection};
 use mz_postgres_util::{
     Sql, batch_execute as pg_batch_execute, execute as pg_execute, query_one as pg_query_one, sql,
 };
@@ -295,6 +296,62 @@ impl TestHarness {
     pub fn data_directory(mut self, data_directory: impl Into<PathBuf>) -> Self {
         self.data_directory = Some(data_directory.into());
         self
+    }
+
+    /// Opens this harness's durable catalog directly, hands it to `f` as a transaction,
+    /// and commits on success.
+    ///
+    /// For state that can only be written while the environment is down, such as the
+    /// synthetic-catalog toolkit's offline injection. Opening the catalog read/write
+    /// fences whatever else holds it, so no server built from this harness may be
+    /// running. Requires [`TestHarness::data_directory`], since the catalog has to
+    /// outlive the process that wrote it.
+    pub async fn with_durable_catalog<F>(&self, f: F) -> Result<(), anyhow::Error>
+    where
+        F: FnOnce(&mut Transaction) -> Result<(), anyhow::Error>,
+    {
+        let data_directory = self
+            .data_directory
+            .as_ref()
+            .ok_or_else(|| anyhow!("with_durable_catalog needs a fixed data directory"))?;
+        let cockroach_url = env::var("METADATA_BACKEND_URL")
+            .map_err(|_| anyhow!("METADATA_BACKEND_URL environment variable is not set"))?;
+        let persist_location = PersistLocation {
+            blob_uri: format!("file://{}/persist/blob", data_directory.display()).parse()?,
+            consensus_uri: format!(
+                "{cockroach_url}?options=--search_path=consensus_{}",
+                self.seed
+            )
+            .parse()?,
+        };
+
+        let metrics_registry = MetricsRegistry::new();
+        let persist_clients = PersistClientCache::new(
+            PersistConfig::new_default_configs(&crate::BUILD_INFO, SYSTEM_TIME.clone()),
+            &metrics_registry,
+            |_, _| PubSubClientConnection::noop(),
+        );
+        let openable_state = persist_backed_catalog_state(
+            persist_clients.open(persist_location).await?,
+            self.environment_id.organization_id(),
+            crate::BUILD_INFO.semver_version(),
+            Some(self.deploy_generation),
+            Arc::new(mz_catalog::durable::Metrics::new(&metrics_registry)),
+        )
+        .await?;
+        let mut state = openable_state
+            .open(SYSTEM_TIME().into(), &test_bootstrap_args())
+            .await?;
+        // A transaction refuses to open until the bootstrap updates have been consumed.
+        let _updates = state.sync_to_current_updates().await?;
+
+        let mut tx = state.transaction().await?;
+        f(&mut tx)?;
+        let commit_ts = tx.upper();
+        let _updates = tx.get_and_commit_op_updates();
+        tx.commit(commit_ts).await?;
+        state.expire().await;
+        Ok(())
     }
 
     pub fn with_tls(mut self, cert_path: impl Into<PathBuf>, key_path: impl Into<PathBuf>) -> Self {
