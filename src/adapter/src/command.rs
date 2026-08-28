@@ -19,7 +19,7 @@ use enum_kinds::EnumKind;
 use futures::Stream;
 use mz_adapter_types::connection::{ConnectionId, ConnectionIdType};
 use mz_auth::password::Password;
-use mz_catalog::synthetic::GenerateRequest;
+use mz_catalog::synthetic::{GenerateRequest, HistoryRequest};
 use mz_cluster_client::ReplicaId;
 use mz_compute_types::ComputeInstanceId;
 use mz_compute_types::dataflows::DataflowDescription;
@@ -210,6 +210,11 @@ pub enum Command {
         request: GenerateRequest,
         conn_id: ConnectionId,
         tx: oneshot::Sender<Result<Vec<CatalogItemId>, AdapterError>>,
+    },
+
+    InjectSyntheticHistory {
+        request: HistoryRequest,
+        tx: oneshot::Sender<Result<usize, AdapterError>>,
     },
 
     Terminate {
@@ -516,6 +521,7 @@ impl Command {
             | Command::FrontendStatementLogging(..)
             | Command::InjectAuditEvents { .. }
             | Command::InjectSyntheticObjects { .. }
+            | Command::InjectSyntheticHistory { .. }
             | Command::RegisterConnectionCancelWatch { .. }
             | Command::CreateInternalSubscribe { .. }
             | Command::AttemptWrite { .. }
@@ -562,6 +568,7 @@ impl Command {
             | Command::FrontendStatementLogging(..)
             | Command::InjectAuditEvents { .. }
             | Command::InjectSyntheticObjects { .. }
+            | Command::InjectSyntheticHistory { .. }
             | Command::RegisterConnectionCancelWatch { .. }
             | Command::CreateInternalSubscribe { .. }
             | Command::AttemptWrite { .. }

@@ -26,11 +26,12 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail};
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use mz_controller_types::ClusterId;
 use mz_ore::collections::HashSet;
-use mz_repr::CatalogItemId;
 use mz_repr::role_id::RoleId;
+use mz_repr::{CatalogItemId, Diff, GlobalId, Row};
 use mz_sql::catalog::ObjectType;
 use mz_sql::names::SchemaId;
 use mz_sql::rbac;
@@ -38,6 +39,8 @@ use mz_sql::session::user::MZ_SYNTHETIC_ROLE_ID;
 use mz_sql::session::vars::{ENABLE_SYNTHETIC_CATALOG_STATE, SystemVars, VarInput};
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{Ident, UnresolvedItemName};
+use mz_storage_client::client::{Status, StatusUpdate};
+use mz_storage_client::controller::IntrospectionType;
 use serde::{Deserialize, Serialize};
 
 use crate::durable::Transaction;
@@ -338,6 +341,81 @@ fn render_create_sql(spec: &GenerateSpec, item: &str) -> Result<String, anyhow::
             )
         }
     })
+}
+
+/// The append-only status histories the toolkit can append to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyntheticHistoryKind {
+    Source,
+    Sink,
+}
+
+impl SyntheticHistoryKind {
+    pub fn introspection_type(&self) -> IntrospectionType {
+        match self {
+            SyntheticHistoryKind::Source => IntrospectionType::SourceStatusHistory,
+            SyntheticHistoryKind::Sink => IntrospectionType::SinkStatusHistory,
+        }
+    }
+
+    /// How many rows this history keeps per object before the next boot truncates it.
+    pub fn retained_rows(&self, vars: &SystemVars) -> usize {
+        match self {
+            SyntheticHistoryKind::Source => vars.keep_n_source_status_history_entries(),
+            SyntheticHistoryKind::Sink => vars.keep_n_sink_status_history_entries(),
+        }
+    }
+}
+
+/// A run of status-history rows for one object.
+///
+/// The object need not exist. A status history is one shard per introspection type,
+/// allocated at bootstrap whether or not anything of that type exists, and its rows are
+/// keyed by object id. So "a sink stuck stalled" is rows carrying a made-up sink id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryRequest {
+    pub kind: SyntheticHistoryKind,
+    pub object_id: String,
+    /// One row per status, oldest first, spelled the way the catalog spells them:
+    /// `starting`, `running`, `paused`, `stalled`, `ceased`, `dropped`.
+    pub statuses: Vec<String>,
+    /// Attached to every row.
+    pub error: Option<String>,
+}
+
+/// Renders one row per requested status, a second apart and ending at `now`.
+///
+/// These are meant for the raw-row append path rather than the status-update one, which
+/// drops any update that does not supersede the last it saw for that key
+/// (`CollectionManager::process_updates`). A run of identical statuses would collapse to
+/// one row there.
+pub fn render_history_rows(
+    request: &HistoryRequest,
+    now: DateTime<Utc>,
+) -> Result<Vec<(Row, Diff)>, anyhow::Error> {
+    let id = GlobalId::from_str(&request.object_id)
+        .map_err(|_| anyhow!("{} is not an object id", request.object_id))?;
+    let len = i64::try_from(request.statuses.len())?;
+
+    request
+        .statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            let age = len - i64::try_from(i)?;
+            let update = StatusUpdate {
+                id,
+                status: Status::from_str(status)?,
+                timestamp: now - chrono::Duration::seconds(age),
+                error: request.error.clone(),
+                hints: Default::default(),
+                namespaced_errors: Default::default(),
+                replica_id: None,
+            };
+            Ok((Row::from(update), Diff::ONE))
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -524,6 +524,7 @@ impl Message {
                 Command::StartCopyFromStdin { .. } => "start-copy-from-stdin",
                 Command::InjectAuditEvents { .. } => "inject-audit-events",
                 Command::InjectSyntheticObjects { .. } => "inject-synthetic-objects",
+                Command::InjectSyntheticHistory { .. } => "inject-synthetic-history",
                 Command::RegisterConnectionCancelWatch { .. } => "register-connection-cancel-watch",
                 Command::CreateInternalSubscribe { .. } => "create-internal-subscribe",
                 Command::AttemptWrite { .. } => "attempt-write",

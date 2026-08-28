@@ -10,6 +10,7 @@
 //! Logic for  processing client [`Command`]s. Each [`Command`] is initiated by a
 //! client via some external Materialize API (ex: HTTP and psql).
 
+use anyhow::anyhow;
 use base64::prelude::*;
 use differential_dataflow::lattice::Lattice;
 use mz_adapter_types::dyncfgs::ALLOW_USER_SESSIONS;
@@ -30,7 +31,7 @@ use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::memory::objects::{
     CatalogItem, DataSourceDesc, Role, Source, Table, TableDataSource,
 };
-use mz_catalog::synthetic::{self, GenerateRequest};
+use mz_catalog::synthetic::{self, GenerateRequest, HistoryRequest};
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{instrument, soft_panic_or_log};
@@ -317,6 +318,11 @@ impl Coordinator {
                     tx,
                 } => {
                     let result = self.inject_synthetic_objects(&conn_id, request).await;
+                    let _ = tx.send(result);
+                }
+
+                Command::InjectSyntheticHistory { request, tx } => {
+                    let result = self.inject_synthetic_history(request);
                     let _ = tx.send(result);
                 }
 
@@ -2085,6 +2091,45 @@ impl Coordinator {
     /// startup, i.e. that are present in `active_conns`. A failed startup
     /// leaves no state behind (see `handle_startup_inner`), so no Terminate
     /// may be sent for it.
+    /// Appends rows to an append-only status history, returning how many were written.
+    ///
+    /// Status histories accumulate: nothing retracts them, so injected rows survive a
+    /// restart and only age out of the retention window. That is what makes them a
+    /// cheap way to model "a sink stuck stalled" without a sink.
+    #[mz_ore::instrument(level = "debug")]
+    fn inject_synthetic_history(&mut self, request: HistoryRequest) -> Result<usize, AdapterError> {
+        let system_config = self.catalog().system_config();
+        if !system_config.allow_unsafe() {
+            return Err(AdapterError::Unsupported(
+                "synthetic catalog state injection",
+            ));
+        }
+        synthetic::require_disposable_env(system_config).map_err(AdapterError::Unstructured)?;
+        if self.controller.read_only() {
+            return Err(AdapterError::Unstructured(anyhow!(
+                "cannot append to an introspection collection while read-only"
+            )));
+        }
+
+        // Rows past the retention window survive until the next boot truncates them,
+        // which would quietly change the state being modelled. Refuse instead.
+        let retained = request.kind.retained_rows(system_config);
+        if request.statuses.len() > retained {
+            return Err(AdapterError::Unstructured(anyhow!(
+                "{} rows is more than the {retained} this status history keeps per object",
+                request.statuses.len(),
+            )));
+        }
+
+        let rows = synthetic::render_history_rows(&request, self.now_datetime())
+            .map_err(AdapterError::Unstructured)?;
+        let count = rows.len();
+        self.controller
+            .storage
+            .append_introspection_updates(request.kind.introspection_type(), rows);
+        Ok(count)
+    }
+
     /// Creates synthetic Tier 0 objects, returning their ids.
     ///
     /// The objects are ordinary catalog items owned by `mz_synthetic`, committed through

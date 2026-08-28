@@ -14,13 +14,21 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use mz_catalog::synthetic::{self, GenerateRequest, SyntheticItemKind};
+use mz_catalog::synthetic::{
+    self, GenerateRequest, HistoryRequest, SyntheticHistoryKind, SyntheticItemKind,
+};
 use mz_environmentd::test_util::{self, TestServerWithRuntime};
 use mz_ore::retry::Retry;
 use reqwest::StatusCode;
 use tempfile::TempDir;
 
 const COUNT: u64 = 4;
+
+/// An object id nothing in the catalog uses, so the injected history has no object.
+const SYNTHETIC_SINK_ID: &str = "u9999";
+
+/// The default `keep_n_sink_status_history_entries`.
+const RETAINED_ROWS: usize = 5;
 
 /// Objects injected while the environment is down come back on the next boot, and cost
 /// nothing beyond catalog metadata: no storage collection, and so no dataflow over one.
@@ -178,4 +186,93 @@ fn assert_metadata_only(server: &TestServerWithRuntime) {
         })
         .unwrap();
     client.batch_execute("DROP TABLE real_t").unwrap();
+}
+
+/// A run of identical statuses for an object that does not exist lands in full and
+/// survives a restart. Nothing retracts an append-only history, which is what makes it a
+/// cheap way to model a stuck object without the object.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_history_injected_online() {
+    let tmpdir = TempDir::new().unwrap();
+    let harness = test_util::TestHarness::default()
+        .unsafe_mode()
+        .data_directory(tmpdir.path());
+
+    {
+        let server = harness.clone().start_blocking();
+        declare_disposable(&server);
+
+        let response = inject_history(
+            server.internal_http_local_addr(),
+            &history_request(vec!["stalled"; RETAINED_ROWS]),
+        );
+        assert_eq!(response.status(), StatusCode::OK, "{:?}", response.text());
+        assert_history_rows(&server);
+
+        // One row past the retention window would be truncated at the next boot, quietly
+        // changing the state being modelled.
+        let response = inject_history(
+            server.internal_http_local_addr(),
+            &history_request(vec!["stalled"; RETAINED_ROWS + 1]),
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response.text().unwrap().contains("keeps per object"));
+    }
+
+    let server = harness.start_blocking();
+    assert_history_rows(&server);
+}
+
+fn history_request(statuses: Vec<&str>) -> HistoryRequest {
+    HistoryRequest {
+        kind: SyntheticHistoryKind::Sink,
+        object_id: SYNTHETIC_SINK_ID.to_string(),
+        statuses: statuses.into_iter().map(str::to_string).collect(),
+        error: Some("synthetic".to_string()),
+    }
+}
+
+fn inject_history(addr: SocketAddr, request: &HistoryRequest) -> reqwest::blocking::Response {
+    reqwest::blocking::Client::new()
+        .post(format!(
+            "http://{addr}/api/catalog/inject-synthetic-history"
+        ))
+        .header("x-materialize-user", "mz_system")
+        .json(request)
+        .send()
+        .unwrap()
+}
+
+fn assert_history_rows(server: &TestServerWithRuntime) {
+    let mut client = server.connect(postgres::NoTls).unwrap();
+
+    // The append goes through the collection manager, so it lands asynchronously.
+    Retry::default()
+        .max_duration(Duration::from_secs(60))
+        .retry(|_| {
+            let rows: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM mz_internal.mz_sink_status_history WHERE sink_id = $1",
+                    &[&SYNTHETIC_SINK_ID],
+                )
+                .unwrap()
+                .get(0);
+            (rows == i64::try_from(RETAINED_ROWS).unwrap())
+                .then_some(())
+                .ok_or(rows)
+        })
+        .unwrap();
+
+    let sinks: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mz_sinks WHERE id = $1",
+            &[&SYNTHETIC_SINK_ID],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        sinks, 0,
+        "the history is supposed to have no sink behind it"
+    );
 }

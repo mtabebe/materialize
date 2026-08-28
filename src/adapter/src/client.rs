@@ -1265,6 +1265,17 @@ impl SessionClient {
         .await
     }
 
+    /// Appends rows to an append-only status history, returning how many were written.
+    ///
+    /// The object the rows are about need not exist.
+    pub async fn inject_synthetic_history(
+        &mut self,
+        request: mz_catalog::synthetic::HistoryRequest,
+    ) -> Result<usize, AdapterError> {
+        self.send_without_session(|tx| Command::InjectSyntheticHistory { request, tx })
+            .await
+    }
+
     /// Terminates the client session.
     pub async fn terminate(&mut self) {
         let conn_id = self.session().conn_id().clone();
@@ -1392,6 +1403,7 @@ impl SessionClient {
                 | Command::FrontendStatementLogging(..)
                 | Command::InjectAuditEvents { .. }
                 | Command::InjectSyntheticObjects { .. }
+                | Command::InjectSyntheticHistory { .. }
                 | Command::RegisterConnectionCancelWatch { .. }
                 | Command::CreateInternalSubscribe { .. }
                 | Command::AttemptWrite { .. }
