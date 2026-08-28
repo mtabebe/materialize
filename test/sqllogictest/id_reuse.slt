@@ -85,6 +85,7 @@ s1  mz_system
 s2  mz_support
 s3  mz_analytics
 s4  mz_jwt_sync
+s5  mz_synthetic
 u1  materialize
 u2  foo
 
@@ -106,6 +107,7 @@ s1  mz_system
 s2  mz_support
 s3  mz_analytics
 s4  mz_jwt_sync
+s5  mz_synthetic
 u1  materialize
 u3  bar
 

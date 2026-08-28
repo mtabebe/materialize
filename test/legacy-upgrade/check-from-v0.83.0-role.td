@@ -18,6 +18,7 @@ mz_analytics
 mz_jwt_sync
 mz_monitor
 mz_monitor_redacted
+mz_synthetic
 mz_system
 mz_support
 materialize

@@ -163,6 +163,10 @@ pub const MZ_ANALYTICS_ROLE_ID: RoleId = RoleId::System(3);
 /// Not a login role — exists only to distinguish sync grants from manual grants.
 pub const MZ_JWT_SYNC_ROLE_ID: RoleId = RoleId::System(4);
 pub const JWT_SYNC_ROLE_NAME: &str = "mz_jwt_sync";
+/// Owner role for every object the synthetic-catalog toolkit injects, so injected
+/// state can be listed and purged by owner. Not a login role.
+pub const MZ_SYNTHETIC_ROLE_ID: RoleId = RoleId::System(5);
+pub const SYNTHETIC_ROLE_NAME: &str = "mz_synthetic";
 pub const MZ_MONITOR_ROLE_ID: RoleId = RoleId::Predefined(1);
 pub const MZ_MONITOR_REDACTED_ROLE_ID: RoleId = RoleId::Predefined(2);
 

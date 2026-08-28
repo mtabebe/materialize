@@ -57,8 +57,8 @@ use mz_sql::catalog::{
 use mz_sql::rbac;
 use mz_sql::session::user::{
     ANALYTICS_USER_NAME, JWT_SYNC_ROLE_NAME, MZ_ANALYTICS_ROLE_ID, MZ_JWT_SYNC_ROLE_ID,
-    MZ_MONITOR_REDACTED_ROLE_ID, MZ_MONITOR_ROLE_ID, MZ_SUPPORT_ROLE_ID, MZ_SYSTEM_ROLE_ID,
-    SUPPORT_USER_NAME, SYSTEM_USER_NAME,
+    MZ_MONITOR_REDACTED_ROLE_ID, MZ_MONITOR_ROLE_ID, MZ_SUPPORT_ROLE_ID, MZ_SYNTHETIC_ROLE_ID,
+    MZ_SYSTEM_ROLE_ID, SUPPORT_USER_NAME, SYNTHETIC_ROLE_NAME, SYSTEM_USER_NAME,
 };
 use serde::Serialize;
 
@@ -902,6 +902,15 @@ pub const MZ_JWT_SYNC_ROLE: BuiltinRole = BuiltinRole {
     attributes: RoleAttributesRaw::new(),
 };
 
+/// Owns everything the synthetic-catalog toolkit injects, so injected state can be
+/// listed and purged by owner. Never logged into directly.
+pub const MZ_SYNTHETIC_ROLE: BuiltinRole = BuiltinRole {
+    id: MZ_SYNTHETIC_ROLE_ID,
+    name: SYNTHETIC_ROLE_NAME,
+    oid: oid::ROLE_MZ_SYNTHETIC_OID,
+    attributes: RoleAttributesRaw::new(),
+};
+
 pub const MZ_SYSTEM_CLUSTER: BuiltinCluster = BuiltinCluster {
     name: SYSTEM_USER_NAME,
     owner_id: &MZ_SYSTEM_ROLE_ID,
@@ -1568,6 +1577,7 @@ pub const BUILTIN_ROLES: &[&BuiltinRole] = &[
     &MZ_MONITOR_ROLE,
     &MZ_MONITOR_REDACTED,
     &MZ_JWT_SYNC_ROLE,
+    &MZ_SYNTHETIC_ROLE,
 ];
 pub const BUILTIN_CLUSTERS: &[&BuiltinCluster] = &[
     &MZ_SYSTEM_CLUSTER,

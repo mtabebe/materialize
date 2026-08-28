@@ -1039,6 +1039,35 @@ Trace {
             (
                 (
                     RoleKey {
+                        id: System(
+                            5,
+                        ),
+                    },
+                    RoleValue {
+                        name: "mz_synthetic",
+                        attributes: RoleAttributes {
+                            inherit: true,
+                            superuser: None,
+                            login: None,
+                            auto_provision_source: None,
+                        },
+                        membership: RoleMembership {
+                            map: [],
+                        },
+                        vars: RoleVars {
+                            entries: [],
+                        },
+                        oid: 17123,
+                    },
+                ),
+                2,
+                Overflowing(
+                    1,
+                ),
+            ),
+            (
+                (
+                    RoleKey {
                         id: Public,
                     },
                     RoleValue {
