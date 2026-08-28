@@ -26,6 +26,7 @@ s2  mz_support  true
 s3  mz_analytics  true
 s4  mz_jwt_sync  true
 s5  mz_synthetic  true
+s6  mz_synthetic_shipped  true
 g1  mz_monitor  true
 g2  mz_monitor_redacted  true
 
@@ -97,6 +98,7 @@ mz_monitor  true
 mz_monitor_redacted  true
 mz_support  true
 mz_synthetic  true
+mz_synthetic_shipped  true
 mz_system  true
 rj  true
 
@@ -115,6 +117,7 @@ mz_monitor
 mz_monitor_redacted
 mz_support
 mz_synthetic
+mz_synthetic_shipped
 mz_system
 rj
 
@@ -132,6 +135,7 @@ mz_monitor
 mz_monitor_redacted
 mz_support
 mz_synthetic
+mz_synthetic_shipped
 mz_system
 
 # Verify that the single name version of DROP ROLE works too.
@@ -148,6 +152,7 @@ mz_monitor
 mz_monitor_redacted
 mz_support
 mz_synthetic
+mz_synthetic_shipped
 mz_system
 nlb
 
@@ -165,6 +170,7 @@ mz_analytics
 mz_jwt_sync
 mz_monitor_redacted
 mz_synthetic
+mz_synthetic_shipped
 
 statement ok
 DROP ROLE IF EXISTS nlb

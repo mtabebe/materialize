@@ -19,6 +19,7 @@ mz_jwt_sync
 mz_monitor
 mz_monitor_redacted
 mz_synthetic
+mz_synthetic_shipped
 mz_system
 mz_support
 materialize

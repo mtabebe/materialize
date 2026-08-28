@@ -31,7 +31,9 @@ use mz_catalog::SYSTEM_CONN_ID;
 use mz_catalog::memory::objects::{
     CatalogItem, DataSourceDesc, Role, Source, Table, TableDataSource,
 };
-use mz_catalog::synthetic::{self, GenerateRequest, HistoryRequest, StatsRequest, StatsSeed};
+use mz_catalog::synthetic::{
+    self, EffectsTier, GenerateRequest, HistoryRequest, StatsRequest, StatsSeed,
+};
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_ore::{instrument, soft_panic_or_log};
@@ -53,7 +55,7 @@ use mz_sql::pure::{
 };
 use mz_sql::rbac;
 use mz_sql::rbac::CREATE_ITEM_USAGE;
-use mz_sql::session::user::{MZ_SYNTHETIC_ROLE_ID, User};
+use mz_sql::session::user::User;
 use mz_sql::session::vars::{
     EndTransactionAction, NETWORK_POLICY, OwnedVarInput, STATEMENT_LOGGING_SAMPLE_RATE,
     TRANSACTION_ISOLATION_VAR_NAME, Value, Var, check_transaction_isolation_feature_flag,
@@ -2187,6 +2189,16 @@ impl Coordinator {
         }
         synthetic::require_disposable_env(system_config).map_err(AdapterError::Unstructured)?;
 
+        if request.tier != EffectsTier::MetadataOnly {
+            return Err(AdapterError::Unstructured(anyhow!(
+                "{} objects can only be injected offline, with mz-catalog-debug: nothing \
+                 downstream of a catalog commit ships a dataflow for a newly created index \
+                 or materialized view, so one created here would register its collection and \
+                 never be shipped until the next boot",
+                request.tier,
+            )));
+        }
+
         let (qualifiers, spec) = {
             let state = self.catalog().state();
             let schema = state.resolve_schema(
@@ -2196,13 +2208,25 @@ impl Coordinator {
                 &SYSTEM_CONN_ID,
             )?;
             let cluster_id = state.resolve_cluster(&request.cluster).ok().map(|c| c.id);
+            let on = request
+                .on
+                .as_ref()
+                .map(|name| {
+                    let id = schema
+                        .items
+                        .get(name)
+                        .ok_or_else(|| anyhow!("unknown item {}.{name}", request.schema))?;
+                    Ok::<_, anyhow::Error>((*id, name.clone()))
+                })
+                .transpose()
+                .map_err(AdapterError::Unstructured)?;
             let qualifiers = ItemQualifiers {
                 database_spec: schema.name.database.clone(),
                 schema_spec: schema.id.clone(),
             };
             (
                 qualifiers,
-                request.with_ids(schema.id.clone().into(), cluster_id),
+                request.with_ids(schema.id.clone().into(), cluster_id, on),
             )
         };
 
@@ -2227,7 +2251,7 @@ impl Coordinator {
                     item: item.name,
                 },
                 item: catalog_item,
-                owner_id: MZ_SYNTHETIC_ROLE_ID,
+                owner_id: spec.tier.owner_id(),
             });
             if ops.len() == SYNTHETIC_INJECT_BATCH {
                 let batch = std::mem::take(&mut ops);

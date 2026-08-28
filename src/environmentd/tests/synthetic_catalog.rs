@@ -15,9 +15,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use mz_catalog::synthetic::{
-    self, GenerateRequest, HistoryRequest, StatsRequest, SyntheticHistoryKind, SyntheticItemKind,
+    self, EffectsTier, GenerateRequest, HistoryRequest, StatsRequest, SyntheticHistoryKind,
+    SyntheticItemKind,
 };
 use mz_environmentd::test_util::{self, TestServerWithRuntime};
+use mz_ore::collections::CollectionExt;
 use mz_ore::retry::Retry;
 use reqwest::StatusCode;
 use tempfile::TempDir;
@@ -130,6 +132,8 @@ fn request(kind: SyntheticItemKind) -> GenerateRequest {
         name_prefix: "synthetic".to_string(),
         columns: 3,
         cluster: "quickstart".to_string(),
+        tier: EffectsTier::MetadataOnly,
+        on: None,
     }
 }
 
@@ -361,4 +365,81 @@ fn seeded_messages(client: &mut postgres::Client) -> Option<u64> {
         )
         .unwrap()
         .map(|row| u64::try_from(row.get::<_, i64>(0)).expect("counters are non-negative"))
+}
+
+/// A Tier 1 object pays what a real one pays: its table registers a storage collection
+/// and its index ships a dataflow to a replica.
+///
+/// This is the same generator and the same boot path as the Tier 0 test above. All that
+/// differs is the owner, which is what every effects seam reads.
+#[mz_ore::test]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_synthetic_tier1_objects_pay_real_effects() {
+    let tmpdir = TempDir::new().unwrap();
+    let harness = test_util::TestHarness::default()
+        .unsafe_mode()
+        .data_directory(tmpdir.path());
+
+    {
+        let server = harness.clone().start_blocking();
+        declare_disposable(&server);
+    }
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime
+        .block_on(harness.with_durable_catalog(|tx| {
+            // The empty table the index hydrates over. An index over an empty input still
+            // pays the per-dataflow bootstrap handshake, which is the cost being modelled.
+            let table = tier1_request(SyntheticItemKind::Table, None).resolve(tx)?;
+            let table_id = synthetic::generate_objects(tx, &table)?.into_element();
+            let on = synthetic::synthetic_item_name(&table.name_prefix, table_id);
+
+            let index = tier1_request(SyntheticItemKind::Index, Some(on)).resolve(tx)?;
+            synthetic::generate_objects(tx, &index)?;
+            Ok(())
+        }))
+        .unwrap();
+    drop(runtime);
+
+    let server = harness.start_blocking();
+    let mut client = server.connect(postgres::NoTls).unwrap();
+
+    Retry::default()
+        .max_duration(Duration::from_secs(120))
+        .retry(|_| {
+            let row = client
+                .query_one(
+                    "SELECT
+                         (SELECT count(*)
+                          FROM mz_internal.mz_storage_shards s
+                          JOIN mz_objects o ON o.id = s.object_id
+                          WHERE o.name LIKE 'tier1%'),
+                         (SELECT count(*)
+                          FROM mz_catalog.mz_cluster_replica_frontiers f
+                          JOIN mz_internal.mz_object_global_ids g ON g.global_id = f.object_id
+                          JOIN mz_objects o ON o.id = g.id
+                          WHERE o.name LIKE 'tier1%')",
+                    &[],
+                )
+                .unwrap();
+            match (row.get::<_, i64>(0), row.get::<_, i64>(1)) {
+                (1, 1) => Ok(()),
+                counts => Err(format!("{counts:?}")),
+            }
+        })
+        .unwrap();
+}
+
+fn tier1_request(kind: SyntheticItemKind, on: Option<String>) -> GenerateRequest {
+    GenerateRequest {
+        kind,
+        count: 1,
+        database: "materialize".to_string(),
+        schema: "public".to_string(),
+        name_prefix: "tier1".to_string(),
+        columns: 3,
+        cluster: "quickstart".to_string(),
+        tier: EffectsTier::ShippedOverEmpty,
+        on,
+    }
 }

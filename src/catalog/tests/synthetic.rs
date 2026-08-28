@@ -14,7 +14,7 @@
 use mz_catalog::durable::{
     DurableCatalogState, TestCatalogStateBuilder, Transaction, test_bootstrap_args,
 };
-use mz_catalog::synthetic::{self, GenerateSpec, SyntheticItemKind};
+use mz_catalog::synthetic::{self, EffectsTier, GenerateSpec, SyntheticItemKind};
 use mz_ore::collections::CollectionExt;
 use mz_ore::now::SYSTEM_TIME;
 use mz_persist_client::PersistClient;
@@ -52,6 +52,8 @@ fn spec(tx: &Transaction, kind: SyntheticItemKind, count: u64) -> GenerateSpec {
         name_prefix: "synthetic".to_string(),
         columns: 2,
         cluster_id: tx.get_clusters().next().map(|cluster| cluster.id),
+        tier: EffectsTier::MetadataOnly,
+        on: None,
     }
 }
 

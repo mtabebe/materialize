@@ -45,7 +45,7 @@ use mz_catalog::durable::{
     BootstrapArgs, OpenableDurableCatalogState, persist_backed_catalog_state,
 };
 use mz_catalog::memory::objects::CatalogItem;
-use mz_catalog::synthetic::{self, GenerateRequest, SyntheticItemKind};
+use mz_catalog::synthetic::{self, EffectsTier, GenerateRequest, SyntheticItemKind};
 use mz_cloud_resources::AwsExternalIdPrefix;
 use mz_license_keys::ValidatedLicenseKey;
 use mz_orchestrator_tracing::{StaticTracingConfig, TracingCliArgs};
@@ -201,9 +201,16 @@ struct GenerateObjectsArgs {
     /// How many columns each object has.
     #[clap(long, default_value_t = 4)]
     columns: usize,
-    /// The cluster to create synthetic materialized views in.
+    /// The cluster to create synthetic materialized views and indexes in.
     #[clap(long, default_value = "quickstart")]
     cluster: String,
+    /// How much of a real object's machinery each object pays for:
+    /// `metadata-only` or `shipped-over-empty`.
+    #[clap(long, default_value = "metadata-only", value_parser = EffectsTier::from_str)]
+    tier: EffectsTier,
+    /// The object to read from, required for an index.
+    #[clap(long)]
+    on: Option<String>,
 }
 
 #[tokio::main]
@@ -667,6 +674,8 @@ async fn generate_objects(
         name_prefix: args.name_prefix,
         columns: args.columns,
         cluster: args.cluster,
+        tier: args.tier,
+        on: args.on,
     };
     let spec = request.resolve(&tx)?;
     let item_ids = synthetic::generate_objects(&mut tx, &spec)?;

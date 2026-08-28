@@ -167,6 +167,11 @@ pub const JWT_SYNC_ROLE_NAME: &str = "mz_jwt_sync";
 /// state can be listed and purged by owner. Not a login role.
 pub const MZ_SYNTHETIC_ROLE_ID: RoleId = RoleId::System(5);
 pub const SYNTHETIC_ROLE_NAME: &str = "mz_synthetic";
+/// Owner role for synthetic objects that pay real effects: a storage collection, a
+/// dataflow, or both. Kept apart from [`MZ_SYNTHETIC_ROLE_ID`] so the owner alone says
+/// which of the two a boot must skip.
+pub const MZ_SYNTHETIC_SHIPPED_ROLE_ID: RoleId = RoleId::System(6);
+pub const SYNTHETIC_SHIPPED_ROLE_NAME: &str = "mz_synthetic_shipped";
 pub const MZ_MONITOR_ROLE_ID: RoleId = RoleId::Predefined(1);
 pub const MZ_MONITOR_REDACTED_ROLE_ID: RoleId = RoleId::Predefined(2);
 

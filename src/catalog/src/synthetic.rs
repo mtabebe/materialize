@@ -35,7 +35,7 @@ use mz_repr::{CatalogItemId, Diff, GlobalId, Row};
 use mz_sql::catalog::ObjectType;
 use mz_sql::names::SchemaId;
 use mz_sql::rbac;
-use mz_sql::session::user::MZ_SYNTHETIC_ROLE_ID;
+use mz_sql::session::user::{MZ_SYNTHETIC_ROLE_ID, MZ_SYNTHETIC_SHIPPED_ROLE_ID};
 use mz_sql::session::vars::{ENABLE_SYNTHETIC_CATALOG_STATE, SystemVars, VarInput};
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{Ident, UnresolvedItemName};
@@ -47,7 +47,11 @@ use serde::{Deserialize, Serialize};
 use crate::durable::Transaction;
 
 /// How much of a real object's machinery a synthetic object pays for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The tier rides in the owner role, so a boot can decide what to skip from the durable
+/// row alone, without re-deriving anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum EffectsTier {
     /// Catalog metadata and nothing else: no storage collection is registered and no
     /// dataflow is planned or shipped, at injection time or on any later boot. Models
@@ -58,9 +62,40 @@ pub enum EffectsTier {
     ShippedOverEmpty,
 }
 
+impl fmt::Display for EffectsTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            EffectsTier::MetadataOnly => "metadata-only",
+            EffectsTier::ShippedOverEmpty => "shipped-over-empty",
+        })
+    }
+}
+
+impl FromStr for EffectsTier {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "metadata-only" => Ok(EffectsTier::MetadataOnly),
+            "shipped-over-empty" => Ok(EffectsTier::ShippedOverEmpty),
+            other => bail!("unknown effects tier {other}"),
+        }
+    }
+}
+
+impl EffectsTier {
+    /// The role that owns objects of this tier.
+    pub fn owner_id(&self) -> RoleId {
+        match self {
+            EffectsTier::MetadataOnly => MZ_SYNTHETIC_ROLE_ID,
+            EffectsTier::ShippedOverEmpty => MZ_SYNTHETIC_SHIPPED_ROLE_ID,
+        }
+    }
+}
+
 /// Whether an object was injected by the toolkit, and so is safe to purge.
 pub fn is_synthetic(owner_id: RoleId) -> bool {
-    owner_id == MZ_SYNTHETIC_ROLE_ID
+    owner_id == MZ_SYNTHETIC_ROLE_ID || owner_id == MZ_SYNTHETIC_SHIPPED_ROLE_ID
 }
 
 /// Errors unless this environment has been declared disposable.
@@ -99,12 +134,11 @@ fn not_disposable() -> anyhow::Error {
 ///
 /// Every seam that would give an item real effects asks this and skips: the three
 /// bootstrap loops, the storage collections a catalog transaction prepares, and the
-/// controller implications of a committed catalog change. Every synthetic object is
-/// [`EffectsTier::MetadataOnly`] today, so this is the same question as
-/// [`is_synthetic`] with a different contract: a tier that ships real effects will need
-/// a way to tell the two apart in the durable row, and only this one changes.
+/// controller implications of a committed catalog change. An
+/// [`EffectsTier::ShippedOverEmpty`] object answers no, and so takes every one of those
+/// paths exactly as a real object does.
 pub fn is_metadata_only(owner_id: RoleId) -> bool {
-    is_synthetic(owner_id)
+    owner_id == EffectsTier::MetadataOnly.owner_id()
 }
 
 /// The self-contained shapes the generator can synthesize.
@@ -117,6 +151,7 @@ pub enum SyntheticItemKind {
     Table,
     View,
     MaterializedView,
+    Index,
 }
 
 impl SyntheticItemKind {
@@ -125,6 +160,7 @@ impl SyntheticItemKind {
             SyntheticItemKind::Table => ObjectType::Table,
             SyntheticItemKind::View => ObjectType::View,
             SyntheticItemKind::MaterializedView => ObjectType::MaterializedView,
+            SyntheticItemKind::Index => ObjectType::Index,
         }
     }
 }
@@ -135,6 +171,7 @@ impl fmt::Display for SyntheticItemKind {
             SyntheticItemKind::Table => "table",
             SyntheticItemKind::View => "view",
             SyntheticItemKind::MaterializedView => "materialized-view",
+            SyntheticItemKind::Index => "index",
         };
         f.write_str(s)
     }
@@ -148,6 +185,7 @@ impl FromStr for SyntheticItemKind {
             "table" => Ok(SyntheticItemKind::Table),
             "view" => Ok(SyntheticItemKind::View),
             "materialized-view" => Ok(SyntheticItemKind::MaterializedView),
+            "index" => Ok(SyntheticItemKind::Index),
             other => bail!("unknown synthetic item type {other}"),
         }
     }
@@ -168,9 +206,19 @@ pub struct GenerateRequest {
     /// batch with the same prefix cannot collide with the first.
     pub name_prefix: String,
     pub columns: usize,
-    /// The cluster synthetic materialized views are created in. Ignored for the shapes
-    /// that do not name one.
+    /// The cluster synthetic materialized views and indexes are created in. Ignored for
+    /// the shapes that do not name one.
     pub cluster: String,
+    #[serde(default = "metadata_only")]
+    pub tier: EffectsTier,
+    /// The object to read from, named the way `name_prefix` names things. Required for an
+    /// index; a materialized view without one selects constants instead.
+    #[serde(default)]
+    pub on: Option<String>,
+}
+
+fn metadata_only() -> EffectsTier {
+    EffectsTier::MetadataOnly
 }
 
 impl GenerateRequest {
@@ -188,11 +236,26 @@ impl GenerateRequest {
             .get_clusters()
             .find(|cluster| cluster.name == self.cluster)
             .map(|cluster| cluster.id);
-        Ok(self.with_ids(schema.id, cluster_id))
+        let on = self
+            .on
+            .as_ref()
+            .map(|name| {
+                tx.get_items()
+                    .find(|item| item.schema_id == schema.id && &item.name == name)
+                    .map(|item| (item.id, item.name))
+                    .ok_or_else(|| anyhow!("unknown item {}.{name}", self.schema))
+            })
+            .transpose()?;
+        Ok(self.with_ids(schema.id, cluster_id, on))
     }
 
     /// Completes this request with ids a caller resolved itself.
-    pub fn with_ids(&self, schema_id: SchemaId, cluster_id: Option<ClusterId>) -> GenerateSpec {
+    pub fn with_ids(
+        &self,
+        schema_id: SchemaId,
+        cluster_id: Option<ClusterId>,
+        on: Option<(CatalogItemId, String)>,
+    ) -> GenerateSpec {
         GenerateSpec {
             kind: self.kind,
             count: self.count,
@@ -202,6 +265,8 @@ impl GenerateRequest {
             name_prefix: self.name_prefix.clone(),
             columns: self.columns,
             cluster_id,
+            tier: self.tier,
+            on,
         }
     }
 }
@@ -227,8 +292,12 @@ pub struct GenerateSpec {
     /// batch with the same prefix cannot collide with the first.
     pub name_prefix: String,
     pub columns: usize,
-    /// Required for [`SyntheticItemKind::MaterializedView`], ignored otherwise.
+    /// Required for [`SyntheticItemKind::MaterializedView`] and
+    /// [`SyntheticItemKind::Index`], ignored otherwise.
     pub cluster_id: Option<ClusterId>,
+    pub tier: EffectsTier,
+    /// The id and item name of the object to read from.
+    pub on: Option<(CatalogItemId, String)>,
 }
 
 /// Writes `spec.count` synthetic Tier 0 objects into `tx`, owned by `mz_synthetic`.
@@ -246,10 +315,8 @@ pub fn generate_objects(
     let item_ids: Vec<_> = ids.iter().map(|(item_id, _)| *item_id).collect();
     let items = render_objects(spec, &item_ids)?;
 
-    let privileges = vec![rbac::owner_privilege(
-        spec.kind.object_type(),
-        MZ_SYNTHETIC_ROLE_ID,
-    )];
+    let owner_id = spec.tier.owner_id();
+    let privileges = vec![rbac::owner_privilege(spec.kind.object_type(), owner_id)];
     let temporary_oids = HashSet::new();
     for ((item_id, global_id), item) in ids.into_iter().zip_eq(items) {
         tx.insert_user_item(
@@ -258,7 +325,7 @@ pub fn generate_objects(
             spec.schema_id,
             &item.name,
             item.create_sql,
-            MZ_SYNTHETIC_ROLE_ID,
+            owner_id,
             privileges.clone(),
             &temporary_oids,
             BTreeMap::new(),
@@ -280,18 +347,30 @@ pub fn render_objects(
     if spec.columns == 0 {
         bail!("a synthetic object needs at least one column");
     }
-    if spec.kind == SyntheticItemKind::MaterializedView && spec.cluster_id.is_none() {
-        bail!("a synthetic materialized view needs a cluster");
+    let needs_cluster = matches!(
+        spec.kind,
+        SyntheticItemKind::MaterializedView | SyntheticItemKind::Index
+    );
+    if needs_cluster && spec.cluster_id.is_none() {
+        bail!("a synthetic {} needs a cluster", spec.kind);
+    }
+    if spec.kind == SyntheticItemKind::Index && spec.on.is_none() {
+        bail!("a synthetic index needs an object to index");
     }
 
     item_ids
         .iter()
         .map(|item_id| {
-            let name = format!("{}_{}", spec.name_prefix, item_id);
+            let name = synthetic_item_name(&spec.name_prefix, *item_id);
             let create_sql = render_create_sql(spec, &name)?;
             Ok(SyntheticItem { name, create_sql })
         })
         .collect()
+}
+
+/// The name the generator gives the object it allocated `item_id` for.
+pub fn synthetic_item_name(name_prefix: &str, item_id: CatalogItemId) -> String {
+    format!("{name_prefix}_{item_id}")
 }
 
 /// The literal, type pairs generated columns cycle through.
@@ -303,12 +382,26 @@ const COLUMN_TYPES: &[(&str, &str)] = &[
 ];
 
 fn render_create_sql(spec: &GenerateSpec, item: &str) -> Result<String, anyhow::Error> {
-    let name = UnresolvedItemName(vec![
-        Ident::new(&spec.database_name)?,
-        Ident::new(&spec.schema_name)?,
-        Ident::new(item)?,
-    ])
-    .to_ast_string_stable();
+    let qualified = |item: &str| -> Result<String, anyhow::Error> {
+        Ok(UnresolvedItemName(vec![
+            Ident::new(&spec.database_name)?,
+            Ident::new(&spec.schema_name)?,
+            Ident::new(item)?,
+        ])
+        .to_ast_string_stable())
+    };
+    let name = qualified(item)?;
+    // An item reference in `create_sql` carries the id it resolved to, which is what
+    // keeps it pointing at the same object across a rename.
+    let on = spec
+        .on
+        .as_ref()
+        .map(|(id, on_name)| Ok::<_, anyhow::Error>(format!("[{id} AS {}]", qualified(on_name)?)))
+        .transpose()?;
+    let cluster = || {
+        spec.cluster_id
+            .ok_or_else(|| anyhow!("a synthetic {} needs a cluster", spec.kind))
+    };
 
     let column = |i: usize| COLUMN_TYPES[i % COLUMN_TYPES.len()];
     // Every literal is cast, so the select list has no unknown-typed column for the
@@ -333,12 +426,21 @@ fn render_create_sql(spec: &GenerateSpec, item: &str) -> Result<String, anyhow::
         }
         SyntheticItemKind::View => format!("CREATE VIEW {name} AS SELECT {}", select_list()),
         SyntheticItemKind::MaterializedView => {
-            let cluster = spec
-                .cluster_id
-                .ok_or_else(|| anyhow!("a synthetic materialized view needs a cluster"))?;
+            let query = match &on {
+                Some(on) => format!("SELECT * FROM {on}"),
+                None => format!("SELECT {}", select_list()),
+            };
             format!(
-                "CREATE MATERIALIZED VIEW {name} IN CLUSTER [{cluster}] AS SELECT {}",
-                select_list()
+                "CREATE MATERIALIZED VIEW {name} IN CLUSTER [{}] AS {query}",
+                cluster()?
+            )
+        }
+        SyntheticItemKind::Index => {
+            let on = on.ok_or_else(|| anyhow!("a synthetic index needs an object to index"))?;
+            format!(
+                "CREATE INDEX {} IN CLUSTER [{}] ON {on} (c0)",
+                Ident::new(item)?.to_ast_string_stable(),
+                cluster()?
             )
         }
     })

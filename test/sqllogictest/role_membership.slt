@@ -921,7 +921,8 @@ mz_analytics
 mz_jwt_sync
 mz_monitor_redacted
 mz_synthetic
-COMPLETE 12
+mz_synthetic_shipped
+COMPLETE 13
 
 statement ok
 DROP ROLE r1, r2, r3, r4

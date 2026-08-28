@@ -71,13 +71,14 @@ SELECT count(*) FROM mz_roles WHERE id IN ('s1', 's2') AND oid > 0
 query TTBBT rowsort
 SELECT id, name, inherit, rolcanlogin, rolsuper IS NULL
 FROM mz_roles
-WHERE name IN ('mz_analytics', 'mz_jwt_sync', 'mz_monitor', 'mz_monitor_redacted', 'mz_synthetic')
+WHERE name IN ('mz_analytics', 'mz_jwt_sync', 'mz_monitor', 'mz_monitor_redacted', 'mz_synthetic', 'mz_synthetic_shipped')
 ----
 g1  mz_monitor  true  false  true
 g2  mz_monitor_redacted  true  false  true
 s3  mz_analytics  true  false  true
 s4  mz_jwt_sync  true  false  true
 s5  mz_synthetic  true  false  true
+s6  mz_synthetic_shipped  true  false  true
 
 # --- Default user role (materialize) -----------------------------------------
 
