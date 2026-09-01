@@ -703,6 +703,28 @@ impl AstDisplay for SourceIncludeMetadata {
 }
 impl_display!(SourceIncludeMetadata);
 
+/// A single `name = ai_*(...)` binding in a `CREATE SOURCE ... ENRICH WITH (...)` clause.
+///
+/// The expression is a *specification*, not a call: the planner reads it to learn the
+/// input column, the enrichment kind and its arguments, then rewrites it away. Nothing in
+/// Materialize ever evaluates it, which is why no connection or secret is involved.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EnrichWithItem<T: AstInfo> {
+    /// The name of the enriched column this binding produces.
+    pub name: Ident,
+    /// The enrichment specification, always a call to one of the layer-1 `ai_*` functions.
+    pub expr: Expr<T>,
+}
+
+impl<T: AstInfo> AstDisplay for EnrichWithItem<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        f.write_str(" = ");
+        f.write_node(&self.expr);
+    }
+}
+impl_display_t!(EnrichWithItem);
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceErrorPolicy {
     Inline {

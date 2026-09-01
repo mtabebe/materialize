@@ -273,6 +273,9 @@ pub fn create_statement(
             with_options: _,
             external_references: _,
             progress_subsource: _,
+            // Always empty here: the expansion strips the clause before the underlying
+            // source is planned, so no `create_sql` ever carries it.
+            enrich_with: _,
         }) => {
             *name = allocate_name(name)?;
             *if_not_exists = false;
@@ -329,6 +332,9 @@ pub fn create_statement(
             if_not_exists,
             temporary,
             with_options: _,
+            // Always empty here: the expansion strips the clause before the underlying
+            // table is planned, so no `create_sql` ever carries it.
+            enrich_with: _,
         }) => {
             *name = if *temporary {
                 allocate_temporary_name(name)?
@@ -353,6 +359,9 @@ pub fn create_statement(
             body_format: _,
             validate_using: _,
             in_cluster: _,
+            // Always empty here: the expansion strips the clause before the underlying
+            // source is planned, so no `create_sql` ever carries it.
+            enrich_with: _,
         }) => {
             *name = allocate_name(name)?;
             *if_not_exists = false;

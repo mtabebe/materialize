@@ -1045,6 +1045,8 @@ impl ExecuteResponse {
             CreateCluster => &[CreatedCluster],
             CreateClusterReplica => &[CreatedClusterReplica],
             CreateSource | CreateSources => &[CreatedSource],
+            // The declared relation may be a table or a source; the base plan decides.
+            CreateEnrichedRelation => &[CreatedSource, CreatedTable],
             CreateSecret => &[CreatedSecret],
             CreateSink => &[CreatedSink],
             CreateTable => &[CreatedTable],

@@ -138,6 +138,7 @@ type RtrTimestampFuture = BoxFuture<'static, Result<Timestamp, StorageError>>;
 
 mod cluster;
 mod copy_from;
+mod create_enriched;
 mod create_index;
 mod create_materialized_view;
 mod create_metric_sink;
@@ -532,6 +533,25 @@ impl Coordinator {
     ) -> Result<(Plan, ResolvedIds), AdapterError> {
         let mut create_source_plans = Vec::with_capacity(subsources.len() + 2);
 
+        // `ENRICH WITH` survives purification untouched, so it is taken off here
+        // rather than in `plan_create_source`: by the time that function runs the
+        // statement must already name the derived relation and carry no clause.
+        let enrichment = if source_stmt.enrich_with.is_empty() {
+            None
+        } else {
+            if !self.catalog().system_config().enable_semantic_operators() {
+                return Err(AdapterError::from(
+                    mz_sql::session::vars::ENABLE_SEMANTIC_OPERATORS
+                        .require(self.catalog().system_config())
+                        .expect_err("flag is disabled"),
+                ));
+            }
+            let items = std::mem::take(&mut source_stmt.enrich_with);
+            let expansion = mz_sql::plan::enrich::expand(&source_stmt.name, &items)?;
+            source_stmt.name = expansion.raw_name.clone();
+            Some(expansion)
+        };
+
         // 1. First plan the progress subsource, if any.
         if let Some(progress_stmt) = progress_stmt {
             // The primary source depends on this subsource because the primary
@@ -625,10 +645,16 @@ impl Coordinator {
             create_source_plans.push(plan);
         }
 
-        Ok((
-            Plan::CreateSources(create_source_plans),
-            ResolvedIds::empty(),
-        ))
+        let plan = Plan::CreateSources(create_source_plans);
+        let plan = match enrichment {
+            Some(expansion) => Plan::CreateEnrichedRelation(plan::CreateEnrichedRelationPlan {
+                base: Box::new(plan),
+                generated: expansion.statements,
+            }),
+            None => plan,
+        };
+
+        Ok((plan, ResolvedIds::empty()))
     }
 
     #[instrument]

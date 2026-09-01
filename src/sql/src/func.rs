@@ -4251,6 +4251,28 @@ pub static INFORMATION_SCHEMA_BUILTINS: LazyLock<BTreeMap<&'static str, Func>> =
         }
     });
 
+/// The type semantic operators use for an embedding.
+///
+/// No new `ScalarType` is needed: `ai_embed` stores a vector and `float4[]` holds
+/// one, which is why layer 2 costs four scalar functions and nothing else.
+fn embedding_type() -> SqlScalarType {
+    SqlScalarType::Array(Box::new(SqlScalarType::Float32))
+}
+
+/// The error every layer-1 `ai_*` function returns.
+///
+/// The wording is part of the design rather than boilerplate. These functions are
+/// specifications, the way `GENERATED ALWAYS AS (a + b) STORED` and `CHECK (x > 0)`
+/// are expressions that describe a derivation without evaluating where they are
+/// written. Saying "unimplemented" would suggest an execution path is coming, and
+/// none is.
+fn bail_enrichment_only(name: &str) -> Result<HirScalarExpr, PlanError> {
+    sql_bail!(
+        "{name} is only valid inside ENRICH WITH; it is an enrichment specification, \
+         not a callable function"
+    )
+}
+
 pub static MZ_CATALOG_BUILTINS: LazyLock<BTreeMap<&'static str, Func>> = LazyLock::new(|| {
     use ParamType::*;
     use SqlScalarBaseType::*;
@@ -4260,6 +4282,73 @@ pub static MZ_CATALOG_BUILTINS: LazyLock<BTreeMap<&'static str, Func>> = LazyLoc
                 => Bool, oid::FUNC_CONSTANT_TIME_EQ_BYTES_OID;
             params!(String, String) => BinaryFunc::from(func::ConstantTimeEqString)
                 => Bool, oid::FUNC_CONSTANT_TIME_EQ_STRING_OID;
+        },
+
+        // Semantic operators, layer 2: ordinary deterministic scalar functions that
+        // are legal anywhere and make no network call. `AI JOIN` rewrites into calls
+        // to these; writing them by hand means the same thing and runs badly.
+        "cosine_similarity" => Scalar {
+            params!(embedding_type(), embedding_type()) => Operation::binary(|ecx, lhs, rhs| {
+                ecx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+                Ok(lhs.call_binary(rhs, BinaryFunc::from(func::CosineSimilarity)))
+            }) => Float64, oid::FUNC_COSINE_SIMILARITY_OID;
+        },
+        "ai_normalize_key" => Scalar {
+            params!(String) => Operation::unary(|ecx, e| {
+                ecx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+                Ok(e.call_unary(UnaryFunc::AiNormalizeKey(func::AiNormalizeKey)))
+            }) => String, oid::FUNC_AI_NORMALIZE_KEY_OID;
+        },
+        "lsh_bucket" => Scalar {
+            params!(embedding_type(), Int32) => Operation::binary(|ecx, lhs, rhs| {
+                ecx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+                Ok(lhs.call_binary(rhs, BinaryFunc::from(func::LshBucket)))
+            }) => String, oid::FUNC_LSH_BUCKET_OID;
+        },
+        "ai_similar" => Scalar {
+            params!(String, String) => Operation::binary(|ecx, lhs, rhs| {
+                ecx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+                Ok(lhs.call_binary(rhs, BinaryFunc::from(func::TextSimilarity)))
+            }) => Float64, oid::FUNC_AI_SIMILAR_TEXT_OID;
+            params!(embedding_type(), embedding_type()) => Operation::binary(|ecx, lhs, rhs| {
+                ecx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+                Ok(lhs.call_binary(rhs, BinaryFunc::from(func::CosineSimilarity)))
+            }) => Float64, oid::FUNC_AI_SIMILAR_EMBEDDING_OID;
+        },
+
+        // Semantic operators, layer 1: enrichment *specifications*, not functions.
+        //
+        // They are registered so that `ENRICH WITH` type-checks and so that a typo in
+        // a clause is caught as an unknown function, and they are rejected everywhere
+        // else because there is no execution path behind them and there is not meant
+        // to be. The planner reads the call to learn the input column, the kind, the
+        // arguments and the output type, then discards it; the external worker makes
+        // the model call.
+        "ai_classify" => Scalar {
+            params!(String, SqlScalarType::Array(Box::new(SqlScalarType::String)))
+                => Operation::variadic(|_ecx, _exprs| bail_enrichment_only("ai_classify"))
+                => String, oid::FUNC_AI_CLASSIFY_OID;
+        },
+        "ai_extract" => Scalar {
+            params!(String, String)
+                => Operation::variadic(|_ecx, _exprs| bail_enrichment_only("ai_extract"))
+                => String, oid::FUNC_AI_EXTRACT_OID;
+        },
+        "ai_score" => Scalar {
+            params!(String, String)
+                => Operation::variadic(|_ecx, _exprs| bail_enrichment_only("ai_score"))
+                => Float64, oid::FUNC_AI_SCORE_OID;
+        },
+        "ai_generate" => Scalar {
+            params!(String, String)
+                => Operation::variadic(|_ecx, _exprs| bail_enrichment_only("ai_generate"))
+                => String, oid::FUNC_AI_GENERATE_OID;
+        },
+        "ai_embed" => Scalar {
+            params!(String)
+                => Operation::variadic(|_ecx, _exprs| bail_enrichment_only("ai_embed"))
+                => SqlScalarType::Array(Box::new(SqlScalarType::Float32)),
+                   oid::FUNC_AI_EMBED_OID;
         },
         // Note: this is the original version of the AVG(...) function, as it existed prior to
         // v0.66. We updated the internal type promotion used when summing values to increase

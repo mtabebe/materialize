@@ -122,6 +122,7 @@ def get_minimal_system_parameters(
             "true" if version >= MzVersion.parse_mz("v26.29.0-dev") else "false"
         ),
         "enable_s3_tables_region_check": "false",
+        "enable_semantic_operators": "true",
         "enable_statement_lifecycle_logging": "true",
         "enable_storage_introspection_logs": "true",
         "enable_compute_error_distinct": "true",

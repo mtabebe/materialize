@@ -679,6 +679,18 @@ steps:
     agents:
       queue: hetzner-aarch64-4cpu-8gb
 
+  - id: semantic-ops
+    label: Semantic operators e2e
+    depends_on: build-aarch64
+    timeout_in_minutes: 30
+    inputs: [test/semantic-ops]
+    plugins:
+      - ./ci/plugins/mzcompose:
+          composition: semantic-ops
+          args: [end-to-end]
+    agents:
+      queue: hetzner-aarch64-4cpu-8gb
+
   - group: Docs
     key: docs-tests
     steps:

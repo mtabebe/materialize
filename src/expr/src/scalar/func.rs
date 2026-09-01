@@ -3097,6 +3097,137 @@ fn array_contains_array_rev<'a>(a: Array<'a>, b: Array<'a>) -> bool {
     array_contains_array(b, a)
 }
 
+/// Reads a `float4[]` as an `f64` vector, rejecting nulls and non-vector shapes.
+///
+/// The semantic-operator functions take `float4[]` because that is what
+/// `ai_embed` stores and because Materialize already has the type. Every one of
+/// them needs the same unpacking, so it lives here.
+fn embedding_elements(a: Array<'_>) -> Result<Vec<f64>, EvalError> {
+    a.elements()
+        .iter()
+        .map(|d| match d {
+            Datum::Null => Err(EvalError::Internal(
+                "embedding contains a null element".into(),
+            )),
+            d => Ok(f64::from(d.unwrap_float32())),
+        })
+        .collect()
+}
+
+/// Cosine of the angle between two embeddings, in `[-1, 1]`.
+///
+/// A zero-length vector has no direction, so it has no angle to anything; the
+/// result is 0 rather than a division by zero, which keeps the function total and
+/// keeps a degenerate row from failing a whole dataflow.
+#[sqlfunc(sqlname = "cosine_similarity")]
+fn cosine_similarity<'a>(a: Array<'a>, b: Array<'a>) -> Result<f64, EvalError> {
+    let a = embedding_elements(a)?;
+    let b = embedding_elements(b)?;
+    if a.len() != b.len() {
+        return Err(EvalError::Internal(
+            format!(
+                "cosine_similarity: dimension mismatch, {} vs {}",
+                a.len(),
+                b.len()
+            )
+            .into(),
+        ));
+    }
+    let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    Ok(if denom == 0.0 { 0.0 } else { dot / denom })
+}
+
+/// A deterministic pseudorandom stream, used to draw LSH hyperplanes.
+///
+/// splitmix64, seeded from the coordinate index rather than from any input value:
+/// two calls to `lsh_bucket` anywhere in a query must draw the *same* hyperplanes,
+/// or the blocking equi-join they feed compares incomparable keys and matches
+/// nothing.
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+/// The blocking key for an angular-LSH similarity join: which of `buckets`
+/// buckets this embedding falls in.
+///
+/// Takes `ceil(log2(buckets))` sign bits of the vector against fixed random
+/// hyperplanes and reduces the resulting integer modulo `buckets`. Vectors that
+/// point in similar directions land in the same bucket with high probability,
+/// which is what lets a similarity join become an equi-join.
+///
+/// NOTE: this is a *recall* knob and it fails silently. Too many buckets and
+/// genuinely similar pairs land in different ones and are never compared, with
+/// nothing in the result saying so. The documented check is to run the same join
+/// without `AI` on a sample and compare counts.
+#[sqlfunc(sqlname = "lsh_bucket")]
+fn lsh_bucket<'a>(a: Array<'a>, buckets: i32) -> Result<String, EvalError> {
+    if buckets <= 0 {
+        return Err(EvalError::Internal(
+            "lsh_bucket: buckets must be positive".into(),
+        ));
+    }
+    let v = embedding_elements(a)?;
+    let buckets = u64::from(buckets.unsigned_abs());
+    // `buckets` bits would be absurd; the index only needs to distinguish
+    // `buckets` values, and 32 bits caps the work for a pathological argument.
+    let bits = (u64::BITS - (buckets - 1).leading_zeros()).clamp(1, 32);
+    let mut index: u64 = 0;
+    for bit in 0..bits {
+        let mut state = u64::from(bit).wrapping_mul(0x2545F4914F6CDD1D);
+        let projection: f64 = v
+            .iter()
+            .map(|x| {
+                // Uniform in [-1, 1); the exact distribution does not matter, only
+                // that it is fixed and independent per coordinate.
+                let r = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                x * (2.0 * r - 1.0)
+            })
+            .sum();
+        index = (index << 1) | u64::from(projection >= 0.0);
+    }
+    Ok((index % buckets).to_string())
+}
+
+/// The trigram set of a string, case-folded, with the usual leading and trailing
+/// padding so that short strings still produce trigrams.
+fn trigrams(s: &str) -> std::collections::BTreeSet<[char; 3]> {
+    let lowered: Vec<char> = s.to_lowercase().chars().collect();
+    let mut padded = vec![' ', ' '];
+    padded.extend(lowered);
+    padded.push(' ');
+    padded
+        .windows(3)
+        .map(|w| [w[0], w[1], w[2]])
+        .filter(|w| w != &[' ', ' ', ' '])
+        .collect()
+}
+
+/// Similarity of two strings as the Jaccard overlap of their trigram sets.
+///
+/// This is the `text` half of `ai_similar`, used for the exact-key form of
+/// `AI JOIN` where the join key was extracted by a model and may disagree on
+/// punctuation or casing. Two empty strings are identical, so they score 1.
+#[sqlfunc(sqlname = "ai_similar")]
+fn text_similarity<'a>(a: &'a str, b: &'a str) -> f64 {
+    let a = trigrams(a);
+    let b = trigrams(b);
+    let union = a.union(&b).count();
+    if union == 0 {
+        return 1.0;
+    }
+    a.intersection(&b).count() as f64 / union as f64
+}
+
 #[sqlfunc(
     output_type_expr = "input_types[0].scalar_type.without_modifiers().nullable(true)",
     is_infix_op = true,

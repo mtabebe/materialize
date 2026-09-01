@@ -307,6 +307,7 @@
       }
     }
   },
+  "AiNormalizeKey": "UNITSTRUCT",
   "AnalyzedRegex": {
     "TUPLESTRUCT": [
       {
@@ -746,6 +747,11 @@
           "TYPENAME": "ConvertFrom"
         }
       },
+      "CosineSimilarity": {
+        "NEWTYPE": {
+          "TYPENAME": "CosineSimilarity"
+        }
+      },
       "DateBinTimestamp": {
         "NEWTYPE": {
           "TYPENAME": "DateBinTimestamp"
@@ -1039,6 +1045,11 @@
       "LogNumeric": {
         "NEWTYPE": {
           "TYPENAME": "LogBaseNumeric"
+        }
+      },
+      "LshBucket": {
+        "NEWTYPE": {
+          "TYPENAME": "LshBucket"
         }
       },
       "Lt": {
@@ -1454,6 +1465,11 @@
       "TextConcat": {
         "NEWTYPE": {
           "TYPENAME": "TextConcatBinary"
+        }
+      },
+      "TextSimilarity": {
+        "NEWTYPE": {
+          "TYPENAME": "TextSimilarity"
         }
       },
       "TimezoneIntervalTimeBinary": {
@@ -2086,6 +2102,7 @@
   "ConvertFrom": "UNITSTRUCT",
   "Cos": "UNITSTRUCT",
   "Cosh": "UNITSTRUCT",
+  "CosineSimilarity": "UNITSTRUCT",
   "Cot": "UNITSTRUCT",
   "Crc32Bytes": "UNITSTRUCT",
   "Crc32String": "UNITSTRUCT",
@@ -2868,6 +2885,7 @@
   "Log10Numeric": "UNITSTRUCT",
   "LogBaseNumeric": "UNITSTRUCT",
   "Lower": "UNITSTRUCT",
+  "LshBucket": "UNITSTRUCT",
   "Lt": "UNITSTRUCT",
   "Lte": "UNITSTRUCT",
   "MakeAclItem": "UNITSTRUCT",
@@ -3553,6 +3571,7 @@
   "Tan": "UNITSTRUCT",
   "Tanh": "UNITSTRUCT",
   "TextConcatBinary": "UNITSTRUCT",
+  "TextSimilarity": "UNITSTRUCT",
   "ThresholdPlan": {
     "ENUM": {
       "Basic": {
@@ -3719,6 +3738,11 @@
       "AdjustTimestampTzPrecision": {
         "NEWTYPE": {
           "TYPENAME": "AdjustTimestampTzPrecision"
+        }
+      },
+      "AiNormalizeKey": {
+        "NEWTYPE": {
+          "TYPENAME": "AiNormalizeKey"
         }
       },
       "Ascii": {

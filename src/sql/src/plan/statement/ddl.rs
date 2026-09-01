@@ -70,8 +70,8 @@ use mz_sql_parser::ast::{
     CreateTypeMapOption, CreateTypeMapOptionName, CreateTypeStatement, CreateViewStatement,
     CreateWebhookSourceStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
     CsrConnectionAvro, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DeferredItemName,
-    DocOnIdentifier, DocOnSchema, DropObjectsStatement, DropOwnedStatement, Expr, Format,
-    FormatSpecifier, GlueAvroOption, GlueAvroOptionName, IcebergSinkConfigOption, Ident,
+    DocOnIdentifier, DocOnSchema, DropObjectsStatement, DropOwnedStatement, EnrichWithItem, Expr,
+    Format, FormatSpecifier, GlueAvroOption, GlueAvroOptionName, IcebergSinkConfigOption, Ident,
     IfExistsBehavior, IndexOption, IndexOptionName, KafkaSinkConfigOption, KeyConstraint,
     LoadGeneratorOption, LoadGeneratorOptionName, MaterializedViewOption,
     MaterializedViewOptionName, MySqlConfigOption, MySqlConfigOptionName, NetworkPolicyOption,
@@ -159,14 +159,15 @@ use crate::plan::{
     ComputeReplicaConfig, ComputeReplicaIntrospectionConfig, ConnectionDetails,
     CreateClusterManagedPlan, CreateClusterPlan, CreateClusterReplicaPlan,
     CreateClusterUnmanagedPlan, CreateClusterVariant, CreateConnectionPlan, CreateDatabasePlan,
-    CreateIndexPlan, CreateMaterializedViewPlan, CreateMetricSinkPlan, CreateNetworkPolicyPlan,
-    CreateRolePlan, CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan,
-    CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc, DropObjectsPlan,
-    DropOwnedPlan, HirRelationExpr, Index, MaterializedView, MetricSink, NetworkPolicyRule,
-    NetworkPolicyRuleAction, NetworkPolicyRuleDirection, OnHydration, Plan, PlanClusterOption,
-    PlanNotice, PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink, Source, Table,
-    TableDataSource, Type, VariableValue, View, WebhookBodyFormat, WebhookHeaderFilters,
-    WebhookHeaders, WebhookValidation, literal, plan_utils, query, transform_ast,
+    CreateEnrichedRelationPlan, CreateIndexPlan, CreateMaterializedViewPlan, CreateMetricSinkPlan,
+    CreateNetworkPolicyPlan, CreateRolePlan, CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan,
+    CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc,
+    DropObjectsPlan, DropOwnedPlan, HirRelationExpr, Index, MaterializedView, MetricSink,
+    NetworkPolicyRule, NetworkPolicyRuleAction, NetworkPolicyRuleDirection, OnHydration, Plan,
+    PlanClusterOption, PlanNotice, PolicyAddress, QueryContext, ReplicaConfig, Secret, Sink,
+    Source, Table, TableDataSource, Type, VariableValue, View, WebhookBodyFormat,
+    WebhookHeaderFilters, WebhookHeaders, WebhookValidation, literal, plan_utils, query,
+    transform_ast,
 };
 use crate::session::vars::{
     self, ENABLE_AUTO_SCALING_STRATEGY, ENABLE_CLUSTER_SCHEDULE_REFRESH,
@@ -177,6 +178,7 @@ use crate::session::vars::{
 use crate::{names, parse};
 
 mod connection;
+pub mod enrich;
 
 // TODO: Figure out what the maximum number of columns we can actually support is, and set that.
 //
@@ -288,8 +290,19 @@ pub fn describe_create_table(
 
 pub fn plan_create_table(
     scx: &StatementContext,
-    stmt: CreateTableStatement<Aug>,
+    mut stmt: CreateTableStatement<Aug>,
 ) -> Result<Plan, PlanError> {
+    if !stmt.enrich_with.is_empty() {
+        let items = std::mem::take(&mut stmt.enrich_with);
+        let expansion = plan_enrich_with(scx, &stmt.name, &items)?;
+        stmt.name = expansion.raw_name;
+        let base = plan_create_table(scx, stmt)?;
+        return Ok(Plan::CreateEnrichedRelation(CreateEnrichedRelationPlan {
+            base: Box::new(base),
+            generated: expansion.statements,
+        }));
+    }
+
     let CreateTableStatement {
         name,
         columns,
@@ -297,6 +310,7 @@ pub fn plan_create_table(
         if_not_exists,
         temporary,
         with_options,
+        enrich_with: _,
     } = &stmt;
 
     let names: Vec<_> = columns
@@ -562,12 +576,37 @@ generate_extracted_config!(
     (ExcludeColumns, Vec::<UnresolvedItemName>, Default(vec![]))
 );
 
+/// Gates and expands an `ENRICH WITH` clause.
+///
+/// The clause never survives into the underlying relation's `create_sql`: the
+/// statement is rewritten to the derived `_raw` name with the clause stripped, then
+/// planned as if it had never carried one.
+fn plan_enrich_with(
+    scx: &StatementContext,
+    name: &UnresolvedItemName,
+    items: &[EnrichWithItem<Aug>],
+) -> Result<enrich::Expansion, PlanError> {
+    scx.require_feature_flag(&vars::ENABLE_SEMANTIC_OPERATORS)?;
+    enrich::expand(name, items)
+}
+
 pub fn plan_create_webhook_source(
     scx: &StatementContext,
     mut stmt: CreateWebhookSourceStatement<Aug>,
 ) -> Result<Plan, PlanError> {
     if stmt.is_table {
         scx.require_feature_flag(&ENABLE_CREATE_TABLE_FROM_SOURCE)?;
+    }
+
+    if !stmt.enrich_with.is_empty() {
+        let items = std::mem::take(&mut stmt.enrich_with);
+        let expansion = plan_enrich_with(scx, &stmt.name, &items)?;
+        stmt.name = expansion.raw_name;
+        let base = plan_create_webhook_source(scx, stmt)?;
+        return Ok(Plan::CreateEnrichedRelation(CreateEnrichedRelationPlan {
+            base: Box::new(base),
+            generated: expansion.statements,
+        }));
     }
 
     // We will rewrite the cluster if one is not provided, so we must use the `in_cluster` value
@@ -585,6 +624,7 @@ pub fn plan_create_webhook_source(
         is_table,
         // We resolved `in_cluster` above, so we want to ignore it here.
         in_cluster: _,
+        enrich_with: _,
     } = stmt;
 
     let validate_using = validate_using
@@ -770,11 +810,16 @@ pub fn plan_create_source(
         with_options,
         external_references: referenced_subsources,
         progress_subsource,
+        enrich_with,
     } = &stmt;
 
     mz_ore::soft_assert_or_log!(
         referenced_subsources.is_none(),
         "referenced subsources must be cleared in purification"
+    );
+    mz_ore::soft_assert_or_log!(
+        enrich_with.is_empty(),
+        "ENRICH WITH must be expanded away before the underlying source is planned"
     );
 
     let force_source_table_syntax = scx.catalog.system_vars().enable_create_table_from_source()

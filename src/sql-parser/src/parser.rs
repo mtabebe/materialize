@@ -3266,6 +3266,10 @@ impl<'a> Parser<'a> {
             None
         };
 
+        // Must precede the bare `WITH (` block below, which would otherwise swallow the
+        // `WITH` and leave `ENRICH` unreachable.
+        let enrich_with = self.parse_enrich_with()?;
+
         // New WITH block
         let with_options = if self.parse_keyword(WITH) {
             self.expect_token(&Token::LParen)?;
@@ -3289,7 +3293,28 @@ impl<'a> Parser<'a> {
             external_references: referenced_subsources,
             progress_subsource,
             with_options,
+            enrich_with,
         }))
+    }
+
+    /// Parses an optional `ENRICH WITH (name = ai_*(...), ...)` clause, returning an empty
+    /// vector when the clause is absent.
+    fn parse_enrich_with(&mut self) -> Result<Vec<EnrichWithItem<Raw>>, ParserError> {
+        if !self.parse_keyword(ENRICH) {
+            return Ok(vec![]);
+        }
+        self.expect_keyword(WITH)?;
+        self.expect_token(&Token::LParen)?;
+        let items = self.parse_comma_separated(Parser::parse_enrich_with_item)?;
+        self.expect_token(&Token::RParen)?;
+        Ok(items)
+    }
+
+    fn parse_enrich_with_item(&mut self) -> Result<EnrichWithItem<Raw>, ParserError> {
+        let name = self.parse_identifier()?;
+        self.expect_token(&Token::Eq)?;
+        let expr = self.parse_expr()?;
+        Ok(EnrichWithItem { name, expr })
     }
 
     fn parse_subsource_references(&mut self) -> Result<ExternalReferenceExport, ParserError> {
@@ -3453,6 +3478,8 @@ impl<'a> Parser<'a> {
             None
         };
 
+        let enrich_with = self.parse_enrich_with()?;
+
         Ok(Statement::CreateWebhookSource(
             CreateWebhookSourceStatement {
                 name,
@@ -3462,6 +3489,7 @@ impl<'a> Parser<'a> {
                 include_headers,
                 validate_using,
                 in_cluster,
+                enrich_with,
             },
         ))
     }
@@ -5243,6 +5271,10 @@ impl<'a> Parser<'a> {
         // parse optional column list (schema)
         let (columns, constraints) = self.parse_columns(Mandatory)?;
 
+        // Must precede the bare `WITH (` block below, which would otherwise swallow the
+        // `WITH` and leave `ENRICH` unreachable.
+        let enrich_with = self.parse_enrich_with()?;
+
         let with_options = if self.parse_keyword(WITH) {
             self.expect_token(&Token::LParen)?;
             let o = if matches!(self.peek_token(), Some(Token::RParen)) {
@@ -5263,6 +5295,7 @@ impl<'a> Parser<'a> {
             if_not_exists,
             temporary,
             with_options,
+            enrich_with,
         }))
     }
 
@@ -7425,6 +7458,13 @@ impl<'a> Parser<'a> {
     /// the alias is allowed to optionally name the columns in the table, in
     /// addition to the table itself.
     fn parse_optional_table_alias(&mut self) -> Result<Option<TableAlias>, ParserError> {
+        // `AI` is not reserved here, because `FROM pg_authid ai` is a perfectly good
+        // alias and reserving a two-letter word to buy `AI JOIN` costs more than the
+        // syntax is worth. Only the exact `AI JOIN` sequence is taken as a join, so
+        // the one construction that changes meaning is `FROM t ai JOIN u`.
+        if self.peek_keywords(&[AI, JOIN]) {
+            return Ok(None);
+        }
         match self.parse_optional_alias(Keyword::is_reserved_in_table_alias)? {
             Some(name) => {
                 let columns = self.parse_parenthesized_column_list(Optional)?;
@@ -8554,6 +8594,28 @@ impl<'a> Parser<'a> {
                     relation: self.parse_table_factor()?,
                     join_operator: JoinOperator::CrossJoin,
                 }
+            } else if self.parse_keyword(AI) {
+                // Handled outside the `join_operator_type` match below because `AI JOIN`
+                // carries options as well as a constraint, so it does not fit the
+                // constraint-only constructor shape the other join types share.
+                self.expect_keyword(JOIN)?;
+                let relation = self.parse_table_factor()?;
+                let constraint = self.parse_join_constraint(false)?;
+                let options = if self.parse_keyword(WITH) {
+                    self.expect_token(&Token::LParen)?;
+                    let options = self.parse_comma_separated(Parser::parse_ai_join_option)?;
+                    self.expect_token(&Token::RParen)?;
+                    options
+                } else {
+                    vec![]
+                };
+                Join {
+                    relation,
+                    join_operator: JoinOperator::AiJoin {
+                        constraint,
+                        options,
+                    },
+                }
             } else {
                 let natural = self.parse_keyword(NATURAL);
                 let peek_keyword = if let Some(Token::Keyword(kw)) = self.peek_token() {
@@ -8790,6 +8852,28 @@ impl<'a> Parser<'a> {
             subquery,
             alias,
         })
+    }
+
+    fn parse_ai_join_option(&mut self) -> Result<AiJoinOption<Raw>, ParserError> {
+        let name = match self.expect_one_of_keywords(&[THRESHOLD, TOP, BUCKETS, SCORE])? {
+            THRESHOLD => AiJoinOptionName::Threshold,
+            TOP => AiJoinOptionName::Top,
+            BUCKETS => AiJoinOptionName::Buckets,
+            SCORE => {
+                self.expect_keyword(AS)?;
+                AiJoinOptionName::ScoreAs
+            }
+            _ => unreachable!(),
+        };
+        // `SCORE AS score` names a column, so it takes a bare identifier rather than the
+        // `= value` the numeric knobs use.
+        let value = if matches!(name, AiJoinOptionName::ScoreAs) {
+            Some(WithOptionValue::Ident(self.parse_identifier()?))
+        } else {
+            let _ = self.consume_token(&Token::Eq);
+            Some(self.parse_option_value()?)
+        };
+        Ok(AiJoinOption { name, value })
     }
 
     fn parse_join_constraint(&mut self, natural: bool) -> Result<JoinConstraint<Raw>, ParserError> {

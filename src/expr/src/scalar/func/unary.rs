@@ -543,7 +543,8 @@ derive_unary!(
     KafkaMurmur2String,
     SeahashBytes,
     SeahashString,
-    Reverse
+    Reverse,
+    AiNormalizeKey
 );
 
 impl<E> UnaryFunc<E> {

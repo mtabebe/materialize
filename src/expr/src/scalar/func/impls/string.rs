@@ -1088,6 +1088,24 @@ fn lower<'a>(a: &'a str) -> String {
     a.to_lowercase()
 }
 
+/// The blocking key for the exact-key form of a similarity join.
+///
+/// Case-folds and drops everything that is not alphanumeric, so `Acme Corp` and
+/// `acme corp.` block together. That is the point: the keys being joined were
+/// extracted from prose by a model, and two extractions of the same company differ
+/// on punctuation and spacing far more often than on letters.
+///
+/// NOTE: this is exact-key blocking, so two spellings that survive normalization
+/// differently (`Acme` and `Acme Inc`) are never compared, whatever the threshold
+/// says. Fuzzy blocking is what the embedding form is for.
+#[sqlfunc(sqlname = "ai_normalize_key")]
+fn ai_normalize_key<'a>(a: &'a str) -> String {
+    a.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
 #[sqlfunc]
 fn normalize(text: &str, form_str: &str) -> Result<String, EvalError> {
     use unicode_normalization::UnicodeNormalization;

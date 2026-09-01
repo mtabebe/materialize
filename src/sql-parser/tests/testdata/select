@@ -2105,3 +2105,39 @@ FROM iffy_colnames
 SELECT "true", "false", "null", "array", "list", map, "case", "cast", coalesce, greatest, least, nullif, exists, extract, "not", row, trim, position, substring FROM iffy_colnames
 =>
 Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Expr { expr: Identifier([Ident("true")]), alias: None }, Expr { expr: Identifier([Ident("false")]), alias: None }, Expr { expr: Identifier([Ident("null")]), alias: None }, Expr { expr: Identifier([Ident("array")]), alias: None }, Expr { expr: Identifier([Ident("list")]), alias: None }, Expr { expr: Identifier([Ident("map")]), alias: None }, Expr { expr: Identifier([Ident("case")]), alias: None }, Expr { expr: Identifier([Ident("cast")]), alias: None }, Expr { expr: Identifier([Ident("coalesce")]), alias: None }, Expr { expr: Identifier([Ident("greatest")]), alias: None }, Expr { expr: Identifier([Ident("least")]), alias: None }, Expr { expr: Identifier([Ident("nullif")]), alias: None }, Expr { expr: Identifier([Ident("exists")]), alias: None }, Expr { expr: Identifier([Ident("extract")]), alias: None }, Expr { expr: Identifier([Ident("not")]), alias: None }, Expr { expr: Identifier([Ident("row")]), alias: None }, Expr { expr: Identifier([Ident("trim")]), alias: None }, Expr { expr: Identifier([Ident("position")]), alias: None }, Expr { expr: Identifier([Ident("substring")]), alias: None }], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("iffy_colnames")])), alias: None }, joins: [] }], selection: None, group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })
+
+parse-statement
+SELECT * FROM tickets t AI JOIN articles a ON ai_similar(t.emb, a.emb) > 0.7 WITH (THRESHOLD = 0.7, TOP = 3, SCORE AS score, BUCKETS = 16)
+----
+SELECT * FROM tickets AS t AI JOIN articles AS a ON ai_similar(t.emb, a.emb) > 0.7 WITH (THRESHOLD = 0.7, TOP = 3, SCORE AS score, BUCKETS = 16)
+=>
+Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Wildcard], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("tickets")])), alias: Some(TableAlias { name: Ident("t"), columns: [], strict: false }) }, joins: [Join { relation: Table { name: Name(UnresolvedItemName([Ident("articles")])), alias: Some(TableAlias { name: Ident("a"), columns: [], strict: false }) }, join_operator: AiJoin { constraint: On(Op { op: Op { namespace: None, op: ">" }, expr1: Function(Function { name: Name(UnresolvedItemName([Ident("ai_similar")])), args: Args { args: [Identifier([Ident("t"), Ident("emb")]), Identifier([Ident("a"), Ident("emb")])], order_by: [] }, filter: None, over: None, distinct: false }), expr2: Some(Value(Number("0.7"))) }), options: [AiJoinOption { name: Threshold, value: Some(Value(Number("0.7"))) }, AiJoinOption { name: Top, value: Some(Value(Number("3"))) }, AiJoinOption { name: ScoreAs, value: Some(Ident(Ident("score"))) }, AiJoinOption { name: Buckets, value: Some(Value(Number("16"))) }] } }] }], selection: None, group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })
+
+parse-statement
+SELECT * FROM tickets t AI JOIN articles a ON ai_similar(t.k, a.k)
+----
+SELECT * FROM tickets AS t AI JOIN articles AS a ON ai_similar(t.k, a.k)
+=>
+Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Wildcard], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("tickets")])), alias: Some(TableAlias { name: Ident("t"), columns: [], strict: false }) }, joins: [Join { relation: Table { name: Name(UnresolvedItemName([Ident("articles")])), alias: Some(TableAlias { name: Ident("a"), columns: [], strict: false }) }, join_operator: AiJoin { constraint: On(Function(Function { name: Name(UnresolvedItemName([Ident("ai_similar")])), args: Args { args: [Identifier([Ident("t"), Ident("k")]), Identifier([Ident("a"), Ident("k")])], order_by: [] }, filter: None, over: None, distinct: false })), options: [] } }] }], selection: None, group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })
+
+parse-statement
+SELECT * FROM t AI JOIN u ON true, v
+----
+SELECT * FROM t AI JOIN u ON true, v
+=>
+Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Wildcard], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("t")])), alias: None }, joins: [Join { relation: Table { name: Name(UnresolvedItemName([Ident("u")])), alias: None }, join_operator: AiJoin { constraint: On(Value(Boolean(true))), options: [] } }] }, TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("v")])), alias: None }, joins: [] }], selection: None, group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })
+
+# `AI` stays usable as a table alias: only the exact `AI JOIN` sequence is a join.
+parse-statement
+SELECT * FROM pg_authid ai WHERE ai.oid = 1
+----
+SELECT * FROM pg_authid AS ai WHERE ai.oid = 1
+=>
+Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Wildcard], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("pg_authid")])), alias: Some(TableAlias { name: Ident("ai"), columns: [], strict: false }) }, joins: [] }], selection: Some(Op { op: Op { namespace: None, op: "=" }, expr1: Identifier([Ident("ai"), Ident("oid")]), expr2: Some(Value(Number("1"))) }), group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })
+
+parse-statement
+SELECT * FROM t ai, u
+----
+SELECT * FROM t AS ai, u
+=>
+Select(SelectStatement { query: Query { ctes: Simple([]), body: Select(Select { distinct: None, projection: [Wildcard], from: [TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("t")])), alias: Some(TableAlias { name: Ident("ai"), columns: [], strict: false }) }, joins: [] }, TableWithJoins { relation: Table { name: Name(UnresolvedItemName([Ident("u")])), alias: None }, joins: [] }], selection: None, group_by: [], having: None, qualify: None, options: [] }), order_by: [], limit: None, offset: None }, as_of: None })

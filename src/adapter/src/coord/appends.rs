@@ -1603,6 +1603,7 @@ pub(crate) fn waiting_on_startup_appends(
         | Plan::CreateClusterReplica(_)
         | Plan::CreateSource(_)
         | Plan::CreateSources(_)
+        | Plan::CreateEnrichedRelation(_)
         | Plan::CreateSecret(_)
         | Plan::CreateSink(_)
         | Plan::CreateTable(_)

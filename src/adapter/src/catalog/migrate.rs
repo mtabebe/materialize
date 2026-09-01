@@ -383,6 +383,9 @@ fn rewrite_sources_to_tables(
             with_options,
             external_references,
             progress_subsource,
+            // Never present in a stored `create_sql`: the clause is expanded away
+            // before the underlying relation is planned.
+            enrich_with: _,
         } = source_stmt;
 
         let (progress_name, progress_item) = match progress_subsource {
@@ -497,6 +500,7 @@ fn rewrite_sources_to_tables(
                         with_options,
                         external_references: None,
                         progress_subsource: None,
+                        enrich_with: vec![],
                     };
 
                     migrated_source_ids.insert(source_item.id, progress_item.id());
@@ -576,6 +580,7 @@ fn rewrite_sources_to_tables(
                         with_options,
                         external_references: None,
                         progress_subsource: None,
+                        enrich_with: vec![],
                     };
                     (
                         progress_item.name().item.clone(),
@@ -654,6 +659,7 @@ fn rewrite_sources_to_tables(
                         with_options,
                         external_references: None,
                         progress_subsource: None,
+                        enrich_with: vec![],
                     };
                     (
                         progress_item.name().item.clone(),

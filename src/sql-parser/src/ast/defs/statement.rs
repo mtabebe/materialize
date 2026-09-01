@@ -29,11 +29,11 @@ use crate::ast::display::{self, AstDisplay, AstFormatter, WithOptionName};
 use crate::ast::{
     AstInfo, ColumnDef, ConnectionOption, ConnectionOptionName, CreateConnectionOption,
     CreateConnectionType, CreateSinkConnection, CreateSourceConnection, CreateSourceOption,
-    CreateSourceOptionName, DeferredItemName, Expr, Format, FormatSpecifier, IcebergSinkMode,
-    Ident, IntervalValue, KeyConstraint, MaterializedViewOption, Query, SelectItem, SinkEnvelope,
-    SourceEnvelope, SourceIncludeMetadata, SubscribeOutput, TableAlias, TableConstraint,
-    TableWithJoins, UnresolvedDatabaseName, UnresolvedItemName, UnresolvedObjectName,
-    UnresolvedSchemaName, Value,
+    CreateSourceOptionName, DeferredItemName, EnrichWithItem, Expr, Format, FormatSpecifier,
+    IcebergSinkMode, Ident, IntervalValue, KeyConstraint, MaterializedViewOption, Query,
+    SelectItem, SinkEnvelope, SourceEnvelope, SourceIncludeMetadata, SubscribeOutput, TableAlias,
+    TableConstraint, TableWithJoins, UnresolvedDatabaseName, UnresolvedItemName,
+    UnresolvedObjectName, UnresolvedSchemaName, Value,
 };
 
 /// A top-level statement (SELECT, INSERT, CREATE, etc.)
@@ -862,6 +862,10 @@ pub struct CreateWebhookSourceStatement<T: AstInfo> {
     pub include_headers: CreateWebhookSourceIncludeHeaders,
     pub validate_using: Option<CreateWebhookSourceCheck<T>>,
     pub in_cluster: Option<T::ClusterName>,
+    /// Declarations of columns filled in by an external enrichment worker.
+    ///
+    /// See [`CreateSourceStatement::enrich_with`].
+    pub enrich_with: Vec<EnrichWithItem<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for CreateWebhookSourceStatement<T> {
@@ -897,6 +901,12 @@ impl<T: AstInfo> AstDisplay for CreateWebhookSourceStatement<T> {
         if let Some(validate) = &self.validate_using {
             f.write_str(" ");
             f.write_node(validate);
+        }
+
+        if !self.enrich_with.is_empty() {
+            f.write_str(" ENRICH WITH (");
+            f.write_node(&display::comma_separated(&self.enrich_with));
+            f.write_str(")");
         }
     }
 }
@@ -1121,6 +1131,12 @@ pub struct CreateSourceStatement<T: AstInfo> {
     pub with_options: Vec<CreateSourceOption<T>>,
     pub external_references: Option<ExternalReferences>,
     pub progress_subsource: Option<DeferredItemName<T>>,
+    /// Declarations of columns filled in by an external enrichment worker.
+    ///
+    /// Empty for every source that does not use `ENRICH WITH`. When non-empty the planner
+    /// expands this statement into several catalog items and this source is created under
+    /// a derived name.
+    pub enrich_with: Vec<EnrichWithItem<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for CreateSourceStatement<T> {
@@ -1171,6 +1187,12 @@ impl<T: AstInfo> AstDisplay for CreateSourceStatement<T> {
         if let Some(progress) = &self.progress_subsource {
             f.write_str(" EXPOSE PROGRESS AS ");
             f.write_node(progress);
+        }
+
+        if !self.enrich_with.is_empty() {
+            f.write_str(" ENRICH WITH (");
+            f.write_node(&display::comma_separated(&self.enrich_with));
+            f.write_str(")");
         }
 
         if !self.with_options.is_empty() {
@@ -1679,6 +1701,10 @@ pub struct CreateTableStatement<T: AstInfo> {
     pub if_not_exists: bool,
     pub temporary: bool,
     pub with_options: Vec<TableOption<T>>,
+    /// Declarations of columns filled in by an external enrichment worker.
+    ///
+    /// See [`CreateSourceStatement::enrich_with`].
+    pub enrich_with: Vec<EnrichWithItem<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for CreateTableStatement<T> {
@@ -1690,6 +1716,7 @@ impl<T: AstInfo> AstDisplay for CreateTableStatement<T> {
             if_not_exists,
             temporary,
             with_options,
+            enrich_with,
         } = self;
         f.write_str("CREATE ");
         if *temporary {
@@ -1709,6 +1736,11 @@ impl<T: AstInfo> AstDisplay for CreateTableStatement<T> {
             f.write_node(&display::comma_separated(constraints));
         }
         f.write_str(")");
+        if !enrich_with.is_empty() {
+            f.write_str(" ENRICH WITH (");
+            f.write_node(&display::comma_separated(enrich_with));
+            f.write_str(")");
+        }
         if !with_options.is_empty() {
             f.write_str(" WITH (");
             f.write_node(&display::comma_separated(&self.with_options));

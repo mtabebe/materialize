@@ -34,6 +34,7 @@ Addresses
 After
 Aggregate
 Aggregation
+Ai
 Aligned
 All
 Alter
@@ -72,6 +73,7 @@ Bpchar
 Broken
 Broker
 Brokers
+Buckets
 By
 Bytes
 Cancellation
@@ -167,6 +169,7 @@ Enable
 End
 Endpoint
 Enforced
+Enrich
 Envelope
 Equivalences
 Error
@@ -434,6 +437,7 @@ Schedule
 Schema
 Schemas
 Scope
+Score
 Second
 Seconds
 Secret
@@ -487,6 +491,7 @@ Temporary
 Test
 Text
 Then
+Threshold
 Tick
 Ties
 Time
@@ -496,6 +501,7 @@ TimestampTz
 Timing
 To
 Token
+Top
 Topic
 Tpch
 Trace

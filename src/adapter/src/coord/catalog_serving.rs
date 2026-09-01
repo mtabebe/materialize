@@ -85,6 +85,7 @@ pub fn auto_run_on_catalog_server<'a, 's, 'p>(
         | Plan::CreateClusterReplica(_)
         | Plan::CreateSource(_)
         | Plan::CreateSources(_)
+        | Plan::CreateEnrichedRelation(_)
         | Plan::CreateSecret(_)
         | Plan::CreateSink(_)
         | Plan::CreateTable(_)

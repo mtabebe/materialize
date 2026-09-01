@@ -772,6 +772,19 @@ impl<T: AstInfo> AstDisplay for Join<T> {
                 f.write_str(" CROSS JOIN ");
                 f.write_node(&self.relation);
             }
+            JoinOperator::AiJoin {
+                constraint,
+                options,
+            } => {
+                f.write_str(" AI JOIN ");
+                f.write_node(&self.relation);
+                f.write_node(&suffix(constraint));
+                if !options.is_empty() {
+                    f.write_str(" WITH (");
+                    f.write_node(&display::comma_separated(options));
+                    f.write_str(")");
+                }
+            }
         }
     }
 }
@@ -784,7 +797,81 @@ pub enum JoinOperator<T: AstInfo> {
     RightOuter(JoinConstraint<T>),
     FullOuter(JoinConstraint<T>),
     CrossJoin,
+    /// A similarity join, rewritten by the planner into a blocking equi-join plus a
+    /// threshold filter and a top-k bound.
+    ///
+    /// The constraint is an ordinary predicate, not a special form: dropping `AI` and the
+    /// options leaves a plain join with the same meaning that runs badly. The sugar
+    /// changes the plan, not the semantics. `TOP` is the exception, since it is a limit.
+    AiJoin {
+        constraint: JoinConstraint<T>,
+        options: Vec<AiJoinOption<T>>,
+    },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AiJoinOptionName {
+    /// Minimum similarity for a pair to be emitted.
+    Threshold,
+    /// Maximum number of matches retained per left row.
+    Top,
+    /// Number of LSH buckets used to block the join.
+    Buckets,
+    /// Name to project the computed similarity under.
+    ScoreAs,
+}
+
+impl AstDisplay for AiJoinOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str(match self {
+            AiJoinOptionName::Threshold => "THRESHOLD",
+            AiJoinOptionName::Top => "TOP",
+            AiJoinOptionName::Buckets => "BUCKETS",
+            AiJoinOptionName::ScoreAs => "SCORE AS",
+        })
+    }
+}
+impl_display!(AiJoinOptionName);
+
+impl WithOptionName for AiJoinOptionName {
+    /// # WARNING
+    ///
+    /// Whenever implementing this trait consider very carefully whether or not
+    /// this value could contain sensitive user data. If you're uncertain, err
+    /// on the conservative side and return `true`.
+    fn redact_value(&self) -> bool {
+        match self {
+            AiJoinOptionName::Threshold
+            | AiJoinOptionName::Top
+            | AiJoinOptionName::Buckets
+            | AiJoinOptionName::ScoreAs => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// An option in an `AI JOIN ... WITH (...)` clause.
+pub struct AiJoinOption<T: AstInfo> {
+    pub name: AiJoinOptionName,
+    pub value: Option<WithOptionValue<T>>,
+}
+
+// Hand-written rather than `impl_display_for_with_option!` because `SCORE AS score` names a
+// projected column and reads better without an `=`, matching `INCLUDE KEY AS k`. The
+// generated impl would emit `SCORE AS = score`, which does not re-parse.
+impl<T: AstInfo> AstDisplay for AiJoinOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        if let Some(v) = &self.value {
+            if !matches!(self.name, AiJoinOptionName::ScoreAs) {
+                f.write_str(" =");
+            }
+            f.write_str(" ");
+            f.write_node(v);
+        }
+    }
+}
+impl_display_t!(AiJoinOption);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum JoinConstraint<T: AstInfo> {

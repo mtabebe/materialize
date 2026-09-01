@@ -115,6 +115,7 @@ pub use notice::PlanNotice;
 pub use query::{ExprContext, QueryContext, QueryLifetime};
 pub use scope::Scope;
 pub use side_effecting_func::SideEffectingFunc;
+pub use statement::ddl::enrich;
 pub use statement::ddl::{
     AlterSourceAddSubsourceOptionExtracted, MySqlConfigOptionExtracted, PgConfigOptionExtracted,
     PlannedAlterRoleOption, PlannedRoleAttributes, PlannedRoleVariable,
@@ -140,6 +141,7 @@ pub enum Plan {
     CreateClusterReplica(CreateClusterReplicaPlan),
     CreateSource(CreateSourcePlan),
     CreateSources(Vec<CreateSourcePlanBundle>),
+    CreateEnrichedRelation(CreateEnrichedRelationPlan),
     CreateSecret(CreateSecretPlan),
     CreateSink(CreateSinkPlan),
     CreateTable(CreateTablePlan),
@@ -285,8 +287,14 @@ impl Plan {
             StatementKind::CreateSource | StatementKind::CreateSubsource => {
                 &[PlanKind::CreateSource]
             }
-            StatementKind::CreateWebhookSource => &[PlanKind::CreateSource, PlanKind::CreateTable],
-            StatementKind::CreateTable => &[PlanKind::CreateTable],
+            StatementKind::CreateWebhookSource => &[
+                PlanKind::CreateSource,
+                PlanKind::CreateTable,
+                PlanKind::CreateEnrichedRelation,
+            ],
+            StatementKind::CreateTable => {
+                &[PlanKind::CreateTable, PlanKind::CreateEnrichedRelation]
+            }
             StatementKind::CreateTableFromSource => &[PlanKind::CreateTable],
             StatementKind::CreateType => &[PlanKind::CreateType],
             StatementKind::CreateView => &[PlanKind::CreateView],
@@ -345,6 +353,7 @@ impl Plan {
             Plan::CreateClusterReplica(_) => "create cluster replica",
             Plan::CreateSource(_) => "create source",
             Plan::CreateSources(_) => "create source",
+            Plan::CreateEnrichedRelation(plan) => plan.base.name(),
             Plan::CreateSecret(_) => "create secret",
             Plan::CreateSink(_) => "create sink",
             Plan::CreateTable(_) => "create table",
@@ -710,6 +719,24 @@ pub struct SourceReference {
     pub name: String,
     pub namespace: Option<String>,
     pub columns: Vec<String>,
+}
+
+/// A relation declared with `ENRICH WITH`, and the objects that implement it.
+///
+/// The declared name ends up on a view over the relation and the store, so the
+/// underlying relation is created under a derived `_raw` name from the start. No
+/// item is ever renamed and no two items ever hold the declared name at once.
+#[derive(Debug)]
+pub struct CreateEnrichedRelationPlan {
+    /// Creates the underlying relation under its `_raw` name. One of
+    /// [`Plan::CreateTable`], [`Plan::CreateSource`] or [`Plan::CreateSources`].
+    pub base: Box<Plan>,
+    /// The generated objects, as SQL, in dependency order.
+    ///
+    /// SQL rather than plans because each statement references an item created by
+    /// the previous one, and planning resolves names against the committed catalog.
+    /// They are sequenced one at a time, each in its own catalog transaction.
+    pub generated: Vec<String>,
 }
 
 /// A [`CreateSourcePlan`] and the metadata necessary to sequence it.

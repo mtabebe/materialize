@@ -564,6 +564,12 @@ fn generate_rbac_requirements(
             item_usage: &CREATE_ITEM_USAGE,
             ..Default::default()
         },
+        // The generated objects land in the same schema as the declared relation, so
+        // the base relation's requirements cover them. Each generated statement is
+        // still planned and checked on its own when it is sequenced.
+        Plan::CreateEnrichedRelation(plan::CreateEnrichedRelationPlan { base, generated: _ }) => {
+            generate_rbac_requirements(catalog, base, target_conn_role, target_cluster_id, role_id)
+        }
         Plan::CreateSources(plans) => RbacRequirements {
             privileges: plans
                 .iter()

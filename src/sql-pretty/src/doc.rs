@@ -84,6 +84,13 @@ impl Pretty {
                 self.doc_display_pass(progress),
             ));
         }
+        if !v.enrich_with.is_empty() {
+            docs.push(bracket(
+                "ENRICH WITH (",
+                comma_separate(|ew| self.doc_display_pass(ew), &v.enrich_with),
+                ")",
+            ));
+        }
         if !v.with_options.is_empty() {
             docs.push(bracket(
                 "WITH (",
@@ -154,6 +161,14 @@ impl Pretty {
             docs.push(self.doc_webhook_check(check));
         }
 
+        if !v.enrich_with.is_empty() {
+            docs.push(bracket(
+                "ENRICH WITH (",
+                comma_separate(|ew| self.doc_display_pass(ew), &v.enrich_with),
+                ")",
+            ));
+        }
+
         RcDoc::intersperse(docs, Doc::line()).group()
     }
 
@@ -218,6 +233,14 @@ impl Pretty {
             bracket("(", comma_separated(col_items), ")"),
         );
         docs.push(nest_title(title, table_def));
+
+        if !v.enrich_with.is_empty() {
+            docs.push(bracket(
+                "ENRICH WITH (",
+                comma_separate(|ew| self.doc_display_pass(ew), &v.enrich_with),
+                ")",
+            ));
+        }
 
         // WITH options
         if !v.with_options.is_empty() {
@@ -1088,6 +1111,9 @@ impl Pretty {
             JoinOperator::LeftOuter(constraint) => (constraint, "LEFT JOIN"),
             JoinOperator::RightOuter(constraint) => (constraint, "RIGHT JOIN"),
             JoinOperator::CrossJoin => return self.doc_display(v, "join operator"),
+            // Falls back to `AstDisplay` rather than being laid out here: the trailing
+            // `WITH (...)` options have no analogue in the other join shapes.
+            JoinOperator::AiJoin { .. } => return self.doc_display(v, "join operator"),
         };
         let constraint = match constraint {
             JoinConstraint::On(expr) => nest_title("ON", self.doc_expr(expr)),

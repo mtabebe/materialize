@@ -1897,6 +1897,15 @@ feature_flags!(
         enable_for_item_parsing: true,
     },
     {
+        name: enable_semantic_operators,
+        desc: "ENRICH WITH, AI JOIN, and the ai_* function family",
+        default: false,
+        // `ai_similar` and `cosine_similarity` appear in persisted view `create_sql`,
+        // so the catalog must be able to re-plan those items at boot even once the
+        // flag is turned off.
+        enable_for_item_parsing: true,
+    },
+    {
         name: enable_list_n_layers,
         desc: "the list_n_layers function",
         default: false,

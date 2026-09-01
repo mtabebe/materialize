@@ -1252,3 +1252,13 @@ SELECT oid, name FROM mz_objects WHERE id LIKE 's%' AND oid < 20000 ORDER BY oid
 17120  mz_metric_sinks
 17121  mz_metric_sinks_ind
 17122  mz_object_hydration_history
+17123  cosine_similarity
+17124  lsh_bucket
+17125  ai_similar
+17126  ai_similar
+17127  ai_classify
+17128  ai_extract
+17129  ai_score
+17130  ai_generate
+17131  ai_embed
+17132  ai_normalize_key

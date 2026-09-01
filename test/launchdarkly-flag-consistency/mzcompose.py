@@ -281,6 +281,7 @@ KNOWN_MISSING_FROM_LD: set[str] = set("""
     enable_repeat_row_non_negative
     enable_replica_targeted_materialized_views
     enable_s3_tables_region_check
+    enable_semantic_operators
     enable_session_timelines
     enable_simplify_from_less_existence
     enable_simplify_quantified_comparisons

@@ -231,6 +231,12 @@ impl Coordinator {
                         .await;
                     ctx.retire(result);
                 }
+                Plan::CreateEnrichedRelation(plan) => {
+                    let result = self
+                        .sequence_create_enriched_relation(&mut ctx, plan, resolved_ids)
+                        .await;
+                    ctx.retire(result);
+                }
                 Plan::CreateSources(plans) => {
                     assert!(
                         resolved_ids.is_empty(),

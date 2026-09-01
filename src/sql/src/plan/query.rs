@@ -75,14 +75,14 @@ use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::visit::Visit;
 use mz_sql_parser::ast::visit_mut::{self, VisitMut};
 use mz_sql_parser::ast::{
-    AsOf, Assignment, AstInfo, CreateWebhookSourceBody, CreateWebhookSourceCheck,
-    CreateWebhookSourceHeader, CreateWebhookSourceSecret, CteBlock, DeleteStatement, Distinct,
-    Expr, Function, FunctionArgs, HomogenizingFunction, Ident, InsertSource, IsExprConstruct, Join,
-    JoinConstraint, JoinOperator, Limit, MapEntry, MutRecBlock, MutRecBlockOption,
-    MutRecBlockOptionName, OrderByExpr, Query, Select, SelectItem, SelectOption, SelectOptionName,
-    SetExpr, SetOperator, ShowStatement, SubscriptPosition, TableAlias, TableFactor,
-    TableWithJoins, UnresolvedItemName, UpdateStatement, Value, Values, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowSpec, visit,
+    AiJoinOption, AiJoinOptionName, AsOf, Assignment, AstInfo, CreateWebhookSourceBody,
+    CreateWebhookSourceCheck, CreateWebhookSourceHeader, CreateWebhookSourceSecret, CteBlock,
+    DeleteStatement, Distinct, Expr, Function, FunctionArgs, HomogenizingFunction, Ident,
+    InsertSource, IsExprConstruct, Join, JoinConstraint, JoinOperator, Limit, MapEntry,
+    MutRecBlock, MutRecBlockOption, MutRecBlockOptionName, OrderByExpr, Query, Select, SelectItem,
+    SelectOption, SelectOptionName, SetExpr, SetOperator, ShowStatement, SubscriptPosition,
+    TableAlias, TableFactor, TableWithJoins, UnresolvedItemName, UpdateStatement, Value, Values,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithOptionValue, visit,
 };
 use mz_sql_parser::ident;
 
@@ -3861,6 +3861,315 @@ fn expand_select_item<'a>(
     }
 }
 
+/// The `AI JOIN` knobs, after defaults are applied.
+struct AiJoinOptions {
+    threshold: Option<f64>,
+    /// `None` means the user opted out of the bound with `TOP = 0`.
+    top: Option<i64>,
+    buckets: i32,
+    score_as: Option<Ident>,
+}
+
+impl Default for AiJoinOptions {
+    fn default() -> Self {
+        AiJoinOptions {
+            threshold: None,
+            // Defaults *on*. A pure threshold join has unbounded output: one new row
+            // that matches ten thousand others emits ten thousand rows, and IVM
+            // materializes every one of them. `TOP = 0` is the documented opt-out.
+            top: Some(5),
+            buckets: 16,
+            score_as: None,
+        }
+    }
+}
+
+fn plan_ai_join_options(options: &[AiJoinOption<Aug>]) -> Result<AiJoinOptions, PlanError> {
+    let mut out = AiJoinOptions::default();
+    let mut seen = BTreeSet::new();
+    for option in options {
+        if !seen.insert(option.name.clone()) {
+            sql_bail!("{} specified more than once", option.name);
+        }
+        match option.name {
+            AiJoinOptionName::ScoreAs => match &option.value {
+                Some(WithOptionValue::Ident(name)) => out.score_as = Some(name.clone()),
+                _ => sql_bail!("SCORE AS requires a column name"),
+            },
+            AiJoinOptionName::Threshold => {
+                out.threshold = Some(ai_join_option_f64(option, "THRESHOLD")?)
+            }
+            AiJoinOptionName::Top => {
+                let top = ai_join_option_i64(option, "TOP")?;
+                if top < 0 {
+                    sql_bail!("TOP must not be negative");
+                }
+                out.top = if top == 0 { None } else { Some(top) };
+            }
+            AiJoinOptionName::Buckets => {
+                let buckets = ai_join_option_i64(option, "BUCKETS")?;
+                if buckets <= 0 {
+                    sql_bail!("BUCKETS must be positive");
+                }
+                out.buckets = i32::try_from(buckets)
+                    .map_err(|_| sql_err!("BUCKETS is too large: {buckets}"))?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn ai_join_option_number<'a>(
+    option: &'a AiJoinOption<Aug>,
+    name: &str,
+) -> Result<&'a str, PlanError> {
+    match &option.value {
+        Some(WithOptionValue::Value(Value::Number(n))) => Ok(n.as_str()),
+        _ => sql_bail!("{name} requires a numeric value"),
+    }
+}
+
+fn ai_join_option_f64(option: &AiJoinOption<Aug>, name: &str) -> Result<f64, PlanError> {
+    ai_join_option_number(option, name)?
+        .parse()
+        .map_err(|_| sql_err!("{name} requires a numeric value"))
+}
+
+fn ai_join_option_i64(option: &AiJoinOption<Aug>, name: &str) -> Result<i64, PlanError> {
+    ai_join_option_number(option, name)?
+        .parse()
+        .map_err(|_| sql_err!("{name} requires an integer value"))
+}
+
+/// The two operands of the `ai_similar(...)` call in an `AI JOIN`'s `ON` clause, and
+/// the threshold written beside it, if any.
+struct AiJoinPredicate<'a> {
+    left: &'a Expr<Aug>,
+    right: &'a Expr<Aug>,
+    threshold: Option<f64>,
+}
+
+/// Reads the `ON` clause of an `AI JOIN`.
+///
+/// Only two shapes are accepted, and they are the honest ones: `ai_similar(l, r) > t`,
+/// which is a predicate that means exactly what it says, and bare `ai_similar(l, r)`,
+/// which takes its threshold from `WITH (THRESHOLD = ...)`. Anything else is an error
+/// naming both. The clause is a real predicate rather than a special form, which is
+/// what makes stripping `AI` and the options leave a plain join with the same meaning.
+fn plan_ai_join_predicate<'a>(
+    constraint: &'a JoinConstraint<Aug>,
+    join_name: &str,
+) -> Result<AiJoinPredicate<'a>, PlanError> {
+    let expr = match constraint {
+        JoinConstraint::On(expr) => expr,
+        _ => sql_bail!("{join_name} requires an ON clause"),
+    };
+    let (call, threshold) = match expr {
+        Expr::Op {
+            op,
+            expr1,
+            expr2: Some(expr2),
+        } if op.namespace.as_ref().is_none_or(|ns| ns.is_empty()) && op.op == ">" => {
+            let threshold = match &**expr2 {
+                Expr::Value(Value::Number(n)) => n
+                    .parse::<f64>()
+                    .map_err(|_| sql_err!("{join_name} threshold must be a number"))?,
+                _ => sql_bail!("{join_name} threshold must be a numeric literal"),
+            };
+            (&**expr1, Some(threshold))
+        }
+        other => (other, None),
+    };
+    let Expr::Function(Function {
+        name,
+        args: FunctionArgs::Args { args, order_by },
+        filter: None,
+        over: None,
+        distinct: false,
+    }) = call
+    else {
+        sql_bail!(
+            "{join_name} ON clause must be `ai_similar(left, right)` or \
+             `ai_similar(left, right) > threshold`"
+        );
+    };
+    if name.full_item_name().item != "ai_similar" || args.len() != 2 || !order_by.is_empty() {
+        sql_bail!(
+            "{join_name} ON clause must be `ai_similar(left, right)` or \
+             `ai_similar(left, right) > threshold`"
+        );
+    }
+    Ok(AiJoinPredicate {
+        left: &args[0],
+        right: &args[1],
+        threshold,
+    })
+}
+
+/// Plans `AI JOIN`, which is sugar over a plan rather than over a meaning.
+///
+/// A similarity predicate on its own is a cross product with a filter: differential
+/// has no index that answers "everything within distance t". The rewrite adds a
+/// blocking key that *is* an equi-join, so the cross product never forms:
+///
+/// ```text
+/// Project(                                 -- drops the score unless SCORE AS kept it
+///   TopK { group_key: left, order_key: [score DESC], limit: TOP }(
+///     Map([ai_similar(L, R)])(
+///       Join(left, right, block(L) = block(R) AND ai_similar(L, R) > THRESHOLD))))
+/// ```
+///
+/// Emitting that equi-join is the entire reason this deserves syntax instead of being
+/// a documented idiom. Every option but `TOP` leaves the result set alone; `TOP` is a
+/// limit and is called out as such wherever it appears.
+fn plan_ai_join(
+    left_qcx: &QueryContext,
+    left: HirRelationExpr,
+    left_scope: Scope,
+    join: &Join<Aug>,
+    constraint: &JoinConstraint<Aug>,
+    options: &[AiJoinOption<Aug>],
+) -> Result<(HirRelationExpr, Scope), PlanError> {
+    left_qcx
+        .scx
+        .require_feature_flag(&crate::session::vars::ENABLE_SEMANTIC_OPERATORS)?;
+
+    const NAME: &str = "AI JOIN";
+    let opts = plan_ai_join_options(options)?;
+    let predicate = plan_ai_join_predicate(constraint, NAME)?;
+    let threshold = match (predicate.threshold, opts.threshold) {
+        (Some(on), None) | (None, Some(on)) => on,
+        (Some(on), Some(with)) if on == with => on,
+        (Some(_), Some(_)) => sql_bail!(
+            "{NAME} threshold is given both in the ON clause and in WITH (THRESHOLD = ...)"
+        ),
+        (None, None) => sql_bail!(
+            "{NAME} needs a threshold: write `ai_similar(l, r) > 0.8` or \
+             `WITH (THRESHOLD = 0.8)`"
+        ),
+    };
+
+    let mut right_qcx = left_qcx.derived_context(left_scope.clone(), left_qcx.relation_type(&left));
+    for item in &mut right_qcx.outer_scopes[0].items {
+        item.error_if_referenced = Some(|table, column| PlanError::WrongJoinTypeForLateralColumn {
+            table: table.cloned(),
+            column: column.clone(),
+        });
+    }
+    let (right, right_scope) = plan_table_factor(&right_qcx, &join.relation)?;
+
+    let left_arity = left_qcx.relation_type(&left).column_types.len();
+    let right_arity = right_qcx.relation_type(&right).column_types.len();
+    let total_arity = left_arity + right_arity;
+
+    let mut product_scope = left_scope.product(right_scope)?;
+    let ecx = &ExprContext {
+        qcx: left_qcx,
+        name: "AI JOIN ON clause",
+        scope: &product_scope,
+        relation_type: &SqlRelationType::new(
+            left_qcx
+                .relation_type(&left)
+                .column_types
+                .into_iter()
+                .chain(right_qcx.relation_type(&right).column_types)
+                .collect(),
+        ),
+        allow_aggregates: false,
+        allow_subqueries: true,
+        allow_parameters: true,
+        allow_windows: false,
+    };
+
+    let lhs = plan_expr(ecx, predicate.left)?.type_as_any(ecx)?;
+    let rhs = plan_expr(ecx, predicate.right)?.type_as_any(ecx)?;
+    let lhs_type = ecx.scalar_type(&lhs);
+    let rhs_type = ecx.scalar_type(&rhs);
+    if lhs_type != rhs_type {
+        sql_bail!(
+            "{NAME} compares {} with {}; both sides of ai_similar must have the same type",
+            ecx.qcx.scx.humanize_sql_scalar_type(&lhs_type, false),
+            ecx.qcx.scx.humanize_sql_scalar_type(&rhs_type, false),
+        );
+    }
+
+    // The blocking key and the similarity function are chosen together, because a
+    // blocking key that does not respect the similarity measure drops matches.
+    let embedding = SqlScalarType::Array(Box::new(SqlScalarType::Float32));
+    let (block, similarity): (fn(HirScalarExpr, i32) -> HirScalarExpr, BinaryFunc) = match &lhs_type
+    {
+        t if *t == embedding => (
+            |e, buckets| {
+                e.call_binary(
+                    HirScalarExpr::literal(Datum::Int32(buckets), SqlScalarType::Int32),
+                    BinaryFunc::from(expr_func::LshBucket),
+                )
+            },
+            BinaryFunc::from(expr_func::CosineSimilarity),
+        ),
+        SqlScalarType::String => (
+            // The exact-key form. Two model extractions of the same company name
+            // disagree on punctuation and spacing far more often than on letters,
+            // so blocking on the normalized key still finds them.
+            |e, _| e.call_unary(UnaryFunc::AiNormalizeKey(expr_func::AiNormalizeKey)),
+            BinaryFunc::from(expr_func::TextSimilarity),
+        ),
+        other => sql_bail!(
+            "{NAME} supports text and float4[] keys, not {}",
+            ecx.qcx.scx.humanize_sql_scalar_type(other, false)
+        ),
+    };
+
+    let score = lhs
+        .clone()
+        .call_binary(rhs.clone(), similarity.clone())
+        .call_binary(
+            HirScalarExpr::literal(Datum::from(threshold), SqlScalarType::Float64),
+            BinaryFunc::from(expr_func::Gt),
+        );
+    let on = block(lhs.clone(), opts.buckets)
+        .call_binary(
+            block(rhs.clone(), opts.buckets),
+            BinaryFunc::from(expr_func::Eq),
+        )
+        .and(score);
+
+    // Mapped after the join rather than folded into it, so `TopK` has a column to
+    // order by. Common-subexpression elimination collapses the second evaluation.
+    let joined = left
+        .join(right, on, JoinKind::Inner)
+        .map(vec![lhs.call_binary(rhs, similarity)]);
+
+    let bounded = match opts.top {
+        Some(limit) => HirRelationExpr::TopK {
+            input: Box::new(joined),
+            group_key: (0..left_arity).collect(),
+            order_key: vec![ColumnOrder {
+                column: total_arity,
+                desc: true,
+                nulls_last: true,
+            }],
+            limit: Some(HirScalarExpr::literal(
+                Datum::Int64(limit),
+                SqlScalarType::Int64,
+            )),
+            offset: HirScalarExpr::literal(Datum::Int64(0), SqlScalarType::Int64),
+            expected_group_size: None,
+        },
+        None => joined,
+    };
+
+    match opts.score_as {
+        Some(name) => {
+            product_scope
+                .items
+                .push(ScopeItem::from_column_name(normalize::column_name(name)));
+            Ok((bounded, product_scope))
+        }
+        None => Ok((bounded.project((0..total_arity).collect()), product_scope)),
+    }
+}
+
 fn plan_join(
     left_qcx: &QueryContext,
     left: HirRelationExpr,
@@ -3874,6 +4183,10 @@ fn plan_join(
         JoinOperator::LeftOuter(constraint) => (JoinKind::LeftOuter, constraint),
         JoinOperator::RightOuter(constraint) => (JoinKind::RightOuter, constraint),
         JoinOperator::FullOuter(constraint) => (JoinKind::FullOuter, constraint),
+        JoinOperator::AiJoin {
+            constraint,
+            options,
+        } => return plan_ai_join(left_qcx, left, left_scope, join, constraint, options),
     };
 
     let mut right_qcx = left_qcx.derived_context(left_scope.clone(), left_qcx.relation_type(&left));
