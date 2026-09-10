@@ -832,4 +832,75 @@ mod tests {
             assert!(batches_after < 2, "{} vs {}", num_batches, batches_after);
         }
     }
+
+    /// Repro for PER-13: `persistcli admin force-compaction` against a real
+    /// (crdb consensus + file blob) shard.
+    #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
+    #[cfg_attr(miri, ignore)]
+    async fn force_compaction_repro_per_13() {
+        use std::str::FromStr;
+        use std::sync::Arc;
+
+        use mz_ore::metrics::MetricsRegistry;
+        use mz_ore::now::SYSTEM_TIME;
+        use mz_ore::url::SensitiveUrl;
+        use mz_persist_types::codec_impls::TodoSchema;
+
+        use crate::cache::PersistClientCache;
+        use crate::cfg::all_dyncfgs;
+        use crate::{BUILD_INFO, PersistConfig, PersistLocation};
+        use mz_dyncfg::ConfigSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blob_uri =
+            SensitiveUrl::from_str(&format!("file://{}", dir.path().display())).expect("blob url");
+        let consensus_uri = SensitiveUrl::from_str(
+            "postgres://root@localhost:26257?options=--search_path=consensus",
+        )
+        .expect("consensus url");
+
+        // The CLI refuses to commit against state written by a different
+        // version, so write the shard with the real build version rather than
+        // the test default.
+        let mut cache = PersistClientCache::new(
+            PersistConfig::new(&BUILD_INFO, SYSTEM_TIME.clone(), all_dyncfgs(ConfigSet::default())),
+            &MetricsRegistry::new(),
+            |_, _| crate::rpc::PubSubClientConnection::noop(),
+        );
+        cache.cfg.compaction_enabled = false;
+        let client = cache
+            .open(PersistLocation {
+                blob_uri: blob_uri.clone(),
+                consensus_uri: consensus_uri.clone(),
+            })
+            .await
+            .expect("client construction failed");
+
+        let shard_id = ShardId::new();
+        let (mut write, _read) = client.expect_open::<String, (), u64, i64>(shard_id).await;
+        for idx in 0..20u64 {
+            let () = write
+                .expect_compare_and_append(&[((idx.to_string(), ()), idx, 1)], idx, idx + 1)
+                .await;
+        }
+        let reqs = write.machine.applier.all_fueled_merge_reqs().len();
+        assert!(reqs > 0, "no fueled merge reqs to compact");
+
+        let cfg = PersistConfig::new(&BUILD_INFO, SYSTEM_TIME.clone(), all_dyncfgs(ConfigSet::default()));
+        let registry = MetricsRegistry::new();
+        super::force_compaction::<crate::cli::inspect::K, crate::cli::inspect::V, u64, i64>(
+            cfg,
+            &registry,
+            shard_id,
+            &consensus_uri,
+            &blob_uri,
+            Arc::new(TodoSchema::default()),
+            Arc::new(TodoSchema::default()),
+            true,
+            None,
+        )
+        .await
+        .expect("force compaction failed");
+    }
+
 }
