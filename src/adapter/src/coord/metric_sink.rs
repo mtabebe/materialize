@@ -85,9 +85,12 @@ pub(super) struct CuratedMetricSink {
 
 /// The curated metric sinks, installed on every replica.
 ///
-/// Sources read the raw `..._raw` logging relations, never the derived builtin views like
-/// `mz_dataflow_arrangement_sizes`, which re-aggregate expensively and churn even on static data (a
-/// per-dataflow size metric off the derived view measured ~30x the raw form).
+/// Sources read the logging relations directly, never a derived builtin view that re-joins them.
+/// What one of these dataflows costs tracks the churn it pushes through its arrangements, not the
+/// number of rows it reports, and a derived view multiplies that churn: a per-dataflow size metric
+/// off `mz_dataflow_arrangement_sizes` measured ~30x the raw form, and attributing operators
+/// through `mz_dataflow_operator_dataflows` cost ~20% of a replica worker under a peek-heavy load
+/// against ~0.8% reading the same mapping off `mz_dataflow_addresses_per_worker`.
 ///
 /// Every family sums across workers, so a series carries no `worker_id`, and a multi-process replica
 /// reports one number per grouping key rather than one per process. The size families emit one series
@@ -102,33 +105,65 @@ const CURATED: &[CuratedMetricSink] = &[
         // representative id (`min(global_id)`) to keep one series per dataflow instead of fanning out.
         // A dataflow with no export (a transient peek) has no global id, so bucket its arrangements
         // under an `unattributable` sentinel rather than dropping their bytes from the total.
+        //
+        // The operator -> dataflow step reads `mz_dataflow_addresses_per_worker`, whose `address[1]`
+        // is the dataflow id, rather than `mz_dataflow_operator_dataflows`, which derives the same
+        // mapping from a four-way join over the operator and address logs. Both logs turn over once
+        // per operator of every dataflow rendered, so that join is driven by how fast the replica
+        // creates dataflows, not by the arrangement churn this sink reports on.
+        //
+        // Each family folds to one row per dataflow before the global-id join, so only live
+        // dataflows, not live operators, reach it.
+        //
+        // A dataflow exports one object almost always, so the `min` is hinted: unhinted it plans
+        // seven hierarchical stages, and `mz_expected_group_size_advice` then reports this sink's
+        // own dataflow to users as something they should tune.
         source_sql: "
+WITH
+dataflow_export AS (
+  SELECT id, min(global_id) AS global_id
+  FROM mz_introspection.mz_dataflow_global_ids
+  GROUP BY id OPTIONS (AGGREGATE INPUT GROUP SIZE = 1)
+),
+operator_dataflow AS (
+  SELECT id, worker_id, address[1] AS dataflow_id
+  FROM mz_introspection.mz_dataflow_addresses_per_worker
+),
+size_bytes AS (
+  SELECT od.dataflow_id, count(*) AS value
+  FROM mz_introspection.mz_arrangement_heap_size_raw r
+  JOIN operator_dataflow od ON r.operator_id = od.id AND r.worker_id = od.worker_id
+  GROUP BY od.dataflow_id
+),
+records AS (
+  SELECT od.dataflow_id, count(*) AS value
+  FROM mz_introspection.mz_arrangement_records_raw r
+  JOIN operator_dataflow od ON r.operator_id = od.id AND r.worker_id = od.worker_id
+  GROUP BY od.dataflow_id
+),
+batches AS (
+  SELECT od.dataflow_id, count(*) AS value
+  FROM mz_introspection.mz_arrangement_batches_raw r
+  JOIN operator_dataflow od ON r.operator_id = od.id AND r.worker_id = od.worker_id
+  GROUP BY od.dataflow_id
+)
 SELECT 'arrangement_size_bytes'::text AS metric_name, 'gauge'::text AS metric_type,
-       map_build(LIST[ROW('id', COALESCE(gid.global_id, 'unattributable'))])::map[text=>text] AS labels,
-       count(*)::double precision AS value, 'arrangement heap size in bytes'::text AS help
-FROM mz_introspection.mz_arrangement_heap_size_raw r
-JOIN mz_introspection.mz_dataflow_operator_dataflows dod ON r.operator_id = dod.id
-LEFT JOIN (SELECT id, min(global_id) AS global_id FROM mz_introspection.mz_dataflow_global_ids GROUP BY id) gid
-  ON gid.id = dod.dataflow_id
-GROUP BY COALESCE(gid.global_id, 'unattributable')
+       map_build(LIST[ROW('id', COALESCE(e.global_id, 'unattributable'))])::map[text=>text] AS labels,
+       sum(f.value)::double precision AS value, 'arrangement heap size in bytes'::text AS help
+FROM size_bytes f LEFT JOIN dataflow_export e ON e.id = f.dataflow_id
+GROUP BY COALESCE(e.global_id, 'unattributable')
 UNION ALL
 SELECT 'arrangement_records'::text AS metric_name, 'gauge'::text AS metric_type,
-       map_build(LIST[ROW('id', COALESCE(gid.global_id, 'unattributable'))])::map[text=>text] AS labels,
-       count(*)::double precision AS value, 'number of records in arrangement heaps'::text AS help
-FROM mz_introspection.mz_arrangement_records_raw r
-JOIN mz_introspection.mz_dataflow_operator_dataflows dod ON r.operator_id = dod.id
-LEFT JOIN (SELECT id, min(global_id) AS global_id FROM mz_introspection.mz_dataflow_global_ids GROUP BY id) gid
-  ON gid.id = dod.dataflow_id
-GROUP BY COALESCE(gid.global_id, 'unattributable')
+       map_build(LIST[ROW('id', COALESCE(e.global_id, 'unattributable'))])::map[text=>text] AS labels,
+       sum(f.value)::double precision AS value, 'number of records in arrangement heaps'::text AS help
+FROM records f LEFT JOIN dataflow_export e ON e.id = f.dataflow_id
+GROUP BY COALESCE(e.global_id, 'unattributable')
 UNION ALL
 SELECT 'arrangement_batches'::text AS metric_name, 'gauge'::text AS metric_type,
-       map_build(LIST[ROW('id', COALESCE(gid.global_id, 'unattributable'))])::map[text=>text] AS labels,
-       count(*)::double precision AS value, 'number of batches in arrangements'::text AS help
-FROM mz_introspection.mz_arrangement_batches_raw r
-JOIN mz_introspection.mz_dataflow_operator_dataflows dod ON r.operator_id = dod.id
-LEFT JOIN (SELECT id, min(global_id) AS global_id FROM mz_introspection.mz_dataflow_global_ids GROUP BY id) gid
-  ON gid.id = dod.dataflow_id
-GROUP BY COALESCE(gid.global_id, 'unattributable')",
+       map_build(LIST[ROW('id', COALESCE(e.global_id, 'unattributable'))])::map[text=>text] AS labels,
+       sum(f.value)::double precision AS value, 'number of batches in arrangements'::text AS help
+FROM batches f LEFT JOIN dataflow_export e ON e.id = f.dataflow_id
+GROUP BY COALESCE(e.global_id, 'unattributable')",
     },
     CuratedMetricSink {
         name: "mz_metric_dataflow_errors",
