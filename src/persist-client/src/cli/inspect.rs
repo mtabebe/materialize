@@ -11,11 +11,15 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::pin::pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
+use arrow::array::{ArrayRef, new_empty_array};
+use arrow::datatypes::DataType;
 use bytes::{BufMut, Bytes};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::Description;
@@ -25,7 +29,9 @@ use mz_ore::metrics::MetricsRegistry;
 use mz_ore::now::SYSTEM_TIME;
 use mz_ore::url::SensitiveUrl;
 use mz_persist::indexed::encoding::BlobTraceBatchPart;
-use mz_persist_types::codec_impls::TodoSchema;
+use mz_persist_types::codec_impls::TodoColumnarDecoder;
+use mz_persist_types::columnar::{ColumnEncoder, Schema};
+use mz_persist_types::stats::NoneStats;
 use mz_persist_types::{Codec, Codec64};
 use mz_proto::RustType;
 use prost::Message;
@@ -708,7 +714,7 @@ pub(crate) static KVTD_CODECS: Mutex<(String, String, String, String, Option<Cod
 
 impl Codec for K {
     type Storage = ();
-    type Schema = TodoSchema<K>;
+    type Schema = DataTypeSchema<K>;
 
     fn codec_name() -> String {
         KVTD_CODECS.lock().expect("lockable").0.clone()
@@ -720,7 +726,7 @@ impl Codec for K {
     {
     }
 
-    fn decode(_buf: &[u8], _schema: &TodoSchema<K>) -> Result<Self, String> {
+    fn decode(_buf: &[u8], _schema: &DataTypeSchema<K>) -> Result<Self, String> {
         Ok(Self)
     }
 
@@ -728,15 +734,14 @@ impl Codec for K {
         Bytes::new()
     }
 
-    fn decode_schema(buf: &Bytes) -> Self::Schema {
-        assert_eq!(*buf, Bytes::new());
-        TodoSchema::default()
+    fn decode_schema(_buf: &Bytes) -> Self::Schema {
+        DataTypeSchema::unknown()
     }
 }
 
 impl Codec for V {
     type Storage = ();
-    type Schema = TodoSchema<V>;
+    type Schema = DataTypeSchema<V>;
 
     fn codec_name() -> String {
         KVTD_CODECS.lock().expect("lockable").1.clone()
@@ -748,7 +753,7 @@ impl Codec for V {
     {
     }
 
-    fn decode(_buf: &[u8], _schema: &TodoSchema<V>) -> Result<Self, String> {
+    fn decode(_buf: &[u8], _schema: &DataTypeSchema<V>) -> Result<Self, String> {
         Ok(Self)
     }
 
@@ -756,9 +761,96 @@ impl Codec for V {
         Bytes::new()
     }
 
-    fn decode_schema(buf: &Bytes) -> Self::Schema {
-        assert_eq!(*buf, Bytes::new());
-        TodoSchema::default()
+    fn decode_schema(_buf: &Bytes) -> Self::Schema {
+        DataTypeSchema::unknown()
+    }
+}
+
+/// A [`Schema`] that carries nothing but the arrow [`DataType`] of the column it
+/// describes.
+///
+/// This is the schema of the opaque [`K`] and [`V`], and it is enough to compact a
+/// shard whose real key and value types `persistcli` cannot link: compaction
+/// migrates arrays from one [`DataType`] to another, sorts them and copies them
+/// into the output parts, and never en/decodes an individual value. The data type
+/// itself comes from what the shard recorded when the schema was registered
+/// (`EncodedSchemas::key_data_type`).
+///
+/// The data type is unknown when the schema was rebuilt by [`Codec::decode_schema`],
+/// which is handed the registered key/value schema bytes. Those are opaque to the
+/// CLI, so nothing can be recovered from them.
+#[derive(Debug, PartialEq)]
+pub(crate) struct DataTypeSchema<T> {
+    data_type: Option<DataType>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> DataTypeSchema<T> {
+    pub(crate) fn new(data_type: DataType) -> Self {
+        DataTypeSchema {
+            data_type: Some(data_type),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub(crate) fn unknown() -> Self {
+        DataTypeSchema {
+            data_type: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Debug + Send + Sync> Schema<T> for DataTypeSchema<T> {
+    // The recorded data type is a `Struct` for `Row` shards but `Utf8` and friends
+    // for others, so the column type has to stay dynamic.
+    type ArrowColumn = ArrayRef;
+    type Statistics = NoneStats;
+
+    type Decoder = TodoColumnarDecoder<T>;
+    type Encoder = DataTypeEncoder<T>;
+
+    fn decoder(&self, _col: Self::ArrowColumn) -> Result<Self::Decoder, anyhow::Error> {
+        bail!("persistcli cannot decode values of an opaque schema")
+    }
+
+    fn encoder(&self) -> Result<Self::Encoder, anyhow::Error> {
+        let Some(data_type) = self.data_type.clone() else {
+            bail!("persistcli has no recorded data type for this schema")
+        };
+        Ok(DataTypeEncoder {
+            data_type,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+/// The [`ColumnEncoder`] of a [`DataTypeSchema`], which exists only so that
+/// [`mz_persist_types::columnar::data_type`] can read the schema's [`DataType`]
+/// back off an empty column.
+#[derive(Debug)]
+pub(crate) struct DataTypeEncoder<T> {
+    data_type: DataType,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> ColumnEncoder<T> for DataTypeEncoder<T> {
+    type FinishedColumn = ArrayRef;
+
+    fn goodbytes(&self) -> usize {
+        0
+    }
+
+    fn append(&mut self, _val: &T) {
+        panic!("persistcli only moves columnar data around and cannot encode values")
+    }
+
+    fn append_null(&mut self) {
+        panic!("persistcli only moves columnar data around and cannot encode values")
+    }
+
+    fn finish(self) -> Self::FinishedColumn {
+        new_empty_array(&self.data_type)
     }
 }
 

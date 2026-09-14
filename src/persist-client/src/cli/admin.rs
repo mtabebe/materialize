@@ -24,7 +24,6 @@ use mz_ore::metrics::MetricsRegistry;
 use mz_ore::now::SYSTEM_TIME;
 use mz_ore::url::SensitiveUrl;
 use mz_persist::location::{Blob, Consensus, ExternalError};
-use mz_persist_types::codec_impls::TodoSchema;
 use mz_persist_types::{Codec, Codec64};
 use prometheus::proto::{MetricFamily, MetricType};
 use semver::Version;
@@ -35,13 +34,16 @@ use crate::async_runtime::IsolatedRuntime;
 use crate::cache::StateCache;
 use crate::cfg::{COMPACTION_MEMORY_BOUND_BYTES, all_dyncfgs};
 use crate::cli::args::{StateArgs, StoreArgs, make_blob, make_consensus};
+use crate::cli::inspect::DataTypeSchema;
 use crate::critical::Opaque;
 use crate::internal::compact::{CompactConfig, CompactReq, Compactor};
 use crate::internal::encoding::Schemas;
 use crate::internal::gc::{GarbageCollector, GcReq};
 use crate::internal::machine::Machine;
+use crate::internal::state::EncodedSchemas;
 use crate::internal::trace::FueledMergeRes;
 use crate::rpc::{NoopPubSubSender, PubSubSender};
+use crate::stats::STATS_COLLECTION_ENABLED;
 use crate::write::{WriteHandle, WriterId};
 use crate::{
     BUILD_INFO, Diagnostics, Metrics, PersistClient, PersistConfig, ShardId, StateVersions,
@@ -142,14 +144,28 @@ pub async fn run(command: AdminArgs) -> Result<(), anyhow::Error> {
                 .as_ref()
                 .map(|v| Version::parse(v))
                 .transpose()?;
-            let () = force_compaction::<crate::cli::inspect::K, crate::cli::inspect::V, u64, i64>(
-                cfg,
-                &metrics_registry,
-                shard_id,
+            let metrics = Arc::new(Metrics::new(&cfg, &metrics_registry));
+            let consensus = make_consensus(
+                &cfg,
                 &args.state.consensus_uri,
+                command.commit,
+                Arc::clone(&metrics),
+            )
+            .await?;
+            let blob = make_blob(
+                &cfg,
                 &args.state.blob_uri,
-                Arc::new(TodoSchema::default()),
-                Arc::new(TodoSchema::default()),
+                command.commit,
+                Arc::clone(&metrics),
+            )
+            .await?;
+            let () = force_compaction_with_shard_schema(
+                &cfg,
+                &metrics_registry,
+                &metrics,
+                consensus,
+                blob,
+                shard_id,
                 command.commit,
                 expected_version,
             )
@@ -253,8 +269,8 @@ pub async fn run(command: AdminArgs) -> Result<(), anyhow::Error> {
                 > = persist_client
                     .open_writer(
                         shard_id,
-                        Arc::new(TodoSchema::<crate::cli::inspect::K>::default()),
-                        Arc::new(TodoSchema::<crate::cli::inspect::V>::default()),
+                        Arc::new(DataTypeSchema::<crate::cli::inspect::K>::unknown()),
+                        Arc::new(DataTypeSchema::<crate::cli::inspect::V>::unknown()),
                         diagnostics,
                     )
                     .await?;
@@ -422,7 +438,115 @@ where
     )
     .await?;
 
+    let schemas = Schemas {
+        id: None,
+        key: key_schema,
+        val: val_schema,
+    };
+    compact_all_fueled_merge_reqs(
+        &cfg,
+        metrics_registry,
+        &metrics,
+        blob,
+        &machine,
+        schemas,
+        commit,
+    )
+    .await
+}
+
+/// [`force_compaction`] for `persistcli`, which cannot link the real `K` and `V` of
+/// an arbitrary shard.
+///
+/// The write schema is rebuilt from the arrow data types the shard itself recorded
+/// for its newest registered schema, which is everything compaction needs: it
+/// migrates and copies arrays and never en/decodes a value. Tagging the output parts
+/// with that same schema id keeps a later `compact_and_apply` able to determine a
+/// schema id from its inputs.
+///
+/// Statistics are the one thing that does need a decoder, so they are turned off
+/// here and the output parts carry none.
+async fn force_compaction_with_shard_schema(
+    cfg: &PersistConfig,
+    metrics_registry: &MetricsRegistry,
+    metrics: &Arc<Metrics>,
+    consensus: Arc<dyn Consensus>,
+    blob: Arc<dyn Blob>,
+    shard_id: ShardId,
+    commit: bool,
+    expected_version: Option<Version>,
+) -> Result<(), anyhow::Error> {
+    cfg.set_config(&STATS_COLLECTION_ENABLED, false);
+
+    let machine = make_machine(
+        cfg,
+        consensus,
+        Arc::clone(&blob),
+        Arc::clone(metrics),
+        shard_id,
+        commit,
+        expected_version,
+    )
+    .await?;
+
+    let latest_schema = machine.applier.schemas(|_seqno, schemas| {
+        let (id, encoded) = schemas.last_key_value()?;
+        Some((
+            *id,
+            EncodedSchemas::decode_data_type(&encoded.key_data_type),
+            EncodedSchemas::decode_data_type(&encoded.val_data_type),
+        ))
+    });
+    let Some((schema_id, key_data_type, val_data_type)) = latest_schema else {
+        bail!("shard {shard_id} has no registered schema to compact with");
+    };
+    warn!(
+        "compacting with the data types recorded for schema {:?}; output parts will have no stats, so filter pushdown over them is degraded until they are rewritten",
+        schema_id
+    );
+
+    let schemas = Schemas {
+        id: Some(schema_id),
+        key: Arc::new(DataTypeSchema::new(key_data_type)),
+        val: Arc::new(DataTypeSchema::new(val_data_type)),
+    };
+    compact_all_fueled_merge_reqs(
+        cfg,
+        metrics_registry,
+        metrics,
+        blob,
+        &machine,
+        schemas,
+        commit,
+    )
+    .await
+}
+
+/// Compacts every merge request the shard's spine has fuel for, retrying from the
+/// top whenever one loses the race to apply.
+async fn compact_all_fueled_merge_reqs<K, V, T, D>(
+    cfg: &PersistConfig,
+    metrics_registry: &MetricsRegistry,
+    metrics: &Arc<Metrics>,
+    blob: Arc<dyn Blob>,
+    machine: &Machine<K, V, T, D>,
+    schemas: Schemas<K, V>,
+    commit: bool,
+) -> Result<(), anyhow::Error>
+where
+    K: Debug + Codec,
+    V: Debug + Codec,
+    T: Timestamp + Lattice + Codec64 + Sync,
+    D: Monoid + Ord + Codec64 + Send + Sync,
+{
+    let shard_id = machine.shard_id();
     let writer_id = WriterId::new();
+    // NB: `IsolatedRuntime::new` registers gauges on the passed registry, so this
+    // must stay above both loops: a second one on the same registry panics.
+    let isolated_runtime = Arc::new(IsolatedRuntime::new(
+        metrics_registry,
+        Some(cfg.isolated_runtime_worker_threads),
+    ));
 
     let mut attempt = 0;
     'outer: loop {
@@ -461,23 +585,15 @@ where
                 info!("skipping compaction because --commit is not set");
                 continue;
             }
-            let schemas = Schemas {
-                id: None,
-                key: Arc::clone(&key_schema),
-                val: Arc::clone(&val_schema),
-            };
 
             let res = Compactor::<K, V, T, D>::compact(
-                CompactConfig::new(&cfg, shard_id),
+                CompactConfig::new(cfg, shard_id),
                 Arc::clone(&blob),
-                Arc::clone(&metrics),
+                Arc::clone(metrics),
                 Arc::clone(&machine.applier.shard_metrics),
-                Arc::new(IsolatedRuntime::new(
-                    metrics_registry,
-                    Some(cfg.isolated_runtime_worker_threads),
-                )),
+                Arc::clone(&isolated_runtime),
                 req,
-                schemas,
+                schemas.clone(),
             )
             .await?;
             metrics.compaction.admin_count.inc();
@@ -802,12 +918,21 @@ pub async fn dangerous_force_compaction_and_break_pushdown<K, V, T, D>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use mz_dyncfg::ConfigUpdates;
+    use mz_ore::metrics::MetricsRegistry;
+    use mz_persist::location::{Blob, Consensus};
+    use mz_persist::mem::{MemBlob, MemBlobConfig, MemConsensus};
     use mz_persist_types::ShardId;
 
+    use crate::async_runtime::IsolatedRuntime;
+    use crate::cache::StateCache;
+    use crate::internal::metrics::Metrics;
+    use crate::rpc::NoopPubSubSender;
     use crate::tests::new_test_client;
+    use crate::{PersistClient, PersistConfig};
 
     #[mz_persist_proc::test(tokio::test)]
     #[cfg_attr(miri, ignore)]
@@ -831,5 +956,73 @@ mod tests {
             let batches_after = machine.applier.all_batches().len();
             assert!(batches_after < 2, "{} vs {}", num_batches, batches_after);
         }
+    }
+
+    /// Exercises the `persistcli admin force-compaction` path (PER-13), which has no
+    /// access to the shard's real key/value schemas.
+    ///
+    /// The shard is written with enough unmerged batches to produce more than one
+    /// compaction request, which is what it takes to catch a per-request
+    /// `IsolatedRuntime` re-registering its gauges on the same metrics registry.
+    #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
+    #[cfg_attr(miri, ignore)]
+    async fn force_compaction_with_opaque_schema() {
+        let shard_id = ShardId::new();
+        let mut cfg = PersistConfig::new_for_tests();
+        // Let the batches pile up for us to compact by hand.
+        cfg.compaction_enabled = false;
+
+        // The CLI has to run against the same stores as the writer, so build them
+        // here rather than going through the URI-opening the CLI does: `mem://`
+        // hands out a fresh store per open.
+        let blob: Arc<dyn Blob> = Arc::new(MemBlob::open(MemBlobConfig::default()));
+        let consensus: Arc<dyn Consensus> = Arc::new(MemConsensus::default());
+        let client = PersistClient::new(
+            cfg.clone(),
+            Arc::clone(&blob),
+            Arc::clone(&consensus),
+            Arc::new(Metrics::new(&cfg, &MetricsRegistry::new())),
+            Arc::new(IsolatedRuntime::new_for_tests()),
+            Arc::new(StateCache::new_no_metrics()),
+            Arc::new(NoopPubSubSender),
+        )
+        .expect("client construction failed");
+
+        let (mut write, _read) = client.expect_open::<String, (), u64, i64>(shard_id).await;
+        for idx in 0..20u64 {
+            write
+                .expect_compare_and_append(&[((idx.to_string(), ()), idx, 1)], idx, idx + 1)
+                .await;
+        }
+        let machine = write.machine.clone();
+        assert!(
+            machine.applier.all_fueled_merge_reqs().len() > 1,
+            "test needs more than one compaction req to cover the isolated runtime"
+        );
+        let batches_before = machine.applier.all_batches().len();
+
+        let metrics_registry = MetricsRegistry::new();
+        let metrics = Arc::new(Metrics::new(&cfg, &metrics_registry));
+        super::force_compaction_with_shard_schema(
+            &cfg,
+            &metrics_registry,
+            &metrics,
+            consensus,
+            blob,
+            shard_id,
+            true,
+            None,
+        )
+        .await
+        .expect("force compaction");
+
+        machine.applier.fetch_and_update_state(None).await;
+        let batches_after = machine.applier.all_batches().len();
+        assert!(
+            batches_after < batches_before,
+            "{} vs {}",
+            batches_before,
+            batches_after
+        );
     }
 }
