@@ -60,8 +60,10 @@ use prometheus::core::{
 use prometheus::proto::MetricFamily;
 use prometheus::{HistogramOpts, Registry};
 
+mod aggregation;
 mod delete_on_drop;
 
+pub use aggregation::*;
 pub use delete_on_drop::*;
 pub use prometheus::Opts as PrometheusOpts;
 

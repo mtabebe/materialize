@@ -77,6 +77,14 @@ pub const HISTOGRAM_BYTE_BUCKETS: [f64; 7] = [
     1073741824.0,
 ];
 
+/// Buckets that capture counts of 1 up to roughly four million, for quantities
+/// counted per object (batch parts, rollups, held seqnos).
+///
+/// Note that any changes to this range may modify buckets for existing metrics.
+pub const HISTOGRAM_COUNT_BUCKETS: [f64; 12] = [
+    1.0, 4.0, 16.0, 64.0, 256.0, 1024.0, 4096.0, 16384.0, 65536.0, 262144.0, 1048576.0, 4194304.0,
+];
+
 /// Keeps track of the minimum and maximum value over a fixed-size sliding window of samples.
 ///
 /// Inspired by the [`moving_min_max`] crate, see that crate's documentation for a description of
