@@ -48,7 +48,8 @@ pub(crate) type RangeId = Option<String>;
 /// Limits on how a [CasBatcher] forms statements, read anew at every scheduling decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BatchLimits {
-    /// Statements in flight per range, `None` for no limit.
+    /// Statements in flight per range, `None` for no limit. `Some(0)` is treated as `Some(1)`,
+    /// since with nothing in flight nothing would ever schedule a queued call.
     pub max_in_flight: Option<usize>,
     /// Calls per statement. Values below 1 are treated as 1.
     pub max_rows: usize,
@@ -154,7 +155,10 @@ impl Scheduler {
             return Vec::new();
         };
         let mut batches = Vec::new();
-        while limits.max_in_flight.map_or(true, |k| queue.in_flight < k) {
+        while limits
+            .max_in_flight
+            .map_or(true, |k| queue.in_flight < k.max(1))
+        {
             let ops = queue.take_batch(limits);
             if ops.is_empty() {
                 break;
@@ -831,13 +835,13 @@ mod tests {
             .map(|k| spawn_cas(&batcher, k, 1))
             .collect();
         wait_started(backend, 3).await;
-        *backend.limits.lock().unwrap() = crdb_limits(1);
+        *backend.limits.lock().unwrap() = crdb_limits(0);
         handles.extend(["s3", "s4"].into_iter().map(|k| spawn_cas(&batcher, k, 1)));
         while batcher.shared.metrics.calls_coalesced.get() < 2 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        // Three statements over the new cap are in flight. Their completions run nothing new
-        // until only the last one is left, which then sweeps both queued calls.
+        // Three statements over the new cap (0, treated as 1) are in flight. Their completions
+        // run nothing new until only the last one is left, which then sweeps both queued calls.
         backend.gate.add_permits(4);
         for handle in handles {
             assert_eq!(handle.await, Ok(CaSResult::Committed));

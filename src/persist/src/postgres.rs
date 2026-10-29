@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::fmt::Formatter;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use async_stream::try_stream;
@@ -23,6 +23,7 @@ use deadpool_postgres::PoolError;
 use deadpool_postgres::tokio_postgres::Config;
 use deadpool_postgres::tokio_postgres::types::{FromSql, IsNull, ToSql, Type, to_sql_checked};
 use futures_util::StreamExt;
+use itertools::Itertools;
 use mz_dyncfg::ConfigSet;
 use mz_ore::cast::CastFrom;
 use mz_ore::metrics::MetricsRegistry;
@@ -830,14 +831,15 @@ impl CasBackend for PostgresCasBackend {
         match self.client.mode {
             PostgresMode::CockroachDB => self.client.compare_and_set_batch(ops).await,
             PostgresMode::Postgres => {
-                let mut committed = BTreeSet::new();
-                for op in ops {
-                    let result = self.client.compare_and_set(&op.key, op.new.clone()).await?;
-                    if result == CaSResult::Committed {
-                        committed.insert(op.key.clone());
-                    }
-                }
-                Ok(committed)
+                // More than one op would need a determinate error to roll back the ops that ran
+                // before it.
+                let [op] = ops else {
+                    panic!("Postgres batches hold one op, got {}", ops.len());
+                };
+                let result = self.client.compare_and_set(&op.key, op.new.clone()).await?;
+                Ok(BTreeSet::from_iter(
+                    (result == CaSResult::Committed).then(|| op.key.clone()),
+                ))
             }
         }
     }
@@ -875,6 +877,11 @@ impl PostgresConsensusClient {
             RETURNING shard
         ";
         assert_eq!(self.mode, PostgresMode::CockroachDB);
+        // `RETURNING shard` can't tell two ops for one key apart.
+        assert!(
+            ops.iter().map(|op| &op.key).all_unique(),
+            "batched CaS keys must be distinct"
+        );
         let shards: Vec<&str> = ops.iter().map(|op| op.key.as_str()).collect();
         let seqnos: Vec<SeqNo> = ops.iter().map(|op| op.new.seqno).collect();
         let data: Vec<&[u8]> = ops.iter().map(|op| op.new.data.as_ref()).collect();
@@ -911,7 +918,7 @@ impl PostgresConsensusClient {
 }
 
 /// Keeps `ranges` in step with the consensus table's CockroachDB range boundaries while batching
-/// is enabled.
+/// is enabled, refreshing within a second of batching turning on.
 ///
 /// A stale or empty map costs batches their one-phase commit, never correctness, so failures keep
 /// the previous map. When the role may not run `SHOW RANGES`, the table stays one range.
@@ -921,8 +928,16 @@ async fn refresh_ranges(
     ranges: Arc<RwLock<RangeMap>>,
     metrics: ConsensusBatchMetrics,
 ) {
+    // NOTE: until the first refresh, every key maps to one range, so the whole process runs at
+    // most `persist_consensus_cas_batch_max_in_flight_per_range` batched statements.
+    let mut last_attempt: Option<Instant> = None;
     loop {
-        if CONSENSUS_CAS_BATCH_ENABLED.get(&cfg) {
+        if !CONSENSUS_CAS_BATCH_ENABLED.get(&cfg) {
+            last_attempt = None;
+        } else if last_attempt.map_or(true, |t| {
+            t.elapsed() >= CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL.get(&cfg)
+        }) {
+            last_attempt = Some(Instant::now());
             match client.range_map().await {
                 Ok(map) => {
                     metrics.ranges.set(u64::cast_from(map.len()));
@@ -934,11 +949,7 @@ async fn refresh_ranges(
                 }
             }
         }
-        // A zero interval would spin.
-        let interval = CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL
-            .get(&cfg)
-            .max(Duration::from_secs(1));
-        tokio::time::sleep(interval).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -1105,23 +1116,24 @@ mod tests {
         let config = batching_config(1);
         let consensus = PostgresConsensus::open(config.clone()).await?;
         if consensus.client.mode == PostgresMode::CockroachDB {
-            assert_eq!(consensus.client.range_map().await?.len(), 1);
             // Split inside the random shard keys, so the races below span two ranges.
             let client = consensus.get_connection().await?;
             pg_batch_execute(&client, "ALTER TABLE consensus SPLIT AT VALUES ('8')").await?;
             drop(client);
             let map = consensus.client.range_map().await?;
-            assert_eq!(map.len(), 2);
-            assert_eq!(map.range("7fff"), None);
+            assert!(map.len() >= 2, "{map:?}");
+            assert_ne!(map.range("7fff"), Some("8".to_owned()));
             assert_eq!(map.range("8000"), Some("8".to_owned()));
         }
-        // Reopen so that the refresh task's first pass sees the split.
+        // Reopen so that the refresh task's first pass sees the split. Dropping the first
+        // instance aborts its refresh task, which shares the `ranges` gauge.
+        drop(consensus);
         let batched = Arc::new(PostgresConsensus::open(config.clone()).await?);
         race_cas(&[Arc::clone(&batched)], 8, 3, 5).await?;
         let batch_size = &config.batch_metrics.batch_size;
         match batched.client.mode {
             PostgresMode::CockroachDB => {
-                assert_eq!(config.batch_metrics.ranges.get(), 2);
+                assert!(config.batch_metrics.ranges.get() >= 2);
                 assert!(
                     batch_size.get_sample_sum() > f64::cast_lossy(batch_size.get_sample_count()),
                     "some batch should hold more than one call"

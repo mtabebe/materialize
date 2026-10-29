@@ -314,7 +314,7 @@ def get_variable_system_parameters(
         VariableSystemParameter(
             "persist_consensus_cas_batch_range_refresh_interval",
             "300s",
-            ["1s", "300s"],
+            ["10s", "300s"],
         ),
         # -----
         # Others (ordered by name),
