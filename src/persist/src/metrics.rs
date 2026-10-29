@@ -14,7 +14,7 @@ use std::time::Instant;
 use mz_aws_util::HttpPoolMetrics;
 use mz_ore::cast::CastFrom;
 use mz_ore::metric;
-use mz_ore::metrics::{ComputedUIntGauge, Counter, IntCounter, MetricsRegistry};
+use mz_ore::metrics::{ComputedUIntGauge, Counter, IntCounter, MetricsRegistry, UIntGauge};
 use mz_ore::stats::histogram_seconds_buckets;
 use prometheus::{Gauge, Histogram, IntCounterVec, IntGauge};
 
@@ -25,7 +25,7 @@ pub struct ConsensusBatchMetrics {
     pub(crate) statements: IntCounter,
     pub(crate) in_flight: IntGauge,
     pub(crate) calls_coalesced: IntCounter,
-    pub(crate) ranges: IntGauge,
+    pub(crate) ranges: UIntGauge,
     pub(crate) range_refresh_failures: IntCounter,
 }
 

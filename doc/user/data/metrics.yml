@@ -2253,6 +2253,40 @@ metrics:
   help: count of compactions that timed out
   source: src/persist-client/src/internal/metrics.rs
   visibility: internal
+- name: mz_persist_consensus_cas_batch_calls_coalesced
+  help: compare-and-set calls that waited for an in-flight statement to finish
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_in_flight
+  help: batched consensus compare-and-set statements currently executing
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_range_refresh_failures
+  help: failed refreshes of the consensus table's range boundaries
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_ranges
+  help: consensus table ranges known to the compare-and-set batcher
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_size_bucket
+  help: number of compare-and-set calls per batched consensus statement
+  labels:
+  - le
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_size_count
+  help: number of compare-and-set calls per batched consensus statement
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_size_sum
+  help: number of compare-and-set calls per batched consensus statement
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_cas_batch_statements
+  help: batched consensus compare-and-set statements issued
+  source: src/persist/src/metrics.rs
+  visibility: internal
 - name: mz_persist_consensus_failures
   help: count of determinate consensus operation failures
   labels:
