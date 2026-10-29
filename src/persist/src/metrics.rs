@@ -18,6 +18,51 @@ use mz_ore::metrics::{ComputedUIntGauge, Counter, IntCounter, MetricsRegistry};
 use mz_ore::stats::histogram_seconds_buckets;
 use prometheus::{Gauge, Histogram, IntCounterVec, IntGauge};
 
+/// Metrics for the batched compare-and-set path of [crate::postgres::PostgresConsensus].
+#[derive(Debug, Clone)]
+pub struct ConsensusBatchMetrics {
+    pub(crate) batch_size: Histogram,
+    pub(crate) statements: IntCounter,
+    pub(crate) in_flight: IntGauge,
+    pub(crate) calls_coalesced: IntCounter,
+    pub(crate) ranges: IntGauge,
+    pub(crate) range_refresh_failures: IntCounter,
+}
+
+impl ConsensusBatchMetrics {
+    /// Returns a new [ConsensusBatchMetrics] instance connected to the given
+    /// registry.
+    pub fn new(registry: &MetricsRegistry) -> Self {
+        ConsensusBatchMetrics {
+            batch_size: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_size",
+                help: "number of compare-and-set calls per batched consensus statement",
+                buckets: vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0],
+            )),
+            statements: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_statements",
+                help: "batched consensus compare-and-set statements issued",
+            )),
+            in_flight: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_in_flight",
+                help: "batched consensus compare-and-set statements currently executing",
+            )),
+            calls_coalesced: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_calls_coalesced",
+                help: "compare-and-set calls that waited for an in-flight statement to finish",
+            )),
+            ranges: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_ranges",
+                help: "consensus table ranges known to the compare-and-set batcher",
+            )),
+            range_refresh_failures: registry.register(metric!(
+                name: "mz_persist_consensus_cas_batch_range_refresh_failures",
+                help: "failed refreshes of the consensus table's range boundaries",
+            )),
+        }
+    }
+}
+
 /// Metrics for [crate::hedge::HedgedBlob].
 #[derive(Debug, Clone)]
 pub struct BlobHedgeMetrics {

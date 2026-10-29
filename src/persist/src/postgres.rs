@@ -37,6 +37,7 @@ use tracing::{info, warn};
 
 use crate::error::Error;
 use crate::location::{CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData};
+use crate::metrics::ConsensusBatchMetrics;
 
 /// Flag to run PostgreSQL consensus connections under READ COMMITTED isolation instead of SERIALIZABLE.
 ///
@@ -64,6 +65,55 @@ pub const PG_CONSENSUS_READ_COMMITTED: mz_dyncfg::Config<bool> = mz_dyncfg::Conf
     PostgreSQL backends. This flag must be off when targetting CockroachDB.",
     mz_dyncfg::ParameterScope::Environment,
 );
+
+/// Whether `compare_and_set` goes through the batcher in [crate::cas_batch].
+///
+/// Off runs the single-row CaS queries exactly as before the batcher existed. Batched and
+/// single-row statements write identical rows, so processes with different values of this flag
+/// can share one consensus table.
+pub const CONSENSUS_CAS_BATCH_ENABLED: mz_dyncfg::Config<bool> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_enabled",
+    false,
+    "Coalesce concurrent consensus compare-and-set calls into one statement per CockroachDB range \
+    (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+// NOTE: every in-flight statement holds a pooled connection, so this times the number of hot
+// ranges must stay well below `persist_consensus_connection_pool_max_size`, else callers block
+// acquiring connections.
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE: mz_dyncfg::Config<usize> =
+    mz_dyncfg::Config::new(
+        "persist_consensus_cas_batch_max_in_flight_per_range",
+        4,
+        "Batched consensus compare-and-set statements in flight per CockroachDB range before new \
+        calls wait to join the next statement (Materialize).",
+        mz_dyncfg::ParameterScope::Environment,
+    );
+
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_ROWS: mz_dyncfg::Config<usize> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_max_rows",
+    128,
+    "Maximum compare-and-set calls in one batched consensus statement (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_BYTES: mz_dyncfg::Config<usize> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_max_bytes",
+    1024 * 1024,
+    "Maximum total data bytes in one batched consensus statement. A single larger call still goes \
+    out alone (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+pub(crate) const CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL: mz_dyncfg::Config<Duration> =
+    mz_dyncfg::Config::new(
+        "persist_consensus_cas_batch_range_refresh_interval",
+        Duration::from_secs(300),
+        "How often the consensus compare-and-set batcher re-reads the consensus table's \
+        CockroachDB range boundaries (Materialize).",
+        mz_dyncfg::ParameterScope::Environment,
+    );
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS consensus (
@@ -166,6 +216,7 @@ pub struct PostgresConsensusConfig {
     url: SensitiveUrl,
     knobs: Arc<dyn PostgresClientKnobs>,
     metrics: PostgresClientMetrics,
+    batch_metrics: ConsensusBatchMetrics,
     dyncfg: Arc<ConfigSet>,
 }
 
@@ -178,12 +229,14 @@ impl PostgresConsensusConfig {
         url: &SensitiveUrl,
         knobs: Box<dyn PostgresClientKnobs>,
         metrics: PostgresClientMetrics,
+        batch_metrics: ConsensusBatchMetrics,
         dyncfg: Arc<ConfigSet>,
     ) -> Result<Self, Error> {
         Ok(PostgresConsensusConfig {
             url: url.clone(),
             knobs: Arc::from(knobs),
             metrics,
+            batch_metrics,
             dyncfg,
         })
     }
@@ -253,11 +306,13 @@ impl PostgresConsensusConfig {
             }
         }
 
-        let dyncfg = ConfigSet::default().add(&PG_CONSENSUS_READ_COMMITTED);
+        let dyncfg = crate::cfg::all_dyn_configs(ConfigSet::default());
+        let registry = MetricsRegistry::new();
         let config = PostgresConsensusConfig::new(
             &url,
             Box::new(TestConsensusKnobs),
-            PostgresClientMetrics::new(&MetricsRegistry::new(), "mz_persist"),
+            PostgresClientMetrics::new(&registry, "mz_persist"),
+            ConsensusBatchMetrics::new(&registry),
             Arc::new(dyncfg),
         )?;
         Ok(Some(config))
