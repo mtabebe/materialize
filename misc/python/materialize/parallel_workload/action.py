@@ -2966,7 +2966,7 @@ class FlipFlagsAction(Action):
             "1",
             "4",
         ]
-        self.flags_with_values["persist_consensus_scan_batch_max_shards"] = ["1", "128"]
+        self.flags_with_values["persist_consensus_scan_batch_max_shards"] = ["8", "128"]
         self.flags_with_values["persist_consensus_poll_tick_enabled"] = (
             BOOLEAN_FLAG_VALUES
         )
