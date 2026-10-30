@@ -72,7 +72,7 @@ pub const PG_CONSENSUS_READ_COMMITTED: mz_dyncfg::Config<bool> = mz_dyncfg::Conf
     mz_dyncfg::ParameterScope::Environment,
 );
 
-/// Whether `compare_and_set` goes through the batcher in [crate::consensus_batch].
+/// Whether `compare_and_set` goes through the batcher in `crate::consensus_batch`.
 ///
 /// Off runs the single-row CaS queries exactly as before the batcher existed. Batched and
 /// single-row statements write identical rows, so processes with different values of this flag
@@ -121,7 +121,7 @@ pub(crate) const CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL: mz_dyncfg::Config<D
         mz_dyncfg::ParameterScope::Environment,
     );
 
-/// Whether unlimited `scan`s go through the batcher in [crate::consensus_batch].
+/// Whether unlimited `scan`s go through the batcher in `crate::consensus_batch`.
 ///
 /// A batched scan is one read-only statement over the existing table, so processes with different
 /// values of this flag can share one consensus table.
