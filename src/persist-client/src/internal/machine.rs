@@ -1169,6 +1169,8 @@ pub(crate) const NEXT_LISTEN_BATCH_RETRYER_CLAMP: Config<Duration> = Config::new
     ParameterScope::Environment,
 );
 
+// NOTE: without `persist_consensus_scan_batch_enabled`, each tick sends its polls to consensus as
+// a burst of single-shard scans.
 pub(crate) const CONSENSUS_POLL_TICK_ENABLED: Config<bool> = Config::new(
     "persist_consensus_poll_tick_enabled",
     false,
@@ -1187,8 +1189,8 @@ pub(crate) const CONSENSUS_POLL_TICK_INTERVAL: Config<Duration> = Config::new(
 
 /// The start of this process's poll tick grid.
 ///
-/// Each process starts its grid when it first polls, so ticks of different processes don't line
-/// up and their scans don't all reach consensus at once.
+/// Each process starts its grid when it first polls, so processes tick with unrelated phases
+/// rather than all bursting at once.
 static POLL_TICK_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Sleeps for the next poll of `wait_for_upper_past`.
