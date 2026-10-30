@@ -28,7 +28,7 @@ use crate::gcs::{GcsBlob, GcsBlobConfig};
 use crate::hedge::HedgeSibling;
 use crate::location::{Blob, Consensus, Determinate, ExternalError};
 use crate::mem::{MemBlob, MemBlobConfig, MemConsensus};
-use crate::metrics::S3BlobMetrics;
+use crate::metrics::{ConsensusBatchMetrics, S3BlobMetrics};
 use crate::postgres::{PostgresConsensus, PostgresConsensusConfig};
 use crate::s3::{BlobHttpPool, S3Blob, S3BlobConfig};
 
@@ -36,6 +36,11 @@ use crate::s3::{BlobHttpPool, S3Blob, S3BlobConfig};
 pub fn all_dyn_configs(configs: ConfigSet) -> ConfigSet {
     configs
         .add(&crate::postgres::PG_CONSENSUS_READ_COMMITTED)
+        .add(&crate::postgres::CONSENSUS_CAS_BATCH_ENABLED)
+        .add(&crate::postgres::CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE)
+        .add(&crate::postgres::CONSENSUS_CAS_BATCH_MAX_ROWS)
+        .add(&crate::postgres::CONSENSUS_CAS_BATCH_MAX_BYTES)
+        .add(&crate::postgres::CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL)
         .add(&crate::hedge::BLOB_HEDGED_GET_ENABLED)
         .add(&crate::hedge::BLOB_HEDGED_GET_DELAY)
         .add(&crate::hedge::BLOB_HEDGED_GET_MAX_CONCURRENT)
@@ -338,11 +343,12 @@ impl ConsensusConfig {
         url: &SensitiveUrl,
         knobs: Box<dyn PostgresClientKnobs>,
         metrics: PostgresClientMetrics,
+        batch_metrics: ConsensusBatchMetrics,
         dyncfg: Arc<ConfigSet>,
     ) -> Result<Self, ExternalError> {
         let config = match url.scheme() {
             "postgres" | "postgresql" => Ok(ConsensusConfig::Postgres(
-                PostgresConsensusConfig::new(url, knobs, metrics, dyncfg)?,
+                PostgresConsensusConfig::new(url, knobs, metrics, batch_metrics, dyncfg)?,
             )),
             "mem" => {
                 if !cfg!(debug_assertions) {

@@ -297,6 +297,23 @@ def get_variable_system_parameters(
         VariableSystemParameter(
             "persist_blob_hedged_get_budget_ratio", "0.01", ["1.0", "0.01"]
         ),
+        VariableSystemParameter(
+            "persist_consensus_cas_batch_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_cas_batch_max_in_flight_per_range", "1", ["1", "4"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_cas_batch_max_rows", "128", ["1", "128"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_cas_batch_max_bytes", "1048576", ["1", "1048576"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_cas_batch_range_refresh_interval",
+            "300s",
+            ["10s", "300s"],
+        ),
         # -----
         # Others (ordered by name),
         VariableSystemParameter(

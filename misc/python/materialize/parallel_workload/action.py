@@ -2947,6 +2947,24 @@ class FlipFlagsAction(Action):
             "'10ms'",
             "'2s'",
         ]
+        self.flags_with_values["persist_consensus_cas_batch_enabled"] = (
+            BOOLEAN_FLAG_VALUES
+        )
+        self.flags_with_values[
+            "persist_consensus_cas_batch_max_in_flight_per_range"
+        ] = [
+            "1",
+            "4",
+        ]
+        self.flags_with_values["persist_consensus_cas_batch_max_rows"] = ["1", "128"]
+        self.flags_with_values["persist_consensus_cas_batch_max_bytes"] = [
+            "1",
+            "1048576",
+        ]
+        self.flags_with_values["persist_consensus_cas_batch_range_refresh_interval"] = [
+            "'10s'",
+            "'300s'",
+        ]
         self.flags_with_values["enable_variadic_left_join_lowering"] = (
             BOOLEAN_FLAG_VALUES
         )

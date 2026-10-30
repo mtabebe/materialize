@@ -18,6 +18,7 @@
 )]
 
 pub mod azure;
+mod cas_batch;
 pub mod cfg;
 pub mod error;
 pub mod file;
