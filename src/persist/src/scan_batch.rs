@@ -39,14 +39,12 @@ use crate::postgres::{
     CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT, CONSENSUS_SCAN_BATCH_MAX_SHARDS, PostgresConsensusClient,
 };
 
-type ScanResponse = oneshot::Sender<Result<Vec<VersionedData>, ExternalError>>;
-
 #[derive(Debug)]
 struct PendingScan {
     key: String,
     from: SeqNo,
     enqueued: Instant,
-    tx: ScanResponse,
+    tx: oneshot::Sender<Result<Vec<VersionedData>, ExternalError>>,
 }
 
 /// The scans of one statement, by shard.

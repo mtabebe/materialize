@@ -122,7 +122,7 @@ pub(crate) const CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL: mz_dyncfg::Config<D
         mz_dyncfg::ParameterScope::Environment,
     );
 
-/// Whether unlimited `scan`s go through the batcher in [crate::scan_batch].
+/// Whether unlimited `scan`s go through the batcher in `crate::scan_batch`.
 ///
 /// A batched scan is a read-only statement over the existing table, so processes with different
 /// values of this flag can share one consensus table.

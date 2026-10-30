@@ -316,7 +316,6 @@ def get_variable_system_parameters(
             "300s",
             ["10s", "300s"],
         ),
-        # A cap of 1 makes scans coalesce whenever two overlap.
         VariableSystemParameter(
             "persist_consensus_scan_batch_enabled", "false", ["true", "false"]
         ),
