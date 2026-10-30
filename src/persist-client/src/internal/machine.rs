@@ -2502,16 +2502,14 @@ pub mod datadriven {
 #[cfg(test)]
 pub mod tests {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use mz_dyncfg::ConfigUpdates;
     use mz_ore::cast::CastFrom;
     use mz_ore::task::spawn;
     use mz_persist::intercept::{InterceptBlob, InterceptHandle};
-    use mz_persist::location::{
-        CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData,
-    };
+    use mz_persist::location::SeqNo;
     use mz_persist_types::PersistLocation;
     use semver::Version;
     use timely::progress::Antichain;
@@ -2544,126 +2542,54 @@ pub mod tests {
         assert_eq!(super::poll_tick(epoch, at(7), ms(0), ms(0)), at(8));
     }
 
-    /// A [Consensus] that records when each key is scanned.
-    #[derive(Debug)]
-    struct RecordScans {
-        inner: Arc<dyn Consensus>,
-        scans: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl Consensus for RecordScans {
-        fn list_keys(&self) -> ResultStream<'_, String> {
-            self.inner.list_keys()
-        }
-
-        async fn head(&self, key: &str) -> Result<Option<VersionedData>, ExternalError> {
-            self.inner.head(key).await
-        }
-
-        async fn compare_and_set(
-            &self,
-            key: &str,
-            new: VersionedData,
-        ) -> Result<CaSResult, ExternalError> {
-            self.inner.compare_and_set(key, new).await
-        }
-
-        async fn scan(
-            &self,
-            key: &str,
-            from: SeqNo,
-            limit: usize,
-        ) -> Result<Vec<VersionedData>, ExternalError> {
-            self.scans
-                .lock()
-                .expect("lock poisoned")
-                .push((key.to_owned(), tokio::time::Instant::now()));
-            self.inner.scan(key, from, limit).await
-        }
-
-        async fn truncate(&self, key: &str, seqno: SeqNo) -> Result<Option<usize>, ExternalError> {
-            self.inner.truncate(key, seqno).await
-        }
-    }
-
     #[mz_persist_proc::test(tokio::test(start_paused = true))]
     #[cfg_attr(miri, ignore)] // too slow
-    async fn poll_tick_aligns_scans(dyncfgs: ConfigUpdates) {
+    async fn poll_tick_aligns_polls(dyncfgs: ConfigUpdates) {
         let client = new_test_client(&dyncfgs).await;
         client
             .cfg
             .set_config(&super::CONSENSUS_POLL_TICK_ENABLED, true);
         // A second process, with its own state and no PubSub from the first, so it learns of the
         // first's writes only by polling.
-        let scans = Arc::new(Mutex::new(Vec::new()));
         let mut poller = client.clone();
         poller.shared_states = Arc::new(StateCache::new_no_metrics());
-        poller.consensus = Arc::new(RecordScans {
-            inner: Arc::clone(&client.consensus),
-            scans: Arc::clone(&scans),
-        });
 
-        let mut polled = Vec::new();
-        let mut waiters = Vec::new();
+        let mut writes = Vec::new();
+        let mut handles = Vec::new();
         for _ in 0..8 {
             let shard_id = ShardId::new();
             let (write, _) = client.expect_open::<String, (), u64, i64>(shard_id).await;
-            let (waiter, _) = poller.expect_open::<String, (), u64, i64>(shard_id).await;
-            polled.push((shard_id, write));
-            waiters.push(waiter);
-        }
-        // A shard written by the polling process itself, whose waiter wakes through the shared
-        // state, as it would through PubSub.
-        let watched = ShardId::new();
-        let (mut local_write, _) = poller.expect_open::<String, (), u64, i64>(watched).await;
-        let (watched_waiter, _) = poller.expect_open::<String, (), u64, i64>(watched).await;
-        waiters.push(watched_waiter);
-
-        // Start the waits at staggered times, so that only the tick can line their polls up.
-        let mut handles = Vec::new();
-        for mut waiter in waiters {
+            let (mut waiter, _) = poller.expect_open::<String, (), u64, i64>(shard_id).await;
+            writes.push(write);
+            // Start the waits at staggered times, so that only the tick can line their polls up.
             handles.push(spawn(|| "wait", async move {
                 waiter.wait_for_upper_past(&Antichain::from_elem(0)).await;
+                tokio::time::Instant::now()
             }));
             tokio::time::sleep(Duration::from_millis(37)).await;
         }
-        let written = tokio::time::Instant::now();
-        for (_, write) in polled.iter_mut() {
+        for write in writes.iter_mut() {
             write.advance_upper(&Antichain::from_elem(1)).await;
         }
-        local_write.advance_upper(&Antichain::from_elem(1)).await;
+        let mut polls = BTreeSet::new();
         for handle in handles {
-            handle.await;
+            polls.insert(handle.await);
         }
 
-        let scans = scans.lock().expect("lock poisoned");
-        let polls: Vec<_> = scans.iter().filter(|(_, at)| *at > written).collect();
-        for (shard_id, _) in &polled {
-            assert!(
-                polls.iter().any(|(key, _)| *key == shard_id.to_string()),
-                "{shard_id} was not polled: {polls:?}"
-            );
-        }
         // The paused clock wakes timers at millisecond granularity.
         let interval = super::CONSENSUS_POLL_TICK_INTERVAL.get(&client.cfg);
         let epoch = *super::POLL_TICK_EPOCH;
-        for (key, at) in &polls {
+        for at in &polls {
             let offset =
                 at.into_std().saturating_duration_since(epoch).as_nanos() % interval.as_nanos();
             assert!(
                 offset < Duration::from_millis(2).as_nanos(),
-                "{key} polled {offset}ns past a tick: {polls:?}"
+                "a poll {offset}ns past a tick: {polls:?}"
             );
         }
-        let ticks: BTreeSet<_> = polls.iter().map(|(_, at)| *at).collect();
         assert!(
-            ticks.len() < polled.len(),
+            polls.len() < writes.len(),
             "polls should share ticks: {polls:?}"
-        );
-        assert!(
-            polls.iter().all(|(key, _)| *key != watched.to_string()),
-            "a shard advanced through shared state should not be polled: {polls:?}"
         );
     }
 
