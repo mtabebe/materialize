@@ -9,7 +9,7 @@
 
 //! Implementation of [Consensus] backed by Postgres.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Formatter;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -38,9 +38,11 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres::{Row, Statement};
 use tracing::{info, warn};
 
-use crate::cas_batch::{BatchLimits, CasBackend, CasBatcher, CasOp, RangeId, RangeMap};
+use crate::consensus_batch::{BatchBackend, BatchLimits, BatchOp, Batcher, RangeId, RangeMap};
 use crate::error::Error;
-use crate::location::{CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData};
+use crate::location::{
+    CaSResult, Consensus, ExternalError, ResultStream, SCAN_ALL, SeqNo, VersionedData,
+};
 use crate::metrics::ConsensusBatchMetrics;
 
 /// Flag to run PostgreSQL consensus connections under READ COMMITTED isolation instead of SERIALIZABLE.
@@ -70,7 +72,7 @@ pub const PG_CONSENSUS_READ_COMMITTED: mz_dyncfg::Config<bool> = mz_dyncfg::Conf
     mz_dyncfg::ParameterScope::Environment,
 );
 
-/// Whether `compare_and_set` goes through the batcher in [crate::cas_batch].
+/// Whether `compare_and_set` goes through the batcher in [crate::consensus_batch].
 ///
 /// Off runs the single-row CaS queries exactly as before the batcher existed. Batched and
 /// single-row statements write identical rows, so processes with different values of this flag
@@ -118,6 +120,35 @@ pub(crate) const CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL: mz_dyncfg::Config<D
         CockroachDB range boundaries (Materialize).",
         mz_dyncfg::ParameterScope::Environment,
     );
+
+/// Whether unlimited `scan`s go through the batcher in [crate::consensus_batch].
+///
+/// A batched scan is one read-only statement over the existing table, so processes with different
+/// values of this flag can share one consensus table.
+pub const CONSENSUS_SCAN_BATCH_ENABLED: mz_dyncfg::Config<bool> = mz_dyncfg::Config::new(
+    "persist_consensus_scan_batch_enabled",
+    false,
+    "Coalesce concurrent consensus scans into one statement per CockroachDB range (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+// NOTE: like `persist_consensus_cas_batch_max_in_flight_per_range`, every in-flight statement
+// holds a pooled connection.
+pub(crate) const CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT_PER_RANGE: mz_dyncfg::Config<usize> =
+    mz_dyncfg::Config::new(
+        "persist_consensus_scan_batch_max_in_flight_per_range",
+        4,
+        "Batched consensus scan statements in flight per CockroachDB range before new scans wait \
+        to join the next statement (Materialize).",
+        mz_dyncfg::ParameterScope::Environment,
+    );
+
+pub(crate) const CONSENSUS_SCAN_BATCH_MAX_SHARDS: mz_dyncfg::Config<usize> = mz_dyncfg::Config::new(
+    "persist_consensus_scan_batch_max_shards",
+    128,
+    "Maximum shards read by one batched consensus scan statement (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS consensus (
@@ -336,11 +367,12 @@ enum PostgresMode {
 pub struct PostgresConsensus {
     client: PostgresConsensusClient,
     cfg: Arc<ConfigSet>,
-    batcher: CasBatcher<PostgresCasBackend>,
+    cas_batcher: Batcher<PostgresCasBackend>,
+    scan_batcher: Batcher<PostgresScanBackend>,
     _range_refresh: Option<AbortOnDropHandle<()>>,
 }
 
-/// The connection pool and backend flavor, shared with the compare-and-set batcher.
+/// The connection pool and backend flavor, shared with the batchers.
 #[derive(Clone, Debug)]
 struct PostgresConsensusClient {
     postgres_client: Arc<PostgresClient>,
@@ -431,7 +463,7 @@ impl PostgresConsensus {
         let range_refresh = match mode {
             PostgresMode::CockroachDB => Some(
                 mz_ore::task::spawn(
-                    || "persist::consensus::cas_batch_range_refresh",
+                    || "persist::consensus::batch_range_refresh",
                     refresh_ranges(
                         consensus_client.clone(),
                         Arc::clone(&cfg),
@@ -443,18 +475,24 @@ impl PostgresConsensus {
             ),
             PostgresMode::Postgres => None,
         };
-        let batcher = CasBatcher::new(
-            PostgresCasBackend {
-                client: consensus_client.clone(),
-                cfg: Arc::clone(&cfg),
-                ranges,
-            },
-            config.batch_metrics,
+        let backend = BatchContext {
+            client: consensus_client.clone(),
+            cfg: Arc::clone(&cfg),
+            ranges,
+        };
+        let cas_batcher = Batcher::new(
+            PostgresCasBackend(backend.clone()),
+            config.batch_metrics.cas.clone(),
+        );
+        let scan_batcher = Batcher::new(
+            PostgresScanBackend(backend),
+            config.batch_metrics.scan.clone(),
         );
         Ok(PostgresConsensus {
             client: consensus_client,
             cfg,
-            batcher,
+            cas_batcher,
+            scan_batcher,
             _range_refresh: range_refresh,
         })
     }
@@ -793,20 +831,54 @@ impl PostgresConsensusClient {
 /// concurrency, with batches of one and no in-flight cap, until a multi-row query is proven
 /// correct under READ COMMITTED.
 #[derive(Debug)]
-struct PostgresCasBackend {
+struct PostgresCasBackend(BatchContext);
+
+/// What [PostgresConsensus]'s batch backends share.
+#[derive(Clone, Debug)]
+struct BatchContext {
     client: PostgresConsensusClient,
     cfg: Arc<ConfigSet>,
     ranges: Arc<RwLock<RangeMap>>,
 }
 
-#[async_trait]
-impl CasBackend for PostgresCasBackend {
-    fn limits(&self) -> BatchLimits {
+impl BatchContext {
+    fn range(&self, key: &str) -> RangeId {
         match self.client.mode {
+            PostgresMode::CockroachDB => self.ranges.read().expect("lock poisoned").range(key),
+            PostgresMode::Postgres => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CasOp {
+    key: String,
+    new: VersionedData,
+}
+
+impl BatchOp for CasOp {
+    type Output = CaSResult;
+
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn bytes(&self) -> usize {
+        self.new.data.len()
+    }
+}
+
+#[async_trait]
+impl BatchBackend for PostgresCasBackend {
+    type Op = CasOp;
+
+    fn limits(&self) -> BatchLimits {
+        let PostgresCasBackend(ctx) = self;
+        match ctx.client.mode {
             PostgresMode::CockroachDB => BatchLimits {
-                max_in_flight: Some(CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE.get(&self.cfg)),
-                max_rows: CONSENSUS_CAS_BATCH_MAX_ROWS.get(&self.cfg),
-                max_bytes: CONSENSUS_CAS_BATCH_MAX_BYTES.get(&self.cfg),
+                max_in_flight: Some(CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE.get(&ctx.cfg)),
+                max_rows: CONSENSUS_CAS_BATCH_MAX_ROWS.get(&ctx.cfg),
+                max_bytes: CONSENSUS_CAS_BATCH_MAX_BYTES.get(&ctx.cfg),
                 exclusive_keys: true,
             },
             // A cap would serialize every CaS, and key exclusion would make a second CaS for a
@@ -821,27 +893,84 @@ impl CasBackend for PostgresCasBackend {
     }
 
     fn range(&self, key: &str) -> RangeId {
-        match self.client.mode {
-            PostgresMode::CockroachDB => self.ranges.read().expect("lock poisoned").range(key),
-            PostgresMode::Postgres => None,
-        }
+        self.0.range(key)
     }
 
-    async fn execute(&self, ops: &[CasOp]) -> Result<BTreeSet<String>, ExternalError> {
-        match self.client.mode {
-            PostgresMode::CockroachDB => self.client.compare_and_set_batch(ops).await,
+    async fn execute(&self, ops: &[CasOp]) -> Result<Vec<CaSResult>, ExternalError> {
+        let client = &self.0.client;
+        match client.mode {
+            PostgresMode::CockroachDB => {
+                let committed = client.compare_and_set_batch(ops).await?;
+                let results = ops
+                    .iter()
+                    .map(|op| {
+                        if committed.contains(&op.key) {
+                            CaSResult::Committed
+                        } else {
+                            CaSResult::ExpectationMismatch
+                        }
+                    })
+                    .collect();
+                Ok(results)
+            }
             PostgresMode::Postgres => {
                 // More than one op would need a determinate error to roll back the ops that ran
                 // before it.
                 let [op] = ops else {
                     panic!("Postgres batches hold one op, got {}", ops.len());
                 };
-                let result = self.client.compare_and_set(&op.key, op.new.clone()).await?;
-                Ok(BTreeSet::from_iter(
-                    (result == CaSResult::Committed).then(|| op.key.clone()),
-                ))
+                Ok(vec![client.compare_and_set(&op.key, op.new.clone()).await?])
             }
         }
+    }
+}
+
+/// Runs [PostgresConsensus]'s batched unlimited scans, one statement per range on both backends.
+///
+/// Scans are reads, so a batch has no commit protocol to keep and no key needs to wait for its
+/// own in-flight scan.
+#[derive(Debug)]
+struct PostgresScanBackend(BatchContext);
+
+/// A scan of every version of `key` at or after `from`.
+#[derive(Debug)]
+struct ScanOp {
+    key: String,
+    from: SeqNo,
+}
+
+impl BatchOp for ScanOp {
+    type Output = Vec<VersionedData>;
+
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn bytes(&self) -> usize {
+        0
+    }
+}
+
+#[async_trait]
+impl BatchBackend for PostgresScanBackend {
+    type Op = ScanOp;
+
+    fn limits(&self) -> BatchLimits {
+        let PostgresScanBackend(ctx) = self;
+        BatchLimits {
+            max_in_flight: Some(CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT_PER_RANGE.get(&ctx.cfg)),
+            max_rows: CONSENSUS_SCAN_BATCH_MAX_SHARDS.get(&ctx.cfg),
+            max_bytes: usize::MAX,
+            exclusive_keys: false,
+        }
+    }
+
+    fn range(&self, key: &str) -> RangeId {
+        self.0.range(key)
+    }
+
+    async fn execute(&self, ops: &[ScanOp]) -> Result<Vec<Vec<VersionedData>>, ExternalError> {
+        self.0.client.scan_batch(ops).await
     }
 }
 
@@ -902,6 +1031,42 @@ impl PostgresConsensusClient {
         rows.iter().map(|row| Ok(row.try_get("shard")?)).collect()
     }
 
+    /// Runs the unlimited scans in `ops` as one statement and returns their results in order.
+    /// Keys must be distinct.
+    async fn scan_batch(&self, ops: &[ScanOp]) -> Result<Vec<Vec<VersionedData>>, ExternalError> {
+        // A per-scan `LIMIT` would need a `LATERAL` subquery, which CockroachDB runs as an apply
+        // join that plans the subquery once per shard. Without it the plan is one lookup join on
+        // `consensus_pkey`, a range read per shard. Check any change to this query with
+        // `EXPLAIN` on CockroachDB.
+        static SCAN_BATCH_QUERY: &str = "
+            SELECT c.shard, c.sequence_number, c.data
+            FROM unnest($1::text[], $2::bigint[]) AS v (shard, from_seqno)
+            JOIN consensus c ON c.shard = v.shard AND c.sequence_number >= v.from_seqno
+            ORDER BY c.shard, c.sequence_number
+        ";
+        let shards: Vec<&str> = ops.iter().map(|op| op.key.as_str()).collect();
+        let froms: Vec<SeqNo> = ops.iter().map(|op| op.from).collect();
+        let rows = {
+            let client = self.get_connection().await?;
+            let statement = client.prepare_cached(SCAN_BATCH_QUERY).await?;
+            pg_query_prepared(&client, &statement, &[&shards, &froms]).await?
+        };
+        let mut results: BTreeMap<String, Vec<VersionedData>> = BTreeMap::new();
+        for row in rows {
+            let shard: String = row.try_get("shard")?;
+            let seqno: SeqNo = row.try_get("sequence_number")?;
+            let data: Vec<u8> = row.try_get("data")?;
+            results.entry(shard).or_default().push(VersionedData {
+                seqno,
+                data: Bytes::from(data),
+            });
+        }
+        Ok(ops
+            .iter()
+            .map(|op| results.remove(&op.key).unwrap_or_default())
+            .collect())
+    }
+
     async fn range_map(&self) -> Result<RangeMap, ExternalError> {
         let q = "SELECT start_key FROM [SHOW RANGES FROM TABLE consensus]";
         let rows = {
@@ -920,7 +1085,8 @@ impl PostgresConsensusClient {
 /// Keeps `ranges` in step with the consensus table's CockroachDB range boundaries while batching
 /// is enabled, refreshing within a second of batching turning on.
 ///
-/// A stale or empty map costs batches their one-phase commit, never correctness, so failures keep
+/// A stale or empty map costs batches their one-phase commit or single-range read, never
+/// correctness, so failures keep
 /// the previous map. When the role may not run `SHOW RANGES`, the table stays one range.
 async fn refresh_ranges(
     client: PostgresConsensusClient,
@@ -929,10 +1095,10 @@ async fn refresh_ranges(
     metrics: ConsensusBatchMetrics,
 ) {
     // NOTE: until the first refresh, every key maps to one range, so the whole process runs at
-    // most `persist_consensus_cas_batch_max_in_flight_per_range` batched statements.
+    // most one per-range cap of batched statements of each kind.
     let mut last_attempt: Option<Instant> = None;
     loop {
-        if !CONSENSUS_CAS_BATCH_ENABLED.get(&cfg) {
+        if !CONSENSUS_CAS_BATCH_ENABLED.get(&cfg) && !CONSENSUS_SCAN_BATCH_ENABLED.get(&cfg) {
             last_attempt = None;
         } else if last_attempt.map_or(true, |t| {
             t.elapsed() >= CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL.get(&cfg)
@@ -1001,7 +1167,13 @@ impl Consensus for PostgresConsensus {
     ) -> Result<CaSResult, ExternalError> {
         // Init (no expected seqno) stays on the single-row path.
         if new.seqno.previous().is_some() && CONSENSUS_CAS_BATCH_ENABLED.get(&self.cfg) {
-            return self.batcher.compare_and_set(key, new).await;
+            return self
+                .cas_batcher
+                .run(CasOp {
+                    key: key.to_owned(),
+                    new,
+                })
+                .await;
         }
         self.client.compare_and_set(key, new).await
     }
@@ -1012,6 +1184,15 @@ impl Consensus for PostgresConsensus {
         from: SeqNo,
         limit: usize,
     ) -> Result<Vec<VersionedData>, ExternalError> {
+        if limit == SCAN_ALL && CONSENSUS_SCAN_BATCH_ENABLED.get(&self.cfg) {
+            return self
+                .scan_batcher
+                .run(ScanOp {
+                    key: key.to_owned(),
+                    from,
+                })
+                .await;
+        }
         let q = "SELECT sequence_number, data FROM consensus
              WHERE shard = $1 AND sequence_number >= $2
              ORDER BY sequence_number ASC LIMIT $3";
@@ -1098,7 +1279,8 @@ mod tests {
 
     use super::*;
 
-    /// A test config with batching on and at most `max_in_flight` statements per range.
+    /// A test config with CaS and scan batching on and at most `max_in_flight` statements of each
+    /// per range.
     fn batching_config(max_in_flight: usize) -> PostgresConsensusConfig {
         let config = PostgresConsensusConfig::new_for_test()
             .expect("valid config")
@@ -1106,6 +1288,8 @@ mod tests {
         let mut updates = ConfigUpdates::default();
         updates.add(&CONSENSUS_CAS_BATCH_ENABLED, true);
         updates.add(&CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE, max_in_flight);
+        updates.add(&CONSENSUS_SCAN_BATCH_ENABLED, true);
+        updates.add(&CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT_PER_RANGE, max_in_flight);
         updates.apply(&config.dyncfg);
         config
     }
@@ -1130,7 +1314,7 @@ mod tests {
         drop(consensus);
         let batched = Arc::new(PostgresConsensus::open(config.clone()).await?);
         race_cas(&[Arc::clone(&batched)], 8, 3, 5).await?;
-        let batch_size = &config.batch_metrics.batch_size;
+        let batch_size = &config.batch_metrics.cas.batch_size;
         match batched.client.mode {
             PostgresMode::CockroachDB => {
                 assert!(config.batch_metrics.ranges.get() >= 2);
@@ -1149,6 +1333,96 @@ mod tests {
         let single_row_config = PostgresConsensusConfig::new_for_test()?.expect("url is set");
         let single_row = Arc::new(PostgresConsensus::open(single_row_config).await?);
         race_cas(&[batched, single_row], 8, 4, 5).await
+    }
+
+    /// Batched scans return what single-shard scans return: for shards with several versions,
+    /// one version, no versions after `from`, and no rows at all, and with a truncated prefix.
+    async fn scan_batch_matches_scan() -> Result<(), ExternalError> {
+        let config = batching_config(1);
+        let batched = Arc::new(PostgresConsensus::open(config.clone()).await?);
+        let single =
+            PostgresConsensus::open(PostgresConsensusConfig::new_for_test()?.unwrap()).await?;
+        let mut ops = Vec::new();
+        for versions in [0u64, 1, 3, 5] {
+            let key = Uuid::new_v4().to_string();
+            for seqno in 0..versions {
+                let new = VersionedData {
+                    seqno: SeqNo(seqno),
+                    data: Bytes::from(format!("{key}-{seqno}")),
+                };
+                assert_eq!(
+                    single.compare_and_set(&key, new).await?,
+                    CaSResult::Committed
+                );
+            }
+            if versions == 5 {
+                single.truncate(&key, SeqNo(2)).await?;
+            }
+            for from in [0, 1, 3, 9] {
+                ops.push(ScanOp {
+                    key: key.clone(),
+                    from: SeqNo(from),
+                });
+            }
+        }
+        let expected = |ops: &[ScanOp]| {
+            let single = &single;
+            let ops: Vec<_> = ops.iter().map(|op| (op.key.clone(), op.from)).collect();
+            async move {
+                let mut expected = Vec::new();
+                for (key, from) in ops {
+                    expected.push(single.scan(&key, from, SCAN_ALL).await?);
+                }
+                Ok::<_, ExternalError>(expected)
+            }
+        };
+
+        // One statement over distinct keys, in the batcher's sorted order.
+        let mut distinct: Vec<ScanOp> = ops
+            .iter()
+            .filter(|op| op.from == SeqNo(1))
+            .map(|op| ScanOp {
+                key: op.key.clone(),
+                from: op.from,
+            })
+            .collect();
+        distinct.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(
+            batched.client.scan_batch(&distinct).await?,
+            expected(&distinct).await?
+        );
+
+        // Concurrent scans through the batcher, duplicate keys included.
+        let handles: Vec<_> = ops
+            .iter()
+            .map(|op| {
+                let batched = Arc::clone(&batched);
+                let (key, from) = (op.key.clone(), op.from);
+                mz_ore::task::spawn(|| "scan", async move {
+                    batched.scan(&key, from, SCAN_ALL).await
+                })
+            })
+            .collect();
+        let mut actual = Vec::new();
+        for handle in handles {
+            actual.push(handle.await?);
+        }
+        assert_eq!(actual, expected(&ops).await?);
+        let statements = config.batch_metrics.scan.statements.get();
+        assert!(
+            statements > 0 && statements < u64::cast_from(ops.len()),
+            "{statements} statements for {} scans",
+            ops.len()
+        );
+
+        // Limited scans keep the single-shard query.
+        let key = &ops.last().unwrap().key;
+        assert_eq!(
+            batched.scan(key, SeqNo(0), 1).await?,
+            single.scan(key, SeqNo(0), 1).await?
+        );
+        assert_eq!(config.batch_metrics.scan.statements.get(), statements);
+        Ok(())
     }
 
     /// Races `racers` writers on each of `shards` new shards, spread over `instances`, until every
@@ -1272,6 +1546,7 @@ mod tests {
         consensus_impl_test(|| PostgresConsensus::open(batch_config.clone())).await?;
 
         cas_batch_ranges_and_races().await?;
+        scan_batch_matches_scan().await?;
 
         // and now verify the implementation-specific `drop_and_recreate` works as intended
         let consensus = PostgresConsensus::open(config.clone()).await?;

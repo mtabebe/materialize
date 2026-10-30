@@ -16,47 +16,74 @@ use mz_ore::cast::CastFrom;
 use mz_ore::metric;
 use mz_ore::metrics::{ComputedUIntGauge, Counter, IntCounter, MetricsRegistry, UIntGauge};
 use mz_ore::stats::histogram_seconds_buckets;
-use prometheus::{Gauge, Histogram, IntCounterVec, IntGauge};
+use prometheus::{Gauge, Histogram, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec};
 
-/// Metrics for the batched compare-and-set path of [crate::postgres::PostgresConsensus].
+/// Metrics for the consensus batchers of [crate::postgres::PostgresConsensus].
 #[derive(Debug, Clone)]
 pub struct ConsensusBatchMetrics {
+    pub(crate) cas: BatcherMetrics,
+    pub(crate) scan: BatcherMetrics,
+    pub(crate) ranges: UIntGauge,
+    pub(crate) range_refresh_failures: IntCounter,
+}
+
+/// Metrics for one [crate::consensus_batch::Batcher].
+#[derive(Debug, Clone)]
+pub(crate) struct BatcherMetrics {
     pub(crate) batch_size: Histogram,
+    pub(crate) queue_wait_seconds: Histogram,
     pub(crate) statements: IntCounter,
     pub(crate) in_flight: IntGauge,
     pub(crate) calls_coalesced: IntCounter,
-    pub(crate) ranges: UIntGauge,
-    pub(crate) range_refresh_failures: IntCounter,
 }
 
 impl ConsensusBatchMetrics {
     /// Returns a new [ConsensusBatchMetrics] instance connected to the given
     /// registry.
     pub fn new(registry: &MetricsRegistry) -> Self {
+        let batch_size: HistogramVec = registry.register(metric!(
+            name: "mz_persist_consensus_batch_size",
+            help: "number of calls per batched consensus statement",
+            var_labels: ["op"],
+            buckets: vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0],
+        ));
+        let queue_wait_seconds: HistogramVec = registry.register(metric!(
+            name: "mz_persist_consensus_batch_queue_wait_seconds",
+            help: "time a batched consensus call waited before its statement started",
+            var_labels: ["op"],
+            buckets: histogram_seconds_buckets(0.000_128, 8.0),
+        ));
+        let statements: IntCounterVec = registry.register(metric!(
+            name: "mz_persist_consensus_batch_statements",
+            help: "batched consensus statements issued",
+            var_labels: ["op"],
+        ));
+        let in_flight: IntGaugeVec = registry.register(metric!(
+            name: "mz_persist_consensus_batch_in_flight",
+            help: "batched consensus statements currently executing",
+            var_labels: ["op"],
+        ));
+        let calls_coalesced: IntCounterVec = registry.register(metric!(
+            name: "mz_persist_consensus_batch_calls_coalesced",
+            help: "batched consensus calls that waited for an in-flight statement to finish",
+            var_labels: ["op"],
+        ));
+        let batcher = |op: &str| BatcherMetrics {
+            batch_size: batch_size.with_label_values(&[op]),
+            queue_wait_seconds: queue_wait_seconds.with_label_values(&[op]),
+            statements: statements.with_label_values(&[op]),
+            in_flight: in_flight.with_label_values(&[op]),
+            calls_coalesced: calls_coalesced.with_label_values(&[op]),
+        };
         ConsensusBatchMetrics {
-            batch_size: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_size",
-                help: "number of compare-and-set calls per batched consensus statement",
-                buckets: vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0],
-            )),
-            statements: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_statements",
-                help: "batched consensus compare-and-set statements issued",
-            )),
-            in_flight: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_in_flight",
-                help: "batched consensus compare-and-set statements currently executing",
-            )),
-            calls_coalesced: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_calls_coalesced",
-                help: "compare-and-set calls that waited for an in-flight statement to finish",
-            )),
+            cas: batcher("cas"),
+            scan: batcher("scan"),
             ranges: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_ranges",
-                help: "consensus table ranges known to the compare-and-set batcher",
+                name: "mz_persist_consensus_batch_ranges",
+                help: "consensus table ranges known to the consensus batchers",
             )),
             range_refresh_failures: registry.register(metric!(
-                name: "mz_persist_consensus_cas_batch_range_refresh_failures",
+                name: "mz_persist_consensus_batch_range_refresh_failures",
                 help: "failed refreshes of the consensus table's range boundaries",
             )),
         }

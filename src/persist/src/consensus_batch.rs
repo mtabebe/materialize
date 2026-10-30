@@ -7,9 +7,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Coalesces concurrent [Consensus::compare_and_set] calls into batched statements.
+//! Coalesces concurrent single-key consensus calls into batched statements.
 //!
-//! Every call joins the pending queue of the range its key maps to. A range runs at most
+//! A [Batcher] serves one kind of call, such as [Consensus::compare_and_set] or [Consensus::scan],
+//! through a [BatchBackend] that runs many of them as one statement. Every call joins the pending queue of the range its key maps to. A range runs at most
 //! [BatchLimits::max_in_flight] statements at once. Batches are formed both when a call arrives
 //! and when an in-flight statement returns, so under capacity a call goes out alone and at once,
 //! and at capacity it waits for at most one statement to return before joining the next batch.
@@ -25,10 +26,12 @@
 //! The batcher never retries. Only the caller can recompute state after a mismatch.
 //!
 //! [Consensus::compare_and_set]: crate::location::Consensus::compare_and_set
+//! [Consensus::scan]: crate::location::Consensus::scan
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -36,8 +39,8 @@ use itertools::Itertools;
 use mz_ore::cast::CastLossy;
 use tokio::sync::oneshot;
 
-use crate::location::{CaSResult, Determinate, ExternalError, Indeterminate, VersionedData};
-use crate::metrics::ConsensusBatchMetrics;
+use crate::location::{Determinate, ExternalError, Indeterminate};
+use crate::metrics::BatcherMetrics;
 
 /// A partition of the consensus table, named by the first shard key in it.
 ///
@@ -45,7 +48,7 @@ use crate::metrics::ConsensusBatchMetrics;
 /// range boundaries are known.
 pub(crate) type RangeId = Option<String>;
 
-/// Limits on how a [CasBatcher] forms statements, read anew at every scheduling decision.
+/// Limits on how a [Batcher] forms statements, read anew at every scheduling decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BatchLimits {
     /// Statements in flight per range, `None` for no limit. `Some(0)` is treated as `Some(1)`,
@@ -60,48 +63,66 @@ pub(crate) struct BatchLimits {
     pub exclusive_keys: bool,
 }
 
-/// One compare-and-set call.
-#[derive(Debug)]
-pub(crate) struct CasOp {
-    pub key: String,
-    pub new: VersionedData,
+/// One call to a [Batcher].
+pub(crate) trait BatchOp: Debug + Send + Sync + 'static {
+    type Output: Debug + Send + 'static;
+
+    fn key(&self) -> &str;
+
+    /// The bytes this op counts against [BatchLimits::max_bytes].
+    fn bytes(&self) -> usize;
 }
 
-/// The backend-specific half of a [CasBatcher].
+/// The backend-specific half of a [Batcher].
 #[async_trait]
-pub(crate) trait CasBackend: Debug + Send + Sync + 'static {
+pub(crate) trait BatchBackend: Debug + Send + Sync + 'static {
+    type Op: BatchOp;
+
     fn limits(&self) -> BatchLimits;
 
     fn range(&self, key: &str) -> RangeId;
 
-    /// Runs `ops` as one atomic statement and returns the keys that committed.
+    /// Runs `ops` as one atomic statement and returns one output per op, in order.
     ///
-    /// `ops` is sorted by key and holds each key at most once. A key that is not returned failed
-    /// its expectation. A [ExternalError::Determinate] error must mean that nothing committed.
-    async fn execute(&self, ops: &[CasOp]) -> Result<BTreeSet<String>, ExternalError>;
+    /// `ops` is sorted by key and holds each key at most once. A [ExternalError::Determinate]
+    /// error must mean that no op took effect.
+    async fn execute(&self, ops: &[Self::Op]) -> Result<Vec<Output<Self>>, ExternalError>;
 }
 
-type CasResponse = oneshot::Sender<Result<CaSResult, ExternalError>>;
+type Output<B> = <<B as BatchBackend>::Op as BatchOp>::Output;
+
+type Response<O> = oneshot::Sender<Result<<O as BatchOp>::Output, ExternalError>>;
 
 #[derive(Debug)]
-struct PendingOp {
+struct PendingOp<O: BatchOp> {
     id: u64,
-    op: CasOp,
-    tx: CasResponse,
+    op: O,
+    enqueued: Instant,
+    tx: Response<O>,
 }
 
-#[derive(Debug, Default)]
-struct RangeQueue {
+#[derive(Debug)]
+struct RangeQueue<O: BatchOp> {
     in_flight: usize,
     in_flight_keys: BTreeSet<String>,
-    pending: VecDeque<PendingOp>,
+    pending: VecDeque<PendingOp<O>>,
 }
 
-impl RangeQueue {
+impl<O: BatchOp> Default for RangeQueue<O> {
+    fn default() -> Self {
+        RangeQueue {
+            in_flight: 0,
+            in_flight_keys: BTreeSet::new(),
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+impl<O: BatchOp> RangeQueue<O> {
     /// Pops the next batch off `pending`, sorted by key. Ops left behind keep their order.
-    fn take_batch(&mut self, limits: &BatchLimits) -> Vec<PendingOp> {
+    fn take_batch(&mut self, limits: &BatchLimits) -> Vec<PendingOp<O>> {
         let max_rows = limits.max_rows.max(1);
-        let mut batch: Vec<PendingOp> = Vec::new();
+        let mut batch: Vec<PendingOp<O>> = Vec::new();
         let mut batch_keys = BTreeSet::new();
         let mut bytes = 0usize;
         let mut skipped = VecDeque::new();
@@ -111,13 +132,13 @@ impl RangeQueue {
             if p.tx.is_closed() {
                 continue;
             }
-            if batch_keys.contains(&p.op.key)
-                || (limits.exclusive_keys && self.in_flight_keys.contains(&p.op.key))
+            if batch_keys.contains(p.op.key())
+                || (limits.exclusive_keys && self.in_flight_keys.contains(p.op.key()))
             {
                 skipped.push_back(p);
                 continue;
             }
-            let len = p.op.new.data.len();
+            let len = p.op.bytes();
             if batch.len() >= max_rows
                 || (!batch.is_empty() && bytes.saturating_add(len) > limits.max_bytes)
             {
@@ -125,32 +146,32 @@ impl RangeQueue {
                 break;
             }
             bytes = bytes.saturating_add(len);
-            batch_keys.insert(p.op.key.clone());
+            batch_keys.insert(p.op.key().to_owned());
             batch.push(p);
         }
         skipped.append(&mut self.pending);
         self.pending = skipped;
-        batch.sort_by(|a, b| a.op.key.cmp(&b.op.key));
+        batch.sort_by(|a, b| a.op.key().cmp(b.op.key()));
         batch
     }
 }
 
-#[derive(Debug, Default)]
-struct Scheduler {
+#[derive(Debug)]
+struct Scheduler<O: BatchOp> {
     next_id: u64,
-    ranges: BTreeMap<RangeId, RangeQueue>,
+    ranges: BTreeMap<RangeId, RangeQueue<O>>,
 }
 
 /// A batch handed out by [Scheduler::try_schedule], which already counts it as in flight.
 #[derive(Debug)]
-struct Batch {
+struct Batch<O: BatchOp> {
     range: RangeId,
     registered_keys: bool,
-    ops: Vec<PendingOp>,
+    ops: Vec<PendingOp<O>>,
 }
 
-impl Scheduler {
-    fn try_schedule(&mut self, range: &RangeId, limits: &BatchLimits) -> Vec<Batch> {
+impl<O: BatchOp> Scheduler<O> {
+    fn try_schedule(&mut self, range: &RangeId, limits: &BatchLimits) -> Vec<Batch<O>> {
         let Some(queue) = self.ranges.get_mut(range) else {
             return Vec::new();
         };
@@ -167,7 +188,7 @@ impl Scheduler {
             if limits.exclusive_keys {
                 queue
                     .in_flight_keys
-                    .extend(ops.iter().map(|p| p.op.key.clone()));
+                    .extend(ops.iter().map(|p| p.op.key().to_owned()));
             }
             batches.push(Batch {
                 range: range.clone(),
@@ -194,24 +215,27 @@ impl Scheduler {
 }
 
 #[derive(Debug)]
-struct Shared<B> {
+struct Shared<B: BatchBackend> {
     backend: B,
-    scheduler: Mutex<Scheduler>,
-    metrics: ConsensusBatchMetrics,
+    scheduler: Mutex<Scheduler<B::Op>>,
+    metrics: BatcherMetrics,
 }
 
-/// Coalesces concurrent compare-and-set calls into statements run by a [CasBackend].
+/// Coalesces concurrent calls into statements run by a [BatchBackend].
 #[derive(Debug)]
-pub(crate) struct CasBatcher<B> {
+pub(crate) struct Batcher<B: BatchBackend> {
     shared: Arc<Shared<B>>,
 }
 
-impl<B: CasBackend> CasBatcher<B> {
-    pub fn new(backend: B, metrics: ConsensusBatchMetrics) -> Self {
-        CasBatcher {
+impl<B: BatchBackend> Batcher<B> {
+    pub fn new(backend: B, metrics: BatcherMetrics) -> Self {
+        Batcher {
             shared: Arc::new(Shared {
                 backend,
-                scheduler: Mutex::new(Scheduler::default()),
+                scheduler: Mutex::new(Scheduler {
+                    next_id: 0,
+                    ranges: BTreeMap::new(),
+                }),
                 metrics,
             }),
         }
@@ -222,13 +246,9 @@ impl<B: CasBackend> CasBatcher<B> {
         &self.shared.backend
     }
 
-    /// Compare-and-sets `new` at `key`, whose expected seqno is `new.seqno.previous()`.
-    pub async fn compare_and_set(
-        &self,
-        key: &str,
-        new: VersionedData,
-    ) -> Result<CaSResult, ExternalError> {
-        let range = self.shared.backend.range(key);
+    /// Runs `op` in the next statement its range can take.
+    pub async fn run(&self, op: B::Op) -> Result<Output<B>, ExternalError> {
+        let range = self.shared.backend.range(op.key());
         let limits = self.shared.backend.limits();
         let (tx, rx) = oneshot::channel();
         let batches = {
@@ -242,10 +262,8 @@ impl<B: CasBackend> CasBatcher<B> {
                 .pending
                 .push_back(PendingOp {
                     id,
-                    op: CasOp {
-                        key: key.to_owned(),
-                        new,
-                    },
+                    op,
+                    enqueued: Instant::now(),
                     tx,
                 });
             let batches = scheduler.try_schedule(&range, &limits);
@@ -257,13 +275,13 @@ impl<B: CasBackend> CasBatcher<B> {
         spawn_batches(&self.shared, batches);
         rx.await.unwrap_or_else(|_| {
             Err(ExternalError::from(anyhow!(
-                "consensus batch dropped a compare-and-set without a result"
+                "consensus batch dropped a call without a result"
             )))
         })
     }
 }
 
-fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
+fn spawn_batches<B: BatchBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch<B::Op>>) {
     for batch in batches {
         shared.metrics.statements.inc();
         shared.metrics.in_flight.inc();
@@ -271,6 +289,13 @@ fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
             .metrics
             .batch_size
             .observe(f64::cast_lossy(batch.ops.len()));
+        let now = Instant::now();
+        for p in &batch.ops {
+            shared
+                .metrics
+                .queue_wait_seconds
+                .observe(now.duration_since(p.enqueued).as_secs_f64());
+        }
         let (ops, txs) = batch.ops.into_iter().map(|p| (p.op, p.tx)).unzip();
         let mut guard = BatchGuard {
             shared: Arc::clone(shared),
@@ -280,7 +305,7 @@ fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
             txs,
             result: None,
         };
-        mz_ore::task::spawn(|| "persist::consensus::cas_batch", async move {
+        mz_ore::task::spawn(|| "persist::consensus::batch", async move {
             let result = guard.shared.backend.execute(&guard.ops).await;
             guard.result = Some(result);
             drop(guard);
@@ -294,29 +319,32 @@ fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
 /// NOTE: this cleanup must not depend on the task reaching its end. A connection error or panic
 /// that skipped it would leak the range's in-flight slot and pin the batch's keys, parking every
 /// later call for those keys forever.
-struct BatchGuard<B: CasBackend> {
+struct BatchGuard<B: BatchBackend> {
     shared: Arc<Shared<B>>,
     range: RangeId,
     registered_keys: bool,
-    ops: Vec<CasOp>,
-    txs: Vec<CasResponse>,
-    result: Option<Result<BTreeSet<String>, ExternalError>>,
+    ops: Vec<B::Op>,
+    txs: Vec<Response<B::Op>>,
+    result: Option<Result<Vec<Output<B>>, ExternalError>>,
 }
 
-impl<B: CasBackend> Drop for BatchGuard<B> {
+impl<B: BatchBackend> Drop for BatchGuard<B> {
     fn drop(&mut self) {
-        let responses = match self.result.take() {
-            Some(Ok(committed)) => self
-                .ops
-                .iter()
-                .map(|op| {
-                    Ok(if committed.contains(&op.key) {
-                        CaSResult::Committed
-                    } else {
-                        CaSResult::ExpectationMismatch
-                    })
-                })
-                .collect(),
+        let responses: Vec<_> = match self.result.take() {
+            Some(Ok(outputs)) if outputs.len() == self.ops.len() => {
+                outputs.into_iter().map(Ok).collect()
+            }
+            Some(Ok(outputs)) => fan_out(
+                ExternalError::from(anyhow!(
+                    "consensus batch returned {} results for {} calls",
+                    outputs.len(),
+                    self.ops.len()
+                )),
+                self.ops.len(),
+            )
+            .into_iter()
+            .map(Err)
+            .collect(),
             Some(Err(err)) => fan_out(err, self.ops.len()).into_iter().map(Err).collect(),
             None => fan_out(
                 ExternalError::from(anyhow!(
@@ -326,11 +354,11 @@ impl<B: CasBackend> Drop for BatchGuard<B> {
             )
             .into_iter()
             .map(Err)
-            .collect::<Vec<_>>(),
+            .collect(),
         };
         let limits = self.shared.backend.limits();
         let keys: Vec<String> = if self.registered_keys {
-            self.ops.drain(..).map(|op| op.key).collect()
+            self.ops.drain(..).map(|op| op.key().to_owned()).collect()
         } else {
             Vec::new()
         };
@@ -434,9 +462,32 @@ mod tests {
     use mz_ore::metrics::MetricsRegistry;
     use tokio::sync::Semaphore;
 
-    use crate::location::SeqNo;
+    use crate::location::{CaSResult, SeqNo, VersionedData};
+    use crate::metrics::ConsensusBatchMetrics;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct CasOp {
+        key: String,
+        new: VersionedData,
+    }
+
+    impl BatchOp for CasOp {
+        type Output = CaSResult;
+
+        fn key(&self) -> &str {
+            &self.key
+        }
+
+        fn bytes(&self) -> usize {
+            self.new.data.len()
+        }
+    }
+
+    fn metrics() -> BatcherMetrics {
+        ConsensusBatchMetrics::new(&MetricsRegistry::new()).cas
+    }
 
     #[mz_ore::test]
     fn range_map_lookup() {
@@ -487,7 +538,7 @@ mod tests {
 
     #[mz_ore::test]
     fn take_batch_limits() {
-        fn op(id: u64, key: &str, len: usize) -> PendingOp {
+        fn op(id: u64, key: &str, len: usize) -> PendingOp<CasOp> {
             let (tx, rx) = oneshot::channel();
             std::mem::forget(rx);
             PendingOp {
@@ -499,10 +550,11 @@ mod tests {
                         data: Bytes::from(vec![0; len]),
                     },
                 },
+                enqueued: Instant::now(),
                 tx,
             }
         }
-        let ids = |ops: &[PendingOp]| ops.iter().map(|p| p.id).collect::<Vec<_>>();
+        let ids = |ops: &[PendingOp<CasOp>]| ops.iter().map(|p| p.id).collect::<Vec<_>>();
         let limits = BatchLimits {
             max_in_flight: Some(1),
             max_rows: 3,
@@ -600,7 +652,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl CasBackend for FakeBackend {
+    impl BatchBackend for FakeBackend {
+        type Op = CasOp;
+
         fn limits(&self) -> BatchLimits {
             *self.limits.lock().unwrap()
         }
@@ -609,7 +663,7 @@ mod tests {
             self.ranges.range(key)
         }
 
-        async fn execute(&self, ops: &[CasOp]) -> Result<BTreeSet<String>, ExternalError> {
+        async fn execute(&self, ops: &[CasOp]) -> Result<Vec<CaSResult>, ExternalError> {
             let keys: Vec<String> = ops.iter().map(|op| op.key.clone()).collect();
             let mut sorted = keys.clone();
             sorted.sort();
@@ -626,15 +680,19 @@ mod tests {
                 Outcome::Panic => panic!("injected batch panic"),
             }
             let mut heads = self.heads.lock().unwrap();
-            let mut committed = BTreeSet::new();
-            for op in ops {
-                let head = heads.get(&op.key).copied().unwrap_or(SeqNo(0));
-                if op.new.seqno.previous() == Some(head) {
-                    heads.insert(op.key.clone(), op.new.seqno);
-                    committed.insert(op.key.clone());
-                }
-            }
-            Ok(committed)
+            let results = ops
+                .iter()
+                .map(|op| {
+                    let head = heads.get(&op.key).copied().unwrap_or(SeqNo(0));
+                    if op.new.seqno.previous() == Some(head) {
+                        heads.insert(op.key.clone(), op.new.seqno);
+                        CaSResult::Committed
+                    } else {
+                        CaSResult::ExpectationMismatch
+                    }
+                })
+                .collect();
+            Ok(results)
         }
     }
 
@@ -647,10 +705,13 @@ mod tests {
         }
     }
 
-    fn data(seqno: u64) -> VersionedData {
-        VersionedData {
-            seqno: SeqNo(seqno),
-            data: Bytes::from_static(b"x"),
+    fn cas(key: &str, seqno: u64) -> CasOp {
+        CasOp {
+            key: key.to_owned(),
+            new: VersionedData {
+                seqno: SeqNo(seqno),
+                data: Bytes::from_static(b"x"),
+            },
         }
     }
 
@@ -660,7 +721,7 @@ mod tests {
         }
     }
 
-    fn assert_idle<B>(batcher: &CasBatcher<B>) {
+    fn assert_idle<B: BatchBackend>(batcher: &Batcher<B>) {
         let scheduler = batcher.shared.scheduler.lock().unwrap();
         assert!(
             scheduler.ranges.is_empty(),
@@ -670,23 +731,20 @@ mod tests {
     }
 
     fn spawn_cas(
-        batcher: &Arc<CasBatcher<FakeBackend>>,
+        batcher: &Arc<Batcher<FakeBackend>>,
         key: &str,
         seqno: u64,
     ) -> mz_ore::task::JoinHandle<Result<CaSResult, ExternalError>> {
         let batcher = Arc::clone(batcher);
         let key = key.to_owned();
-        mz_ore::task::spawn(|| "cas", async move {
-            batcher.compare_and_set(&key, data(seqno)).await
-        })
+        mz_ore::task::spawn(|| "cas", async move { batcher.run(cas(&key, seqno)).await })
     }
 
     #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // too slow
     async fn coalesces_at_capacity() {
-        let registry = MetricsRegistry::new();
-        let metrics = ConsensusBatchMetrics::new(&registry);
-        let batcher = Arc::new(CasBatcher::new(
+        let metrics = metrics();
+        let batcher = Arc::new(Batcher::new(
             FakeBackend::new(crdb_limits(2), RangeMap::default()),
             metrics.clone(),
         ));
@@ -735,9 +793,9 @@ mod tests {
     async fn ranges_and_uncapped() {
         // Two ranges with K = 1 each run one statement apiece at once.
         let ranges = RangeMap::from_start_keys([Some("/\"s5\"")]).unwrap();
-        let batcher = Arc::new(CasBatcher::new(
+        let batcher = Arc::new(Batcher::new(
             FakeBackend::new(crdb_limits(1), ranges),
-            ConsensusBatchMetrics::new(&MetricsRegistry::new()),
+            metrics(),
         ));
         let a = spawn_cas(&batcher, "s1", 1);
         let b = spawn_cas(&batcher, "s7", 1);
@@ -774,9 +832,9 @@ mod tests {
             (Outcome::Indeterminate, Some(false)),
             (Outcome::Panic, Some(false)),
         ] {
-            let batcher = Arc::new(CasBatcher::new(
+            let batcher = Arc::new(Batcher::new(
                 FakeBackend::new(crdb_limits(1), RangeMap::default()),
-                ConsensusBatchMetrics::new(&MetricsRegistry::new()),
+                metrics(),
             ));
             let backend = batcher.backend();
             *backend.outcome.lock().unwrap() = outcome;
@@ -813,10 +871,7 @@ mod tests {
             // The range and its keys are free again.
             *backend.outcome.lock().unwrap() = Outcome::Apply;
             backend.gate.add_permits(1);
-            assert_eq!(
-                batcher.compare_and_set("s0", data(1)).await,
-                Ok(CaSResult::Committed)
-            );
+            assert_eq!(batcher.run(cas("s0", 1)).await, Ok(CaSResult::Committed));
             assert_eq!(batcher.shared.metrics.in_flight.get(), 0);
             assert_idle(&batcher);
         }
@@ -825,9 +880,9 @@ mod tests {
     #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // too slow
     async fn lowering_the_cap_drains_through_completions() {
-        let batcher = Arc::new(CasBatcher::new(
+        let batcher = Arc::new(Batcher::new(
             FakeBackend::new(crdb_limits(3), RangeMap::default()),
-            ConsensusBatchMetrics::new(&MetricsRegistry::new()),
+            metrics(),
         ));
         let backend = batcher.backend();
         let mut handles: Vec<_> = ["s0", "s1", "s2"]
