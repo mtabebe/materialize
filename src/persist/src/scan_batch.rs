@@ -58,59 +58,14 @@ struct Queue {
     pending: VecDeque<PendingScan>,
 }
 
-impl Queue {
-    /// Pops batches off `pending` while fewer than `max_in_flight` statements run, counting each
-    /// as in flight.
-    fn take_batches(&mut self, max_in_flight: usize, max_shards: usize) -> Vec<Batch> {
-        let mut batches = Vec::new();
-        while self.in_flight < max_in_flight {
-            let mut batch = Batch::new();
-            while let Some(p) = self.pending.pop_front() {
-                if p.tx.is_closed() {
-                    continue;
-                }
-                if batch.len() >= max_shards && !batch.contains_key(&p.key) {
-                    self.pending.push_front(p);
-                    break;
-                }
-                batch.entry(p.key.clone()).or_default().push(p);
-            }
-            if batch.is_empty() {
-                break;
-            }
-            self.in_flight += 1;
-            batches.push(batch);
-        }
-        batches
-    }
-}
-
-#[derive(Debug)]
-struct Shared {
-    client: PostgresConsensusClient,
-    cfg: Arc<ConfigSet>,
-    queue: Mutex<Queue>,
-    metrics: ConsensusBatchMetrics,
-}
-
-impl Shared {
-    fn take_batches(&self) -> Vec<Batch> {
-        // A cap of 0 would leave nothing to schedule a queued scan, and the shard floor keeps a
-        // low cap from turning every scan into its own statement.
-        let max_in_flight = CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT.get(&self.cfg).max(1);
-        let max_shards = CONSENSUS_SCAN_BATCH_MAX_SHARDS.get(&self.cfg).max(8);
-        self.queue
-            .lock()
-            .expect("lock poisoned")
-            .take_batches(max_in_flight, max_shards)
-    }
-}
-
 /// Coalesces concurrent unlimited scans into statements run by
 /// [PostgresConsensusClient::scan_batch].
 #[derive(Debug)]
 pub(crate) struct ScanBatcher {
-    shared: Arc<Shared>,
+    client: PostgresConsensusClient,
+    cfg: Arc<ConfigSet>,
+    queue: Mutex<Queue>,
+    metrics: ConsensusBatchMetrics,
 }
 
 impl ScanBatcher {
@@ -118,22 +73,23 @@ impl ScanBatcher {
         client: PostgresConsensusClient,
         cfg: Arc<ConfigSet>,
         metrics: ConsensusBatchMetrics,
-    ) -> Self {
-        ScanBatcher {
-            shared: Arc::new(Shared {
-                client,
-                cfg,
-                queue: Mutex::default(),
-                metrics,
-            }),
-        }
+    ) -> Arc<Self> {
+        Arc::new(ScanBatcher {
+            client,
+            cfg,
+            queue: Mutex::default(),
+            metrics,
+        })
     }
 
     /// Returns every version of `key` at or after `from`.
-    pub async fn scan(&self, key: &str, from: SeqNo) -> Result<Vec<VersionedData>, ExternalError> {
+    pub async fn scan(
+        self: &Arc<Self>,
+        key: &str,
+        from: SeqNo,
+    ) -> Result<Vec<VersionedData>, ExternalError> {
         let (tx, rx) = oneshot::channel();
-        self.shared
-            .queue
+        self.queue
             .lock()
             .expect("lock poisoned")
             .pending
@@ -143,19 +99,49 @@ impl ScanBatcher {
                 enqueued: Instant::now(),
                 tx,
             });
-        spawn_batches(&self.shared, self.shared.take_batches());
+        spawn_batches(self);
         rx.await.unwrap_or_else(|_| {
             Err(ExternalError::from(anyhow!(
                 "consensus scan batch exited without a result"
             )))
         })
     }
+
+    /// Pops batches off the queue while fewer than `max_in_flight` statements run, counting each
+    /// as in flight.
+    fn take_batches(&self) -> Vec<Batch> {
+        // A cap of 0 would leave nothing to schedule a queued scan, and the shard floor keeps a
+        // low cap from turning every scan into its own statement.
+        let max_in_flight = CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT.get(&self.cfg).max(1);
+        let max_shards = CONSENSUS_SCAN_BATCH_MAX_SHARDS.get(&self.cfg).max(8);
+        let mut queue = self.queue.lock().expect("lock poisoned");
+        let mut batches = Vec::new();
+        while queue.in_flight < max_in_flight {
+            let mut batch = Batch::new();
+            while let Some(p) = queue.pending.pop_front() {
+                if p.tx.is_closed() {
+                    continue;
+                }
+                if batch.len() >= max_shards && !batch.contains_key(&p.key) {
+                    queue.pending.push_front(p);
+                    break;
+                }
+                batch.entry(p.key.clone()).or_default().push(p);
+            }
+            if batch.is_empty() {
+                break;
+            }
+            queue.in_flight += 1;
+            batches.push(batch);
+        }
+        batches
+    }
 }
 
-fn spawn_batches(shared: &Arc<Shared>, batches: Vec<Batch>) {
-    for batch in batches {
+fn spawn_batches(batcher: &Arc<ScanBatcher>) {
+    for batch in batcher.take_batches() {
         let now = Instant::now();
-        let metrics = &shared.metrics;
+        let metrics = &batcher.metrics;
         metrics
             .scan_batch_size
             .observe(f64::cast_lossy(batch.len()));
@@ -164,7 +150,7 @@ fn spawn_batches(shared: &Arc<Shared>, batches: Vec<Batch>) {
                 .scan_queue_wait_seconds
                 .observe((now - p.enqueued).as_secs_f64());
         }
-        let slot = InFlight(Arc::clone(shared));
+        let slot = InFlight(Arc::clone(batcher));
         mz_ore::task::spawn(|| "persist::consensus::scan_batch", async move {
             // Scans of the same shard share its rows from the earliest `from`.
             let scans: Vec<_> = batch
@@ -175,7 +161,6 @@ fn spawn_batches(shared: &Arc<Shared>, batches: Vec<Batch>) {
                 })
                 .collect();
             let result = slot.0.client.scan_batch(&scans).await;
-            drop(slot);
             // The caller may have given up, which is fine.
             match result {
                 Ok(rows) => {
@@ -202,11 +187,11 @@ fn spawn_batches(shared: &Arc<Shared>, batches: Vec<Batch>) {
 ///
 /// NOTE: a panic or cancellation that skipped this would leak the slot, and after
 /// `max_in_flight` leaks no queued scan would ever run.
-struct InFlight(Arc<Shared>);
+struct InFlight(Arc<ScanBatcher>);
 
 impl Drop for InFlight {
     fn drop(&mut self) {
         self.0.queue.lock().expect("lock poisoned").in_flight -= 1;
-        spawn_batches(&self.0, self.0.take_batches());
+        spawn_batches(&self.0);
     }
 }

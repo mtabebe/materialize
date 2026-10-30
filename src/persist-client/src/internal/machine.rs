@@ -1193,11 +1193,8 @@ pub(crate) const CONSENSUS_POLL_TICK_INTERVAL: Config<Duration> = Config::new(
 /// rather than all bursting at once.
 static POLL_TICK_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Sleeps for the next poll of `wait_for_upper_past`.
-///
-/// With the poll tick enabled, this wakes on the tick nearest to the end of the sleep the retry
-/// series asks for. Waits for many shards then wake together, and their scans can share a
-/// batched consensus statement.
+/// Sleeps for the next poll of `wait_for_upper_past`, until the tick nearest to the end of the
+/// retry series' next sleep if the poll tick is enabled.
 fn poll_sleep(
     cfg: &PersistConfig,
     sleeps: MetricsRetryStream,

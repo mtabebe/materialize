@@ -368,7 +368,7 @@ pub struct PostgresConsensus {
     client: PostgresConsensusClient,
     cfg: Arc<ConfigSet>,
     batcher: CasBatcher<PostgresCasBackend>,
-    scan_batcher: ScanBatcher,
+    scan_batcher: Arc<ScanBatcher>,
     _range_refresh: Option<AbortOnDropHandle<()>>,
 }
 
@@ -1175,8 +1175,7 @@ mod tests {
 
     use super::*;
 
-    /// A test config with CaS and scan batching on and at most `max_in_flight` statements of each
-    /// in flight (per range, for CaS).
+    /// A test config with batching on and at most `max_in_flight` statements of each kind in flight.
     fn batching_config(max_in_flight: usize) -> PostgresConsensusConfig {
         let config = PostgresConsensusConfig::new_for_test()
             .expect("valid config")
