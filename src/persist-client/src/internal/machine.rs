@@ -2504,6 +2504,7 @@ pub mod datadriven {
 
 #[cfg(test)]
 pub mod tests {
+    use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -2622,23 +2623,21 @@ pub mod tests {
         let (watched_waiter, _) = poller.expect_open::<String, (), u64, i64>(watched).await;
         waiters.push(watched_waiter);
 
-        let waiters: Vec<_> = waiters
-            .into_iter()
-            .map(|mut waiter| {
-                spawn(|| "wait", async move {
-                    waiter.wait_for_upper_past(&Antichain::from_elem(0)).await;
-                })
-            })
-            .collect();
-        // Let every waiter start its first sleep.
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        // Start the waits at staggered times, so that only the tick can line their polls up.
+        let mut handles = Vec::new();
+        for mut waiter in waiters {
+            handles.push(spawn(|| "wait", async move {
+                waiter.wait_for_upper_past(&Antichain::from_elem(0)).await;
+            }));
+            tokio::time::sleep(Duration::from_millis(37)).await;
+        }
         let written = tokio::time::Instant::now();
         for (_, write) in polled.iter_mut() {
             write.advance_upper(&Antichain::from_elem(1)).await;
         }
         local_write.advance_upper(&Antichain::from_elem(1)).await;
-        for waiter in waiters {
-            waiter.await;
+        for handle in handles {
+            handle.await;
         }
 
         let scans = scans.lock().expect("lock poisoned");
@@ -2649,9 +2648,21 @@ pub mod tests {
                 "{shard_id} was not polled: {polls:?}"
             );
         }
+        // The paused clock wakes timers at millisecond granularity.
+        let interval = super::CONSENSUS_POLL_TICK_INTERVAL.get(&client.cfg);
+        let epoch = *super::POLL_TICK_EPOCH;
+        for (key, at) in &polls {
+            let offset =
+                at.into_std().saturating_duration_since(epoch).as_nanos() % interval.as_nanos();
+            assert!(
+                offset < Duration::from_millis(2).as_nanos(),
+                "{key} polled {offset}ns past a tick: {polls:?}"
+            );
+        }
+        let ticks: BTreeSet<_> = polls.iter().map(|(_, at)| *at).collect();
         assert!(
-            polls.iter().all(|(_, at)| *at == polls[0].1),
-            "polls should share one tick: {polls:?}"
+            ticks.len() < polled.len(),
+            "polls should share ticks: {polls:?}"
         );
         assert!(
             polls.iter().all(|(key, _)| *key != watched.to_string()),
