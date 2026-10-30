@@ -100,6 +100,12 @@ impl RetryStream {
         self.advance()
     }
 
+    /// Like [Self::sleep], but sleeps until `deadline`, without jitter.
+    pub async fn sleep_until(self, deadline: tokio::time::Instant) -> Self {
+        tokio::time::sleep_until(deadline).await;
+        self.advance()
+    }
+
     // Only exposed for testing.
     fn advance(mut self) -> Self {
         self.attempt += 1;

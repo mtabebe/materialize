@@ -12,7 +12,8 @@
 //! Every scan joins one process-wide queue, and at most [CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT]
 //! statements run at once. Under that cap a scan goes out at once with whatever is queued. At the
 //! cap it waits for a statement to return and joins the next one. There is no timer, so batches
-//! only grow when scans arrive together.
+//! only grow when scans arrive together, which is what the poll tick in `mz_persist_client` is
+//! for.
 //!
 //! NOTE: batches ignore CockroachDB ranges. On a single-node CockroachDB v23.1 with the table
 //! split into 64 ranges, polls of 128 shards returning 0-1 rows each measured 64-85 µs of CPU per

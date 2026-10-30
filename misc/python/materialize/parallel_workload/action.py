@@ -2973,6 +2973,13 @@ class FlipFlagsAction(Action):
             "4",
         ]
         self.flags_with_values["persist_consensus_scan_batch_max_shards"] = ["8", "128"]
+        self.flags_with_values["persist_consensus_poll_tick_enabled"] = (
+            BOOLEAN_FLAG_VALUES
+        )
+        self.flags_with_values["persist_consensus_poll_tick_interval"] = [
+            "'100ms'",
+            "'1200ms'",
+        ]
         self.flags_with_values["enable_variadic_left_join_lowering"] = (
             BOOLEAN_FLAG_VALUES
         )
