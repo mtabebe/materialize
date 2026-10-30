@@ -11,7 +11,7 @@
 
 use std::fmt::Debug;
 use std::ops::ControlFlow::{self, Break, Continue};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use differential_dataflow::difference::Monoid;
@@ -881,8 +881,7 @@ where
                 .instrument(trace_span!("snapshot::watch"))
         );
         let mut sleep_fut = std::pin::pin!(
-            sleeps
-                .sleep()
+            poll_sleep(&self.applier.cfg, sleeps)
                 .map(Wake::Sleep)
                 .instrument(trace_span!("snapshot::sleep"))
         );
@@ -983,8 +982,7 @@ where
                         sleeps.next_sleep(),
                     );
                     sleep_fut.set(
-                        sleeps
-                            .sleep()
+                        poll_sleep(&self.applier.cfg, sleeps)
                             .map(Wake::Sleep)
                             .instrument(trace_span!("snapshot::sleep")),
                     );
@@ -1170,6 +1168,65 @@ pub(crate) const NEXT_LISTEN_BATCH_RETRYER_CLAMP: Config<Duration> = Config::new
     "The backoff clamp duration when polling for new batches from a Listen or Subscribe.",
     ParameterScope::Environment,
 );
+
+pub(crate) const CONSENSUS_POLL_TICK_ENABLED: Config<bool> = Config::new(
+    "persist_consensus_poll_tick_enabled",
+    false,
+    "\
+    Whether polls for a new upper wake on a process-wide tick, so that their consensus scans \
+    arrive together and can be batched.",
+    ParameterScope::Environment,
+);
+
+pub(crate) const CONSENSUS_POLL_TICK_INTERVAL: Config<Duration> = Config::new(
+    "persist_consensus_poll_tick_interval",
+    Duration::from_millis(1200),
+    "The interval of the process-wide tick that polls for a new upper wake on.",
+    ParameterScope::Environment,
+);
+
+/// The start of this process's poll tick grid.
+///
+/// Each process starts its grid when it first polls, so ticks of different processes don't line
+/// up and their scans don't all reach consensus at once.
+static POLL_TICK_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Sleeps for the next poll of `wait_for_upper_past`.
+///
+/// With the poll tick enabled, this wakes on the tick nearest to the end of the sleep the retry
+/// series asks for. Waits for many shards then wake together, and their scans can share a
+/// batched consensus statement.
+fn poll_sleep(
+    cfg: &PersistConfig,
+    sleeps: MetricsRetryStream,
+) -> impl Future<Output = MetricsRetryStream> + use<> {
+    let tick = CONSENSUS_POLL_TICK_ENABLED.get(cfg).then(|| {
+        poll_tick(
+            *POLL_TICK_EPOCH,
+            tokio::time::Instant::now().into_std(),
+            sleeps.next_sleep(),
+            CONSENSUS_POLL_TICK_INTERVAL.get(cfg),
+        )
+    });
+    async move {
+        match tick {
+            Some(tick) => sleeps.sleep_until(tick.into()).await,
+            None => sleeps.sleep().await,
+        }
+    }
+}
+
+/// The tick of the grid of `interval`s from `epoch` that is nearest to `now + sleep`, and after
+/// `now`.
+fn poll_tick(epoch: Instant, now: Instant, sleep: Duration, interval: Duration) -> Instant {
+    let interval = interval.max(Duration::from_millis(1)).as_nanos();
+    let elapsed = now.saturating_duration_since(epoch).as_nanos();
+    let nearest = (elapsed + sleep.as_nanos() + interval / 2) / interval;
+    let next = elapsed / interval + 1;
+    let ticks = nearest.max(next);
+    let offset = u64::try_from(ticks * interval).expect("poll tick within u64 nanoseconds");
+    epoch + Duration::from_nanos(offset)
+}
 
 pub(crate) fn next_listen_batch_retry_params(cfg: &ConfigSet) -> RetryParameters {
     RetryParameters {
@@ -2445,13 +2502,16 @@ pub mod datadriven {
 
 #[cfg(test)]
 pub mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use mz_dyncfg::ConfigUpdates;
     use mz_ore::cast::CastFrom;
     use mz_ore::task::spawn;
     use mz_persist::intercept::{InterceptBlob, InterceptHandle};
-    use mz_persist::location::SeqNo;
+    use mz_persist::location::{
+        CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData,
+    };
     use mz_persist_types::PersistLocation;
     use semver::Version;
     use timely::progress::Antichain;
@@ -2462,6 +2522,140 @@ pub mod tests {
     use crate::internal::state::{HandleDebugState, ROLLUP_THRESHOLD};
     use crate::tests::{new_test_client, new_test_client_cache};
     use crate::{Diagnostics, PersistClient, ShardId};
+
+    #[mz_ore::test]
+    fn poll_tick() {
+        let epoch = Instant::now();
+        let ms = Duration::from_millis;
+        let at = |n: u64| epoch + ms(n);
+        let tick = |now: u64, sleep: u64| super::poll_tick(epoch, at(now), ms(sleep), ms(1000));
+        // Nearest tick to the end of the sleep.
+        assert_eq!(tick(0, 1200), at(1000));
+        assert_eq!(tick(0, 1600), at(2000));
+        assert_eq!(tick(300, 1200), at(2000));
+        assert_eq!(tick(2500, 16000), at(19000));
+        // Never now or earlier, however short the sleep.
+        assert_eq!(tick(0, 0), at(1000));
+        assert_eq!(tick(1000, 100), at(2000));
+        assert_eq!(tick(1999, 0), at(2000));
+        // A clock behind the epoch counts from the epoch.
+        assert_eq!(super::poll_tick(at(5), epoch, ms(0), ms(1000)), at(1005));
+        // A zero interval is treated as one millisecond.
+        assert_eq!(super::poll_tick(epoch, at(7), ms(0), ms(0)), at(8));
+    }
+
+    /// A [Consensus] that records when each key is scanned.
+    #[derive(Debug)]
+    struct RecordScans {
+        inner: Arc<dyn Consensus>,
+        scans: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Consensus for RecordScans {
+        fn list_keys(&self) -> ResultStream<'_, String> {
+            self.inner.list_keys()
+        }
+
+        async fn head(&self, key: &str) -> Result<Option<VersionedData>, ExternalError> {
+            self.inner.head(key).await
+        }
+
+        async fn compare_and_set(
+            &self,
+            key: &str,
+            new: VersionedData,
+        ) -> Result<CaSResult, ExternalError> {
+            self.inner.compare_and_set(key, new).await
+        }
+
+        async fn scan(
+            &self,
+            key: &str,
+            from: SeqNo,
+            limit: usize,
+        ) -> Result<Vec<VersionedData>, ExternalError> {
+            self.scans
+                .lock()
+                .expect("lock poisoned")
+                .push((key.to_owned(), tokio::time::Instant::now()));
+            self.inner.scan(key, from, limit).await
+        }
+
+        async fn truncate(&self, key: &str, seqno: SeqNo) -> Result<Option<usize>, ExternalError> {
+            self.inner.truncate(key, seqno).await
+        }
+    }
+
+    #[mz_persist_proc::test(tokio::test(start_paused = true))]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn poll_tick_aligns_scans(dyncfgs: ConfigUpdates) {
+        let client = new_test_client(&dyncfgs).await;
+        client
+            .cfg
+            .set_config(&super::CONSENSUS_POLL_TICK_ENABLED, true);
+        // A second process, with its own state and no PubSub from the first, so it learns of the
+        // first's writes only by polling.
+        let scans = Arc::new(Mutex::new(Vec::new()));
+        let mut poller = client.clone();
+        poller.shared_states = Arc::new(StateCache::new_no_metrics());
+        poller.consensus = Arc::new(RecordScans {
+            inner: Arc::clone(&client.consensus),
+            scans: Arc::clone(&scans),
+        });
+
+        let mut polled = Vec::new();
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let shard_id = ShardId::new();
+            let (write, _) = client.expect_open::<String, (), u64, i64>(shard_id).await;
+            let (waiter, _) = poller.expect_open::<String, (), u64, i64>(shard_id).await;
+            polled.push((shard_id, write));
+            waiters.push(waiter);
+        }
+        // A shard written by the polling process itself, whose waiter wakes through the shared
+        // state, as it would through PubSub.
+        let watched = ShardId::new();
+        let (mut local_write, _) = poller.expect_open::<String, (), u64, i64>(watched).await;
+        let (watched_waiter, _) = poller.expect_open::<String, (), u64, i64>(watched).await;
+        waiters.push(watched_waiter);
+
+        let waiters: Vec<_> = waiters
+            .into_iter()
+            .map(|mut waiter| {
+                spawn(|| "wait", async move {
+                    waiter.wait_for_upper_past(&Antichain::from_elem(0)).await;
+                })
+            })
+            .collect();
+        // Let every waiter start its first sleep.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let written = tokio::time::Instant::now();
+        for (_, write) in polled.iter_mut() {
+            write.advance_upper(&Antichain::from_elem(1)).await;
+        }
+        local_write.advance_upper(&Antichain::from_elem(1)).await;
+        for waiter in waiters {
+            waiter.await;
+        }
+
+        let scans = scans.lock().expect("lock poisoned");
+        let polls: Vec<_> = scans.iter().filter(|(_, at)| *at > written).collect();
+        for (shard_id, _) in &polled {
+            assert!(
+                polls.iter().any(|(key, _)| *key == shard_id.to_string()),
+                "{shard_id} was not polled: {polls:?}"
+            );
+        }
+        assert!(
+            polls.iter().all(|(_, at)| *at == polls[0].1),
+            "polls should share one tick: {polls:?}"
+        );
+        assert!(
+            polls.iter().all(|(key, _)| *key != watched.to_string()),
+            "a shard advanced through shared state should not be polled: {polls:?}"
+        );
+    }
 
     #[mz_persist_proc::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // error: unsupported operation: integer-to-pointer casts and `ptr::from_exposed_addr` are not supported with `-Zmiri-strict-provenance`

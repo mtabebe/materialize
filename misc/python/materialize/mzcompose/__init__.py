@@ -316,6 +316,23 @@ def get_variable_system_parameters(
             "300s",
             ["10s", "300s"],
         ),
+        # Off by default, as in production. A cap of 1 makes the scan batcher
+        # coalesce whenever two scans overlap, and the poll tick makes them overlap.
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_in_flight_per_range", "4", ["1", "4"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_shards", "128", ["1", "128"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_poll_tick_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_poll_tick_interval", "1200ms", ["100ms", "1200ms"]
+        ),
         # -----
         # Others (ordered by name),
         VariableSystemParameter(
