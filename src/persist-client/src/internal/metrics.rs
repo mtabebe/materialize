@@ -34,7 +34,9 @@ use mz_ore::stats::histogram_seconds_buckets;
 use mz_persist::location::{
     Blob, BlobMetadata, CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData,
 };
-use mz_persist::metrics::{BlobHedgeMetrics, ColumnarMetrics, S3BlobMetrics};
+use mz_persist::metrics::{
+    BlobHedgeMetrics, ColumnarMetrics, ConsensusBatchMetrics, S3BlobMetrics,
+};
 use mz_persist::retry::RetryStream;
 use mz_persist_types::Codec64;
 use mz_postgres_client::metrics::PostgresClientMetrics;
@@ -122,6 +124,8 @@ pub struct Metrics {
     pub blob_hedge: BlobHedgeMetrics,
     /// Metrics for Postgres-backed consensus implementation
     pub postgres_consensus: PostgresClientMetrics,
+    /// Metrics for batched compare-and-set on Postgres-backed consensus
+    pub consensus_batch: ConsensusBatchMetrics,
 
     #[allow(dead_code)]
     pub(crate) registry: MetricsRegistry,
@@ -195,6 +199,7 @@ impl Metrics {
             s3_blob,
             blob_hedge: BlobHedgeMetrics::new(registry),
             postgres_consensus: PostgresClientMetrics::new(registry, "mz_persist"),
+            consensus_batch: ConsensusBatchMetrics::new(registry),
             _vecs: vecs,
             _uptime: uptime,
             registry: registry.clone(),

@@ -9,10 +9,11 @@
 
 //! Implementation of [Consensus] backed by Postgres.
 
+use std::collections::BTreeSet;
 use std::fmt::Formatter;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use async_stream::try_stream;
@@ -22,9 +23,11 @@ use deadpool_postgres::PoolError;
 use deadpool_postgres::tokio_postgres::Config;
 use deadpool_postgres::tokio_postgres::types::{FromSql, IsNull, ToSql, Type, to_sql_checked};
 use futures_util::StreamExt;
+use itertools::Itertools;
 use mz_dyncfg::ConfigSet;
 use mz_ore::cast::CastFrom;
 use mz_ore::metrics::MetricsRegistry;
+use mz_ore::task::AbortOnDropHandle;
 use mz_ore::url::SensitiveUrl;
 use mz_postgres_client::metrics::PostgresClientMetrics;
 use mz_postgres_client::{
@@ -35,8 +38,10 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres::{Row, Statement};
 use tracing::{info, warn};
 
+use crate::cas_batch::{BatchLimits, CasBackend, CasBatcher, CasOp, RangeId, RangeMap};
 use crate::error::Error;
 use crate::location::{CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData};
+use crate::metrics::ConsensusBatchMetrics;
 
 /// Flag to run PostgreSQL consensus connections under READ COMMITTED isolation instead of SERIALIZABLE.
 ///
@@ -64,6 +69,55 @@ pub const PG_CONSENSUS_READ_COMMITTED: mz_dyncfg::Config<bool> = mz_dyncfg::Conf
     PostgreSQL backends. This flag must be off when targetting CockroachDB.",
     mz_dyncfg::ParameterScope::Environment,
 );
+
+/// Whether `compare_and_set` goes through the batcher in [crate::cas_batch].
+///
+/// Off runs the single-row CaS queries exactly as before the batcher existed. Batched and
+/// single-row statements write identical rows, so processes with different values of this flag
+/// can share one consensus table.
+pub const CONSENSUS_CAS_BATCH_ENABLED: mz_dyncfg::Config<bool> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_enabled",
+    false,
+    "Coalesce concurrent consensus compare-and-set calls into one statement per CockroachDB range \
+    (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+// NOTE: every in-flight statement holds a pooled connection, so this times the number of hot
+// ranges must stay well below `persist_consensus_connection_pool_max_size`, else callers block
+// acquiring connections.
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE: mz_dyncfg::Config<usize> =
+    mz_dyncfg::Config::new(
+        "persist_consensus_cas_batch_max_in_flight_per_range",
+        4,
+        "Batched consensus compare-and-set statements in flight per CockroachDB range before new \
+        calls wait to join the next statement (Materialize).",
+        mz_dyncfg::ParameterScope::Environment,
+    );
+
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_ROWS: mz_dyncfg::Config<usize> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_max_rows",
+    128,
+    "Maximum compare-and-set calls in one batched consensus statement (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+pub(crate) const CONSENSUS_CAS_BATCH_MAX_BYTES: mz_dyncfg::Config<usize> = mz_dyncfg::Config::new(
+    "persist_consensus_cas_batch_max_bytes",
+    1024 * 1024,
+    "Maximum total data bytes in one batched consensus statement. A single larger call still goes \
+    out alone (Materialize).",
+    mz_dyncfg::ParameterScope::Environment,
+);
+
+pub(crate) const CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL: mz_dyncfg::Config<Duration> =
+    mz_dyncfg::Config::new(
+        "persist_consensus_cas_batch_range_refresh_interval",
+        Duration::from_secs(300),
+        "How often the consensus compare-and-set batcher re-reads the consensus table's \
+        CockroachDB range boundaries (Materialize).",
+        mz_dyncfg::ParameterScope::Environment,
+    );
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS consensus (
@@ -166,6 +220,7 @@ pub struct PostgresConsensusConfig {
     url: SensitiveUrl,
     knobs: Arc<dyn PostgresClientKnobs>,
     metrics: PostgresClientMetrics,
+    batch_metrics: ConsensusBatchMetrics,
     dyncfg: Arc<ConfigSet>,
 }
 
@@ -178,12 +233,14 @@ impl PostgresConsensusConfig {
         url: &SensitiveUrl,
         knobs: Box<dyn PostgresClientKnobs>,
         metrics: PostgresClientMetrics,
+        batch_metrics: ConsensusBatchMetrics,
         dyncfg: Arc<ConfigSet>,
     ) -> Result<Self, Error> {
         Ok(PostgresConsensusConfig {
             url: url.clone(),
             knobs: Arc::from(knobs),
             metrics,
+            batch_metrics,
             dyncfg,
         })
     }
@@ -253,11 +310,13 @@ impl PostgresConsensusConfig {
             }
         }
 
-        let dyncfg = ConfigSet::default().add(&PG_CONSENSUS_READ_COMMITTED);
+        let dyncfg = crate::cfg::all_dyn_configs(ConfigSet::default());
+        let registry = MetricsRegistry::new();
         let config = PostgresConsensusConfig::new(
             &url,
             Box::new(TestConsensusKnobs),
-            PostgresClientMetrics::new(&MetricsRegistry::new(), "mz_persist"),
+            PostgresClientMetrics::new(&registry, "mz_persist"),
+            ConsensusBatchMetrics::new(&registry),
             Arc::new(dyncfg),
         )?;
         Ok(Some(config))
@@ -275,7 +334,16 @@ enum PostgresMode {
 
 /// Implementation of [Consensus] over a Postgres database.
 pub struct PostgresConsensus {
-    postgres_client: PostgresClient,
+    client: PostgresConsensusClient,
+    cfg: Arc<ConfigSet>,
+    batcher: CasBatcher<PostgresCasBackend>,
+    _range_refresh: Option<AbortOnDropHandle<()>>,
+}
+
+/// The connection pool and backend flavor, shared with the compare-and-set batcher.
+#[derive(Clone, Debug)]
+struct PostgresConsensusClient {
+    postgres_client: Arc<PostgresClient>,
     mode: PostgresMode,
 }
 
@@ -297,6 +365,7 @@ impl PostgresConsensus {
             escape_identifier(role),
         );
 
+        let cfg = Arc::clone(&config.dyncfg);
         let dyncfg = Arc::clone(&config.dyncfg);
 
         // The resolver runs per connection, so a flag change takes effect as the pool cycles
@@ -354,9 +423,39 @@ impl PostgresConsensus {
             }
         }
 
-        Ok(PostgresConsensus {
-            postgres_client,
+        let consensus_client = PostgresConsensusClient {
+            postgres_client: Arc::new(postgres_client),
             mode,
+        };
+        let ranges = Arc::new(RwLock::new(RangeMap::default()));
+        let range_refresh = match mode {
+            PostgresMode::CockroachDB => Some(
+                mz_ore::task::spawn(
+                    || "persist::consensus::cas_batch_range_refresh",
+                    refresh_ranges(
+                        consensus_client.clone(),
+                        Arc::clone(&cfg),
+                        Arc::clone(&ranges),
+                        config.batch_metrics.clone(),
+                    ),
+                )
+                .abort_on_drop(),
+            ),
+            PostgresMode::Postgres => None,
+        };
+        let batcher = CasBatcher::new(
+            PostgresCasBackend {
+                client: consensus_client.clone(),
+                cfg: Arc::clone(&cfg),
+                ranges,
+            },
+            config.batch_metrics,
+        );
+        Ok(PostgresConsensus {
+            client: consensus_client,
+            cfg,
+            batcher,
+            _range_refresh: range_refresh,
         })
     }
 
@@ -400,6 +499,12 @@ impl PostgresConsensus {
     }
 
     async fn get_connection(&self) -> Result<Connection, PoolError> {
+        self.client.get_connection().await
+    }
+}
+
+impl PostgresConsensusClient {
+    async fn get_connection(&self) -> Result<Connection, PoolError> {
         let conn = self.postgres_client.get_connection().await?;
         // On CockroachDB we always run the lockless `CRDB_*` queries, which are only linearizable
         // under SERIALIZABLE. The connection records the level it was created with, so we assert on
@@ -417,49 +522,8 @@ impl PostgresConsensus {
         }
         Ok(conn)
     }
-}
 
-#[async_trait]
-impl Consensus for PostgresConsensus {
-    fn list_keys(&self) -> ResultStream<'_, String> {
-        let q = "SELECT DISTINCT shard FROM consensus";
-
-        Box::pin(try_stream! {
-            // NB: it's important that we hang on to this client for the lifetime of the stream,
-            // to avoid returning it to the pool prematurely.
-            let client = self.get_connection().await?;
-            let statement = client.prepare_cached(q).await?;
-            let params: &[String] = &[];
-            let mut rows = Box::pin(client.query_raw(&statement, params).await?);
-            while let Some(row) = rows.next().await {
-                let shard: String = row?.try_get("shard")?;
-                yield shard;
-            }
-        })
-    }
-
-    async fn head(&self, key: &str) -> Result<Option<VersionedData>, ExternalError> {
-        let q = "SELECT sequence_number, data FROM consensus
-             WHERE shard = $1 ORDER BY sequence_number DESC LIMIT 1";
-        let row = {
-            let client = self.get_connection().await?;
-            let statement = client.prepare_cached(q).await?;
-            pg_query_opt_prepared(&client, &statement, &[&key]).await?
-        };
-        let row = match row {
-            None => return Ok(None),
-            Some(row) => row,
-        };
-
-        let seqno: SeqNo = row.try_get("sequence_number")?;
-
-        let data: Vec<u8> = row.try_get("data")?;
-        Ok(Some(VersionedData {
-            seqno,
-            data: Bytes::from(data),
-        }))
-    }
-
+    /// Runs one compare-and-set as its own statement.
     async fn compare_and_set(
         &self,
         key: &str,
@@ -720,6 +784,227 @@ impl Consensus for PostgresConsensus {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// Runs [PostgresConsensus]'s batched compare-and-sets.
+///
+/// On CockroachDB a batch is one statement per range, so that a batch whose rows share a range
+/// commits on the one-phase-commit fast path. Vanilla Postgres keeps today's single-row query and
+/// concurrency, with batches of one and no in-flight cap, until a multi-row query is proven
+/// correct under READ COMMITTED.
+#[derive(Debug)]
+struct PostgresCasBackend {
+    client: PostgresConsensusClient,
+    cfg: Arc<ConfigSet>,
+    ranges: Arc<RwLock<RangeMap>>,
+}
+
+#[async_trait]
+impl CasBackend for PostgresCasBackend {
+    fn limits(&self) -> BatchLimits {
+        match self.client.mode {
+            PostgresMode::CockroachDB => BatchLimits {
+                max_in_flight: Some(CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE.get(&self.cfg)),
+                max_rows: CONSENSUS_CAS_BATCH_MAX_ROWS.get(&self.cfg),
+                max_bytes: CONSENSUS_CAS_BATCH_MAX_BYTES.get(&self.cfg),
+                exclusive_keys: true,
+            },
+            // A cap would serialize every CaS, and key exclusion would make a second CaS for a
+            // key wait where today both race at the database.
+            PostgresMode::Postgres => BatchLimits {
+                max_in_flight: None,
+                max_rows: 1,
+                max_bytes: 0,
+                exclusive_keys: false,
+            },
+        }
+    }
+
+    fn range(&self, key: &str) -> RangeId {
+        match self.client.mode {
+            PostgresMode::CockroachDB => self.ranges.read().expect("lock poisoned").range(key),
+            PostgresMode::Postgres => None,
+        }
+    }
+
+    async fn execute(&self, ops: &[CasOp]) -> Result<BTreeSet<String>, ExternalError> {
+        match self.client.mode {
+            PostgresMode::CockroachDB => self.client.compare_and_set_batch(ops).await,
+            PostgresMode::Postgres => {
+                // More than one op would need a determinate error to roll back the ops that ran
+                // before it.
+                let [op] = ops else {
+                    panic!("Postgres batches hold one op, got {}", ops.len());
+                };
+                let result = self.client.compare_and_set(&op.key, op.new.clone()).await?;
+                Ok(BTreeSet::from_iter(
+                    (result == CaSResult::Committed).then(|| op.key.clone()),
+                ))
+            }
+        }
+    }
+}
+
+impl PostgresConsensusClient {
+    /// Runs the CockroachDB compare-and-sets in `ops` as one statement and returns the keys that
+    /// committed. Every op must have an expected seqno, and keys must be distinct.
+    async fn compare_and_set_batch(
+        &self,
+        ops: &[CasOp],
+    ) -> Result<BTreeSet<String>, ExternalError> {
+        // Per row, this is `CRDB_CAS_QUERY`: under SERIALIZABLE, `seqno` is inserted iff
+        // `expected` is the shard's head. `EXISTS = expected AND NOT EXISTS > expected` is that
+        // predicate. The obvious `(SELECT ... ORDER BY sequence_number DESC LIMIT 1) = expected`
+        // gets decorrelated into a lookup join that reads every live row of each shard, data
+        // included. This form reads one row per op. `ON CONFLICT DO NOTHING` turns the primary
+        // key collision with a racing writer into a row missing from `RETURNING`, so a key is
+        // returned iff its row committed.
+        //
+        // Any change to this query should confirm with EXPLAIN ANALYZE (VERBOSE) that the plan
+        // contains `auto commit` and only lookup joins on `consensus_pkey`, and that rows within
+        // one range still increment the `txn.commits1PC` metric.
+        static CRDB_CAS_BATCH_QUERY: &str = "
+            INSERT INTO consensus (shard, sequence_number, data)
+            SELECT v.shard, v.seqno, v.data
+            FROM unnest($1::text[], $2::bigint[], $3::bytea[], $4::bigint[])
+                AS v (shard, seqno, data, expected)
+            WHERE EXISTS (SELECT 1 FROM consensus c
+                    WHERE c.shard = v.shard AND c.sequence_number = v.expected)
+                AND NOT EXISTS (SELECT 1 FROM consensus c
+                    WHERE c.shard = v.shard AND c.sequence_number > v.expected)
+            ORDER BY v.shard
+            ON CONFLICT DO NOTHING
+            RETURNING shard
+        ";
+        assert_eq!(self.mode, PostgresMode::CockroachDB);
+        // `RETURNING shard` can't tell two ops for one key apart.
+        assert!(
+            ops.iter().map(|op| &op.key).all_unique(),
+            "batched CaS keys must be distinct"
+        );
+        let shards: Vec<&str> = ops.iter().map(|op| op.key.as_str()).collect();
+        let seqnos: Vec<SeqNo> = ops.iter().map(|op| op.new.seqno).collect();
+        let data: Vec<&[u8]> = ops.iter().map(|op| op.new.data.as_ref()).collect();
+        let expected: Vec<SeqNo> = ops
+            .iter()
+            .map(|op| {
+                op.new
+                    .seqno
+                    .previous()
+                    .expect("batched CaS has an expected seqno")
+            })
+            .collect();
+        let rows = {
+            let client = self.get_connection().await?;
+            let statement = client.prepare_cached(CRDB_CAS_BATCH_QUERY).await?;
+            pg_query_prepared(&client, &statement, &[&shards, &seqnos, &data, &expected]).await?
+        };
+        rows.iter().map(|row| Ok(row.try_get("shard")?)).collect()
+    }
+
+    async fn range_map(&self) -> Result<RangeMap, ExternalError> {
+        let q = "SELECT start_key FROM [SHOW RANGES FROM TABLE consensus]";
+        let rows = {
+            let client = self.get_connection().await?;
+            let statement = client.prepare_cached(q).await?;
+            pg_query_prepared(&client, &statement, &[]).await?
+        };
+        let start_keys = rows
+            .iter()
+            .map(|row| row.try_get::<_, Option<String>>("start_key"))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(RangeMap::from_start_keys(start_keys)?)
+    }
+}
+
+/// Keeps `ranges` in step with the consensus table's CockroachDB range boundaries while batching
+/// is enabled, refreshing within a second of batching turning on.
+///
+/// A stale or empty map costs batches their one-phase commit, never correctness, so failures keep
+/// the previous map. When the role may not run `SHOW RANGES`, the table stays one range.
+async fn refresh_ranges(
+    client: PostgresConsensusClient,
+    cfg: Arc<ConfigSet>,
+    ranges: Arc<RwLock<RangeMap>>,
+    metrics: ConsensusBatchMetrics,
+) {
+    // NOTE: until the first refresh, every key maps to one range, so the whole process runs at
+    // most `persist_consensus_cas_batch_max_in_flight_per_range` batched statements.
+    let mut last_attempt: Option<Instant> = None;
+    loop {
+        if !CONSENSUS_CAS_BATCH_ENABLED.get(&cfg) {
+            last_attempt = None;
+        } else if last_attempt.map_or(true, |t| {
+            t.elapsed() >= CONSENSUS_CAS_BATCH_RANGE_REFRESH_INTERVAL.get(&cfg)
+        }) {
+            last_attempt = Some(Instant::now());
+            match client.range_map().await {
+                Ok(map) => {
+                    metrics.ranges.set(u64::cast_from(map.len()));
+                    *ranges.write().expect("lock poisoned") = map;
+                }
+                Err(err) => {
+                    metrics.range_refresh_failures.inc();
+                    warn!("failed to refresh consensus range boundaries: {:#}", err);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[async_trait]
+impl Consensus for PostgresConsensus {
+    fn list_keys(&self) -> ResultStream<'_, String> {
+        let q = "SELECT DISTINCT shard FROM consensus";
+
+        Box::pin(try_stream! {
+            // NB: it's important that we hang on to this client for the lifetime of the stream,
+            // to avoid returning it to the pool prematurely.
+            let client = self.get_connection().await?;
+            let statement = client.prepare_cached(q).await?;
+            let params: &[String] = &[];
+            let mut rows = Box::pin(client.query_raw(&statement, params).await?);
+            while let Some(row) = rows.next().await {
+                let shard: String = row?.try_get("shard")?;
+                yield shard;
+            }
+        })
+    }
+
+    async fn head(&self, key: &str) -> Result<Option<VersionedData>, ExternalError> {
+        let q = "SELECT sequence_number, data FROM consensus
+             WHERE shard = $1 ORDER BY sequence_number DESC LIMIT 1";
+        let row = {
+            let client = self.get_connection().await?;
+            let statement = client.prepare_cached(q).await?;
+            pg_query_opt_prepared(&client, &statement, &[&key]).await?
+        };
+        let row = match row {
+            None => return Ok(None),
+            Some(row) => row,
+        };
+
+        let seqno: SeqNo = row.try_get("sequence_number")?;
+
+        let data: Vec<u8> = row.try_get("data")?;
+        Ok(Some(VersionedData {
+            seqno,
+            data: Bytes::from(data),
+        }))
+    }
+
+    async fn compare_and_set(
+        &self,
+        key: &str,
+        new: VersionedData,
+    ) -> Result<CaSResult, ExternalError> {
+        // Init (no expected seqno) stays on the single-row path.
+        if new.seqno.previous().is_some() && CONSENSUS_CAS_BATCH_ENABLED.get(&self.cfg) {
+            return self.batcher.compare_and_set(key, new).await;
+        }
+        self.client.compare_and_set(key, new).await
+    }
 
     async fn scan(
         &self,
@@ -800,14 +1085,149 @@ impl Consensus for PostgresConsensus {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use mz_dyncfg::ConfigUpdates;
     use mz_ore::assert_err;
+    use mz_ore::cast::CastLossy;
     use tracing::info;
     use uuid::Uuid;
 
+    use crate::location::SCAN_ALL;
     use crate::location::tests::consensus_impl_test;
 
     use super::*;
+
+    /// A test config with batching on and at most `max_in_flight` statements per range.
+    fn batching_config(max_in_flight: usize) -> PostgresConsensusConfig {
+        let config = PostgresConsensusConfig::new_for_test()
+            .expect("valid config")
+            .expect("postgres url is set");
+        let mut updates = ConfigUpdates::default();
+        updates.add(&CONSENSUS_CAS_BATCH_ENABLED, true);
+        updates.add(&CONSENSUS_CAS_BATCH_MAX_IN_FLIGHT_PER_RANGE, max_in_flight);
+        updates.apply(&config.dyncfg);
+        config
+    }
+
+    /// Batches against live range boundaries, then races concurrent writers through the batcher,
+    /// alone and mixed with writers that use the single-row path.
+    async fn cas_batch_ranges_and_races() -> Result<(), ExternalError> {
+        let config = batching_config(1);
+        let consensus = PostgresConsensus::open(config.clone()).await?;
+        if consensus.client.mode == PostgresMode::CockroachDB {
+            // Split inside the random shard keys, so the races below span two ranges.
+            let client = consensus.get_connection().await?;
+            pg_batch_execute(&client, "ALTER TABLE consensus SPLIT AT VALUES ('8')").await?;
+            drop(client);
+            let map = consensus.client.range_map().await?;
+            assert!(map.len() >= 2, "{map:?}");
+            assert_ne!(map.range("7fff"), Some("8".to_owned()));
+            assert_eq!(map.range("8000"), Some("8".to_owned()));
+        }
+        // Reopen so that the refresh task's first pass sees the split. Dropping the first
+        // instance aborts its refresh task, which shares the `ranges` gauge.
+        drop(consensus);
+        let batched = Arc::new(PostgresConsensus::open(config.clone()).await?);
+        race_cas(&[Arc::clone(&batched)], 8, 3, 5).await?;
+        let batch_size = &config.batch_metrics.batch_size;
+        match batched.client.mode {
+            PostgresMode::CockroachDB => {
+                assert!(config.batch_metrics.ranges.get() >= 2);
+                assert!(
+                    batch_size.get_sample_sum() > f64::cast_lossy(batch_size.get_sample_count()),
+                    "some batch should hold more than one call"
+                );
+            }
+            PostgresMode::Postgres => assert_eq!(
+                batch_size.get_sample_sum(),
+                f64::cast_lossy(batch_size.get_sample_count())
+            ),
+        }
+
+        // Batched and single-row writers share shards, as old and new binaries do mid-upgrade.
+        let single_row_config = PostgresConsensusConfig::new_for_test()?.expect("url is set");
+        let single_row = Arc::new(PostgresConsensus::open(single_row_config).await?);
+        race_cas(&[batched, single_row], 8, 4, 5).await
+    }
+
+    /// Races `racers` writers on each of `shards` new shards, spread over `instances`, until every
+    /// head is `target`. Checks that each seqno has exactly one winner and that the log holds the
+    /// winners' data without gaps.
+    async fn race_cas(
+        instances: &[Arc<PostgresConsensus>],
+        shards: usize,
+        racers: usize,
+        target: u64,
+    ) -> Result<(), ExternalError> {
+        let keys: Vec<String> = (0..shards).map(|_| Uuid::new_v4().to_string()).collect();
+        for key in &keys {
+            let init = VersionedData {
+                seqno: SeqNo(0),
+                data: Bytes::from("init"),
+            };
+            assert_eq!(
+                instances[0].compare_and_set(key, init).await?,
+                CaSResult::Committed
+            );
+        }
+        let mut handles = Vec::new();
+        for key in &keys {
+            for racer in 0..racers {
+                let consensus = Arc::clone(&instances[racer % instances.len()]);
+                let key = key.clone();
+                handles.push(mz_ore::task::spawn(|| "race_cas", async move {
+                    let mut wins = Vec::new();
+                    let mut head = SeqNo(0);
+                    while head.0 < target {
+                        let new = VersionedData {
+                            seqno: head.next(),
+                            data: Bytes::from(racer.to_string()),
+                        };
+                        // Determinate errors (serialization failures) committed nothing and are
+                        // retried, as `Machine` does.
+                        match consensus.compare_and_set(&key, new).await {
+                            Ok(CaSResult::Committed) => {
+                                head = head.next();
+                                wins.push(head);
+                            }
+                            Ok(CaSResult::ExpectationMismatch) => loop {
+                                match consensus.head(&key).await {
+                                    Ok(data) => {
+                                        head = data.expect("initialized").seqno;
+                                        break;
+                                    }
+                                    Err(ExternalError::Determinate(_)) => {}
+                                    Err(err) => return Err(err),
+                                }
+                            },
+                            Err(ExternalError::Determinate(_)) => {}
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    Ok::<_, ExternalError>((key, racer, wins))
+                }));
+            }
+        }
+        let mut winners = BTreeMap::new();
+        for handle in handles {
+            let (key, racer, wins) = handle.await?;
+            for seqno in wins {
+                let prev = winners.insert((key.clone(), seqno), racer);
+                assert_eq!(prev, None, "two winners of {key} at {seqno:?}");
+            }
+        }
+        for key in &keys {
+            let log = instances[0].scan(key, SeqNo(0), SCAN_ALL).await?;
+            let seqnos: Vec<_> = log.iter().map(|d| d.seqno).collect();
+            assert_eq!(seqnos, (0..=target).map(SeqNo).collect::<Vec<_>>());
+            for d in &log[1..] {
+                let winner = winners[&(key.clone(), d.seqno)];
+                assert_eq!(d.data, Bytes::from(winner.to_string()));
+            }
+        }
+        Ok(())
+    }
 
     #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // error: unsupported operation: can't call foreign function `TLS_client_method` on OS `linux`
@@ -826,8 +1246,8 @@ mod tests {
         consensus_impl_test(|| PostgresConsensus::open(config.clone())).await?;
 
         // On a Postgres backend the default run above already exercises the tuned queries under
-        // SERIALIZABLE. Re-run the contract with READ COMMITTED to also cover that isolation (on a
-        // CockroachDB backend the flag is a no-op and this just re-runs the default queries).
+        // SERIALIZABLE. Re-run the contract with READ COMMITTED to also cover that isolation. On a
+        // CockroachDB backend the flag makes `get_connection` panic, so skip it there.
         // `consensus_impl_test` asserts on `list_keys`, so it needs a clean table: the previous run
         // leaves shards behind, so drop and recreate the table before running it again.
         let read_committed_config =
@@ -837,11 +1257,21 @@ mod tests {
             updates.add(&PG_CONSENSUS_READ_COMMITTED, true);
             updates.apply(&read_committed_config.dyncfg);
         }
-        PostgresConsensus::open(read_committed_config.clone())
+        let consensus = PostgresConsensus::open(read_committed_config.clone()).await?;
+        if consensus.client.mode == PostgresMode::Postgres {
+            consensus.drop_and_recreate().await?;
+            consensus_impl_test(|| PostgresConsensus::open(read_committed_config.clone())).await?;
+        }
+
+        // The contract again with batching on. It is sequential, so every batch has one call.
+        let batch_config = batching_config(1);
+        PostgresConsensus::open(batch_config.clone())
             .await?
             .drop_and_recreate()
             .await?;
-        consensus_impl_test(|| PostgresConsensus::open(read_committed_config.clone())).await?;
+        consensus_impl_test(|| PostgresConsensus::open(batch_config.clone())).await?;
+
+        cas_batch_ranges_and_races().await?;
 
         // and now verify the implementation-specific `drop_and_recreate` works as intended
         let consensus = PostgresConsensus::open(config.clone()).await?;

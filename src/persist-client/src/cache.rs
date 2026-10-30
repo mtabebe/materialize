@@ -208,6 +208,7 @@ impl PersistClientCache {
                     x.key(),
                     Box::new(self.cfg.clone()),
                     self.metrics.postgres_consensus.clone(),
+                    self.metrics.consensus_batch.clone(),
                     Arc::clone(&self.cfg().configs),
                 )?;
                 let consensus =

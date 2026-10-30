@@ -119,7 +119,7 @@ impl RustType<u64> for SeqNo {
 /// that the operation _definitely did NOT succeed_ (e.g. permission denied).
 #[derive(Debug)]
 pub struct Determinate {
-    inner: anyhow::Error,
+    pub(crate) inner: anyhow::Error,
 }
 
 impl std::fmt::Display for Determinate {
