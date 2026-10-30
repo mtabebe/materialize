@@ -2338,10 +2338,6 @@ metrics:
   help: compare-and-set calls that waited for an in-flight statement to finish
   source: src/persist/src/metrics.rs
   visibility: internal
-- name: mz_persist_consensus_cas_batch_in_flight
-  help: batched consensus compare-and-set statements currently executing
-  source: src/persist/src/metrics.rs
-  visibility: internal
 - name: mz_persist_consensus_cas_batch_range_refresh_failures
   help: failed refreshes of the consensus table's range boundaries
   source: src/persist/src/metrics.rs
@@ -2362,10 +2358,6 @@ metrics:
   visibility: internal
 - name: mz_persist_consensus_cas_batch_size_sum
   help: number of compare-and-set calls per batched consensus statement
-  source: src/persist/src/metrics.rs
-  visibility: internal
-- name: mz_persist_consensus_cas_batch_statements
-  help: batched consensus compare-and-set statements issued
   source: src/persist/src/metrics.rs
   visibility: internal
 - name: mz_persist_consensus_failures

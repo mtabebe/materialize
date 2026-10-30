@@ -48,16 +48,13 @@ pub(crate) type RangeId = Option<String>;
 /// Limits on how a [CasBatcher] forms statements, read anew at every scheduling decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BatchLimits {
-    /// Statements in flight per range, `None` for no limit. `Some(0)` is treated as `Some(1)`,
-    /// since with nothing in flight nothing would ever schedule a queued call.
-    pub max_in_flight: Option<usize>,
+    /// Statements in flight per range. 0 is treated as 1, since with nothing in flight nothing
+    /// would ever schedule a queued call.
+    pub max_in_flight: usize,
     /// Calls per statement. Values below 1 are treated as 1.
     pub max_rows: usize,
     /// Total data bytes per statement. A batch always takes its first call, however large.
     pub max_bytes: usize,
-    /// Whether a key waits while it is in an in-flight statement of its range. A key appears at
-    /// most once per statement regardless.
-    pub exclusive_keys: bool,
 }
 
 /// One compare-and-set call.
@@ -111,9 +108,7 @@ impl RangeQueue {
             if p.tx.is_closed() {
                 continue;
             }
-            if batch_keys.contains(&p.op.key)
-                || (limits.exclusive_keys && self.in_flight_keys.contains(&p.op.key))
-            {
+            if batch_keys.contains(&p.op.key) || self.in_flight_keys.contains(&p.op.key) {
                 skipped.push_back(p);
                 continue;
             }
@@ -145,7 +140,6 @@ struct Scheduler {
 #[derive(Debug)]
 struct Batch {
     range: RangeId,
-    registered_keys: bool,
     ops: Vec<PendingOp>,
 }
 
@@ -155,23 +149,17 @@ impl Scheduler {
             return Vec::new();
         };
         let mut batches = Vec::new();
-        while limits
-            .max_in_flight
-            .map_or(true, |k| queue.in_flight < k.max(1))
-        {
+        while queue.in_flight < limits.max_in_flight.max(1) {
             let ops = queue.take_batch(limits);
             if ops.is_empty() {
                 break;
             }
             queue.in_flight += 1;
-            if limits.exclusive_keys {
-                queue
-                    .in_flight_keys
-                    .extend(ops.iter().map(|p| p.op.key.clone()));
-            }
+            queue
+                .in_flight_keys
+                .extend(ops.iter().map(|p| p.op.key.clone()));
             batches.push(Batch {
                 range: range.clone(),
-                registered_keys: limits.exclusive_keys,
                 ops,
             });
         }
@@ -181,13 +169,13 @@ impl Scheduler {
         batches
     }
 
-    fn complete(&mut self, range: &RangeId, keys: Option<&[String]>) {
+    fn complete(&mut self, range: &RangeId, keys: &[String]) {
         let queue = self
             .ranges
             .get_mut(range)
             .expect("a range with a statement in flight has a queue");
         queue.in_flight -= 1;
-        for key in keys.into_iter().flatten() {
+        for key in keys {
             queue.in_flight_keys.remove(key);
         }
     }
@@ -265,8 +253,6 @@ impl<B: CasBackend> CasBatcher<B> {
 
 fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
     for batch in batches {
-        shared.metrics.statements.inc();
-        shared.metrics.in_flight.inc();
         shared
             .metrics
             .batch_size
@@ -275,7 +261,6 @@ fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
         let mut guard = BatchGuard {
             shared: Arc::clone(shared),
             range: batch.range,
-            registered_keys: batch.registered_keys,
             ops,
             txs,
             result: None,
@@ -297,7 +282,6 @@ fn spawn_batches<B: CasBackend>(shared: &Arc<Shared<B>>, batches: Vec<Batch>) {
 struct BatchGuard<B: CasBackend> {
     shared: Arc<Shared<B>>,
     range: RangeId,
-    registered_keys: bool,
     ops: Vec<CasOp>,
     txs: Vec<CasResponse>,
     result: Option<Result<BTreeSet<String>, ExternalError>>,
@@ -329,17 +313,12 @@ impl<B: CasBackend> Drop for BatchGuard<B> {
             .collect::<Vec<_>>(),
         };
         let limits = self.shared.backend.limits();
-        let keys: Vec<String> = if self.registered_keys {
-            self.ops.drain(..).map(|op| op.key).collect()
-        } else {
-            Vec::new()
-        };
+        let keys: Vec<String> = self.ops.drain(..).map(|op| op.key).collect();
         let batches = {
             let mut scheduler = self.shared.scheduler.lock().expect("lock poisoned");
-            scheduler.complete(&self.range, self.registered_keys.then_some(&keys[..]));
+            scheduler.complete(&self.range, &keys);
             scheduler.try_schedule(&self.range, &limits)
         };
-        self.shared.metrics.in_flight.dec();
         // Answer only after freeing the slot and keys, so a caller that retries at once finds
         // them free.
         for (tx, response) in self.txs.drain(..).zip_eq(responses) {
@@ -504,10 +483,9 @@ mod tests {
         }
         let ids = |ops: &[PendingOp]| ops.iter().map(|p| p.id).collect::<Vec<_>>();
         let limits = BatchLimits {
-            max_in_flight: Some(1),
+            max_in_flight: 1,
             max_rows: 3,
             max_bytes: 10,
-            exclusive_keys: true,
         };
 
         // Sorted by key, duplicate keys and busy keys stay queued in order, row cap.
@@ -535,19 +513,6 @@ mod tests {
         assert_eq!(ids(&q.take_batch(&limits)), vec![1, 2]);
         assert_eq!(ids(&q.take_batch(&limits)), vec![3]);
         assert!(q.take_batch(&limits).is_empty());
-
-        // Not exclusive: busy keys go out, but still once per batch.
-        let limits = BatchLimits {
-            exclusive_keys: false,
-            ..limits
-        };
-        let mut q = RangeQueue::default();
-        q.in_flight_keys.insert("busy".into());
-        for (id, key) in [(0, "busy"), (1, "busy")] {
-            q.pending.push_back(op(id, key, 1));
-        }
-        assert_eq!(ids(&q.take_batch(&limits)), vec![0]);
-        assert_eq!(ids(q.pending.make_contiguous()), vec![1]);
 
         // Abandoned calls are dropped.
         let mut q = RangeQueue::default();
@@ -640,10 +605,9 @@ mod tests {
 
     fn crdb_limits(k: usize) -> BatchLimits {
         BatchLimits {
-            max_in_flight: Some(k),
+            max_in_flight: k,
             max_rows: 128,
             max_bytes: 1 << 20,
-            exclusive_keys: true,
         }
     }
 
@@ -724,15 +688,17 @@ mod tests {
             "{statements:?}"
         );
         assert!(statements.len() <= 4, "{statements:?}");
-        assert_eq!(metrics.statements.get(), u64::cast_from(statements.len()));
+        assert_eq!(
+            metrics.batch_size.get_sample_count(),
+            u64::cast_from(statements.len())
+        );
         assert_eq!(metrics.batch_size.get_sample_sum(), 6.0);
-        assert_eq!(metrics.in_flight.get(), 0);
         assert_idle(&batcher);
     }
 
     #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // too slow
-    async fn ranges_and_uncapped() {
+    async fn ranges() {
         // Two ranges with K = 1 each run one statement apiece at once.
         let ranges = RangeMap::from_start_keys([Some("/\"s5\"")]).unwrap();
         let batcher = Arc::new(CasBatcher::new(
@@ -745,24 +711,6 @@ mod tests {
         batcher.backend().gate.add_permits(2);
         assert_eq!(a.await, Ok(CaSResult::Committed));
         assert_eq!(b.await, Ok(CaSResult::Committed));
-
-        // Postgres-style limits: no cap and no key exclusion, so same-key calls race.
-        *batcher.backend().limits.lock().unwrap() = BatchLimits {
-            max_in_flight: None,
-            max_rows: 1,
-            max_bytes: 0,
-            exclusive_keys: false,
-        };
-        let racers: Vec<_> = (0..4).map(|_| spawn_cas(&batcher, "s1", 2)).collect();
-        wait_started(batcher.backend(), 6).await;
-        batcher.backend().gate.add_permits(4);
-        let mut committed = 0;
-        for racer in racers {
-            if racer.await == Ok(CaSResult::Committed) {
-                committed += 1;
-            }
-        }
-        assert_eq!(committed, 1);
         assert_idle(&batcher);
     }
 
@@ -817,7 +765,6 @@ mod tests {
                 batcher.compare_and_set("s0", data(1)).await,
                 Ok(CaSResult::Committed)
             );
-            assert_eq!(batcher.shared.metrics.in_flight.get(), 0);
             assert_idle(&batcher);
         }
     }

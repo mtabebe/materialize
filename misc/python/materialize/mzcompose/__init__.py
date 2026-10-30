@@ -297,8 +297,6 @@ def get_variable_system_parameters(
         VariableSystemParameter(
             "persist_blob_hedged_get_budget_ratio", "0.01", ["1.0", "0.01"]
         ),
-        # Off by default, as in production. Randomized seeds turn the batcher on,
-        # and a cap of 1 makes it coalesce whenever two CaS calls overlap.
         VariableSystemParameter(
             "persist_consensus_cas_batch_enabled", "false", ["true", "false"]
         ),
