@@ -921,8 +921,9 @@ impl BatchBackend for PostgresCasBackend {
 /// own in-flight scan.
 ///
 /// NOTE: scan batches span ranges. On a single-node CockroachDB v23.1 with the table split into 64
-/// ranges, reading 128 shards as one statement measured 64-85 µs of CPU per shard, as one
-/// statement per range 300-324 µs, and as single-shard scans 387-432 µs (medians of 3 runs).
+/// ranges, polls of 128 shards returning 0-1 rows each measured 64-85 µs of CPU per shard as one
+/// statement, 295-321 µs as one statement per range, and 386-410 µs as single-shard scans
+/// (medians of 3 runs).
 #[derive(Debug)]
 struct PostgresScanBackend {
     client: PostgresConsensusClient,
