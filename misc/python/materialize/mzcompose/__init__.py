@@ -314,6 +314,21 @@ def get_variable_system_parameters(
             "300s",
             ["10s", "300s"],
         ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_in_flight", "4", ["1", "4"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_shards", "128", ["8", "128"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_poll_tick_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_poll_tick_interval", "1200ms", ["100ms", "1200ms"]
+        ),
         # -----
         # Others (ordered by name),
         VariableSystemParameter(

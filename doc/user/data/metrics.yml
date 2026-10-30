@@ -2366,6 +2366,34 @@ metrics:
   - honeycomb
   source: src/persist-client/src/internal/metrics.rs
   visibility: internal
+- name: mz_persist_consensus_scan_batch_queue_wait_seconds_bucket
+  help: time a batched consensus scan waited before its statement started
+  labels:
+  - le
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_scan_batch_queue_wait_seconds_count
+  help: time a batched consensus scan waited before its statement started
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_scan_batch_queue_wait_seconds_sum
+  help: time a batched consensus scan waited before its statement started
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_scan_batch_size_bucket
+  help: number of shards per batched consensus scan statement
+  labels:
+  - le
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_scan_batch_size_count
+  help: number of shards per batched consensus scan statement
+  source: src/persist/src/metrics.rs
+  visibility: internal
+- name: mz_persist_consensus_scan_batch_size_sum
+  help: number of shards per batched consensus scan statement
+  source: src/persist/src/metrics.rs
+  visibility: internal
 - name: mz_persist_consolidation_parts_fetched_count
   help: count of parts that were fetched and used during consolidation
   source: src/persist-client/src/internal/metrics.rs

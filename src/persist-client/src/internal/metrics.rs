@@ -1143,6 +1143,23 @@ impl MetricsRetryStream {
             _finished: self._finished,
         }
     }
+
+    /// Like [Self::sleep], but sleeps until `deadline` in place of the next sleep in the series.
+    pub async fn sleep_until(self, deadline: tokio::time::Instant) -> Self {
+        self.retries.inc();
+        self.sleep_seconds.inc_by(
+            deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_secs_f64(),
+        );
+        let retry = self.retry.sleep_until(deadline).await;
+        MetricsRetryStream {
+            retry,
+            retries: self.retries,
+            sleep_seconds: self.sleep_seconds,
+            _finished: self._finished,
+        }
+    }
 }
 
 #[derive(Debug)]
