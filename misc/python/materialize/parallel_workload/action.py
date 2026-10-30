@@ -2965,6 +2965,14 @@ class FlipFlagsAction(Action):
             "'10s'",
             "'300s'",
         ]
+        self.flags_with_values["persist_consensus_scan_batch_enabled"] = (
+            BOOLEAN_FLAG_VALUES
+        )
+        self.flags_with_values["persist_consensus_scan_batch_max_in_flight"] = [
+            "1",
+            "4",
+        ]
+        self.flags_with_values["persist_consensus_scan_batch_max_shards"] = ["8", "128"]
         self.flags_with_values["enable_variadic_left_join_lowering"] = (
             BOOLEAN_FLAG_VALUES
         )

@@ -18,13 +18,15 @@ use mz_ore::metrics::{ComputedUIntGauge, Counter, IntCounter, MetricsRegistry, U
 use mz_ore::stats::histogram_seconds_buckets;
 use prometheus::{Gauge, Histogram, IntCounterVec, IntGauge};
 
-/// Metrics for the batched compare-and-set path of [crate::postgres::PostgresConsensus].
+/// Metrics for the batched compare-and-set and scan paths of [crate::postgres::PostgresConsensus].
 #[derive(Debug, Clone)]
 pub struct ConsensusBatchMetrics {
     pub(crate) batch_size: Histogram,
     pub(crate) calls_coalesced: IntCounter,
     pub(crate) ranges: UIntGauge,
     pub(crate) range_refresh_failures: IntCounter,
+    pub(crate) scan_batch_size: Histogram,
+    pub(crate) scan_queue_wait_seconds: Histogram,
 }
 
 impl ConsensusBatchMetrics {
@@ -48,6 +50,16 @@ impl ConsensusBatchMetrics {
             range_refresh_failures: registry.register(metric!(
                 name: "mz_persist_consensus_cas_batch_range_refresh_failures",
                 help: "failed refreshes of the consensus table's range boundaries",
+            )),
+            scan_batch_size: registry.register(metric!(
+                name: "mz_persist_consensus_scan_batch_size",
+                help: "number of shards per batched consensus scan statement",
+                buckets: vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0],
+            )),
+            scan_queue_wait_seconds: registry.register(metric!(
+                name: "mz_persist_consensus_scan_batch_queue_wait_seconds",
+                help: "time a batched consensus scan waited before its statement started",
+                buckets: histogram_seconds_buckets(0.000_128, 8.0),
             )),
         }
     }

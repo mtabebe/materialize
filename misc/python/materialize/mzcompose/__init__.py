@@ -314,6 +314,15 @@ def get_variable_system_parameters(
             "300s",
             ["10s", "300s"],
         ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_enabled", "false", ["true", "false"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_in_flight", "4", ["1", "4"]
+        ),
+        VariableSystemParameter(
+            "persist_consensus_scan_batch_max_shards", "128", ["8", "128"]
+        ),
         # -----
         # Others (ordered by name),
         VariableSystemParameter(

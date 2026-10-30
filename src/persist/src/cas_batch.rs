@@ -330,7 +330,7 @@ impl<B: CasBackend> Drop for BatchGuard<B> {
 }
 
 /// Copies `err` for each of `n` callers of one statement, keeping its determinacy and message.
-fn fan_out(err: ExternalError, n: usize) -> Vec<ExternalError> {
+pub(crate) fn fan_out(err: ExternalError, n: usize) -> Vec<ExternalError> {
     let mut errs = Vec::with_capacity(n);
     if n == 0 {
         return errs;
