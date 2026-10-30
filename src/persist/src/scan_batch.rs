@@ -109,7 +109,7 @@ impl ScanBatcher {
     /// as in flight.
     fn take_batches(&self) -> Vec<Batch> {
         // A cap of 0 would leave nothing to schedule a queued scan, and the shard floor keeps a
-        // low cap from turning every scan into its own statement.
+        // low shard limit from turning every scan into its own statement.
         let max_in_flight = CONSENSUS_SCAN_BATCH_MAX_IN_FLIGHT.get(&self.cfg).max(1);
         let max_shards = CONSENSUS_SCAN_BATCH_MAX_SHARDS.get(&self.cfg).max(8);
         let mut queue = self.queue.lock().expect("lock poisoned");
