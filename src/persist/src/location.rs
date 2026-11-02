@@ -1076,6 +1076,27 @@ pub mod tests {
             Ok(CaSResult::ExpectationMismatch),
         );
 
+        // A stale CaS fails whether its expected seqno was truncated away or is still live.
+        let v4 = VersionedData {
+            seqno: SeqNo(4),
+            data: Bytes::from("v4"),
+        };
+        assert_eq!(
+            consensus.compare_and_set(&key, v4.clone()).await,
+            Ok(CaSResult::Committed),
+        );
+        for stale in [SeqNo(2), SeqNo(3), SeqNo(4)] {
+            let stale = VersionedData {
+                seqno: stale,
+                data: Bytes::from("stale"),
+            };
+            assert_eq!(
+                consensus.compare_and_set(&key, stale).await,
+                Ok(CaSResult::ExpectationMismatch),
+            );
+        }
+        assert_eq!(consensus.head(&key).await, Ok(Some(v4)));
+
         Ok(())
     }
 

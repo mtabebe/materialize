@@ -985,12 +985,15 @@ impl PostgresConsensusClient {
         ops: &[CasOp],
     ) -> Result<BTreeSet<String>, ExternalError> {
         // Per row, this is `CRDB_CAS_QUERY`: under SERIALIZABLE, `seqno` is inserted iff
-        // `expected` is the shard's head. `EXISTS = expected AND NOT EXISTS > expected` is that
-        // predicate. The obvious `(SELECT ... ORDER BY sequence_number DESC LIMIT 1) = expected`
-        // gets decorrelated into a lookup join that reads every live row of each shard, data
-        // included. This form reads one row per op. `ON CONFLICT DO NOTHING` turns the primary
-        // key collision with a racing writer into a row missing from `RETURNING`, so a key is
-        // returned iff its row committed.
+        // `expected` is the shard's head. By contiguity (see the correctness argument in
+        // `compare_and_set`), `expected` is the head iff it is present and `expected + 1` is
+        // absent. `EXISTS = expected` tests the first half (absent means truncated, case 1.2) and
+        // the primary key on `seqno = expected + 1` tests the second (case 1.1.2): `ON CONFLICT DO
+        // NOTHING` turns that collision into a row missing from `RETURNING`, so a key is returned
+        // iff its row committed. The obvious `(SELECT ... ORDER BY sequence_number DESC LIMIT 1)
+        // = expected` gets decorrelated into a lookup join that reads every live row of each
+        // shard, data included. A `NOT EXISTS (sequence_number > expected)` check is redundant
+        // under contiguity and costs a third KV lookup per statement.
         //
         // Any change to this query should confirm with EXPLAIN ANALYZE (VERBOSE) that the plan
         // contains `auto commit` and only lookup joins on `consensus_pkey`, and that rows within
@@ -1002,8 +1005,6 @@ impl PostgresConsensusClient {
                 AS v (shard, seqno, data, expected)
             WHERE EXISTS (SELECT 1 FROM consensus c
                     WHERE c.shard = v.shard AND c.sequence_number = v.expected)
-                AND NOT EXISTS (SELECT 1 FROM consensus c
-                    WHERE c.shard = v.shard AND c.sequence_number > v.expected)
             ORDER BY v.shard
             ON CONFLICT DO NOTHING
             RETURNING shard
