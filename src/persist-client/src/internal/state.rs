@@ -1305,6 +1305,8 @@ pub struct HollowRollup {
     pub key: PartialRollupKey,
     /// The encoded size of this rollup, if known.
     pub encoded_size_bytes: Option<usize>,
+    /// Whether the state this rolls up is finalized. GC keeps these.
+    pub finalized: bool,
 }
 
 /// A pointer to a blob stored externally.
@@ -2198,6 +2200,11 @@ where
             && self.writers.is_empty()
             && self.leased_readers.is_empty()
             && self.critical_readers.is_empty()
+    }
+
+    /// A tombstone that has shrunk to a single empty batch.
+    pub(crate) fn is_finalized(&self) -> bool {
+        self.is_tombstone() && self.is_single_empty_batch()
     }
 
     pub(crate) fn is_single_empty_batch(&self) -> bool {
@@ -4123,6 +4130,7 @@ pub(crate) mod tests {
         let rollup = HollowRollup {
             key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
 
         assert!(
@@ -4223,6 +4231,7 @@ pub(crate) mod tests {
         let rollup = HollowRollup {
             key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
         assert!(
             state
@@ -4273,6 +4282,7 @@ pub(crate) mod tests {
         let rollup = HollowRollup {
             key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
 
         assert!(
@@ -4349,6 +4359,7 @@ pub(crate) mod tests {
         let rollup = HollowRollup {
             key: PartialRollupKey::new(rollup_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
         assert!(
             state
@@ -4524,11 +4535,13 @@ pub(crate) mod tests {
         let older = HollowRollup {
             key: PartialRollupKey::new(older_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
         let newer_seqno = SeqNo(20);
         let newer = HollowRollup {
             key: PartialRollupKey::new(newer_seqno, &RollupId::new()),
             encoded_size_bytes: None,
+            finalized: false,
         };
         let add_older = |state: &mut StateCollections<u64>| state.add_rollup((older_seqno, &older));
 
