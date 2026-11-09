@@ -1146,10 +1146,12 @@ where
         match part {
             RunPart::Single(BatchPart::Hollow(part)) => ensure(&mut part.schema_id),
             RunPart::Single(BatchPart::Inline { schema_id, .. }) => ensure(schema_id),
-            RunPart::Many(_hollow_run_ref) => {
-                // TODO: Fetch the parts in this run and rewrite them too. Alternatively, make
-                // `run_meta` the only place we keep schema IDs, so rewriting parts isn't
-                // necessary.
+            RunPart::Many(hollow_run_ref) => {
+                // User batches never contain hollow runs (see `BatchParts::new_compacting`), so
+                // there are no nested parts to stamp.
+                soft_panic_or_log!(
+                    "unexpected hollow run in user batch; shard={shard_id} run={hollow_run_ref:?}"
+                );
             }
         }
     }

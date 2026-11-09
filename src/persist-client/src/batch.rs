@@ -936,7 +936,10 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
         D: Monoid + Ord + Codec64 + Send + Sync,
     {
         let writing_runs = {
-            let cfg = cfg.clone();
+            let mut cfg = cfg.clone();
+            // User batches must not contain hollow runs: `HollowBatch::rewrite_ts` can't rewrite
+            // the parts inside one.
+            cfg.batch.run_length_limit = usize::MAX;
             let blob = Arc::clone(&blob);
             let metrics = Arc::clone(&metrics);
             let shard_metrics = Arc::clone(&shard_metrics);

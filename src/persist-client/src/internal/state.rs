@@ -1195,6 +1195,11 @@ impl<T: Timestamp + TotalOrder> HollowBatch<T> {
             ));
         }
         for part in self.parts.iter() {
+            // Only user batches get rewritten, and those never contain hollow runs (see
+            // `BatchParts::new_compacting`).
+            if let RunPart::Many(runs) = part {
+                return Err(format!("unexpected rewrite of a hollow runs ref: {runs:?}"));
+            }
             let Some(ts_rewrite) = part.ts_rewrite() else {
                 continue;
             };
@@ -1220,11 +1225,7 @@ impl<T: Timestamp + TotalOrder> HollowBatch<T> {
                 RunPart::Single(BatchPart::Inline { ts_rewrite, .. }) => {
                     *ts_rewrite = Some(frontier.clone())
                 }
-                RunPart::Many(runs) => {
-                    // Currently unreachable: we only apply rewrites to user batches, and we don't
-                    // ever generate runs of >1 part for those.
-                    panic!("unexpected rewrite of a hollow runs ref: {runs:?}");
-                }
+                RunPart::Many(_) => unreachable!("rejected above"),
             }
         }
         Ok(())
