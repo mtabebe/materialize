@@ -2934,7 +2934,7 @@ pub(crate) mod tests {
     use mz_build_info::DUMMY_BUILD_INFO;
     use mz_dyncfg::ConfigUpdates;
     use mz_ore::now::SYSTEM_TIME;
-    use mz_ore::{assert_none, assert_ok};
+    use mz_ore::{assert_err, assert_none, assert_ok};
     use mz_proto::RustType;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
@@ -3294,6 +3294,25 @@ pub(crate) mod tests {
                 .collect(),
             len,
         )
+    }
+
+    #[mz_ore::test]
+    fn rewrite_ts_hollow_run() {
+        let mut batch = hollow(0u64, 1, &["a"], 2);
+        batch.parts.push(RunPart::Many(HollowRunRef {
+            key: PartialBatchKey("b".to_owned()),
+            hollow_bytes: 0,
+            max_part_bytes: 0,
+            key_lower: vec![],
+            structured_key_lower: None,
+            diffs_sum: None,
+            _phantom_data: PhantomData,
+        }));
+        let before = batch.clone();
+
+        let res = batch.rewrite_ts(&Antichain::from_elem(2), Antichain::from_elem(3));
+        assert_err!(res);
+        assert_eq!(batch, before);
     }
 
     #[mz_ore::test]
