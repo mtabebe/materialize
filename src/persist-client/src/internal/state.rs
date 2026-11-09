@@ -1195,8 +1195,8 @@ impl<T: Timestamp + TotalOrder> HollowBatch<T> {
             ));
         }
         for part in self.parts.iter() {
-            // Only user batches get rewritten, and those never contain hollow runs (see
-            // `BatchParts::new_compacting`).
+            // In production only user batches get rewritten, and those never contain hollow
+            // runs (see `BatchParts::new_compacting`).
             if let RunPart::Many(runs) = part {
                 return Err(format!("unexpected rewrite of a hollow runs ref: {runs:?}"));
             }

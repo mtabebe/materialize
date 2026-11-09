@@ -11,7 +11,7 @@
 # enabled (persist_batch_max_runs >= 2) and a small max run len used to
 # panic environmentd when txn-wal rewrote the batch to its commit ts.
 
-$ postgres-execute connection=postgres://mz_system:materialize@${testdrive.materialize-internal-sql-addr}
+$ postgres-execute connection=mz_system
 ALTER SYSTEM SET persist_batch_max_runs = 2
 ALTER SYSTEM SET persist_batch_max_run_len = 2
 ALTER SYSTEM SET persist_blob_target_size = 1024
@@ -23,7 +23,7 @@ ALTER SYSTEM SET persist_blob_target_size = 1024
 > SELECT count(*), sum(a) FROM t
 5000 12502500
 
-$ postgres-execute connection=postgres://mz_system:materialize@${testdrive.materialize-internal-sql-addr}
+$ postgres-execute connection=mz_system
 ALTER SYSTEM RESET persist_batch_max_runs
 ALTER SYSTEM RESET persist_batch_max_run_len
 ALTER SYSTEM RESET persist_blob_target_size
