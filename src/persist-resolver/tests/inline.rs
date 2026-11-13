@@ -27,6 +27,18 @@ use mz_persist_resolver::{ResolverConfig, Stats, start_and_serve};
 use mz_persist_types::codec_impls::StringSchema;
 use timely::progress::Antichain;
 
+/// Binds `addr`, retrying while a dropped resolver's serve task, which aborts
+/// asynchronously, still holds it.
+async fn bind(addr: std::net::SocketAddr) -> tokio::net::TcpListener {
+    for _ in 0..100 {
+        if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
+            return listener;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{addr} stayed in use");
+}
+
 const SHARDS: usize = 32;
 const ROUNDS: u64 = 10;
 
@@ -69,7 +81,7 @@ async fn run(
         manifest_inline_single_max_bytes: single_max,
         manifest_inline_total_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES,
     };
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    let listener = bind(addr).await;
     let running = start_and_serve(&resolver_client, cfg, listener)
         .await
         .expect("start");
@@ -128,12 +140,13 @@ async fn run(
 fn report(name: &str, single_max: usize, stats: &Stats, parts: usize) -> String {
     let mut bytes = stats.write_bytes.clone();
     bytes.sort();
-    let commits_per_write = stats.commits as f64 / stats.manifest_writes.max(1) as f64;
+    let commits_per_write_x10 = stats.commits * 10 / stats.manifest_writes.max(1);
     format!(
-        "{name} (manifest inline limit {single_max} B): {} writes, {:.1} commits/write, \
+        "{name} (manifest inline limit {single_max} B): {} writes, {}.{} commits/write, \
          bytes/write p50 {} p90 {} max {}, {} writes over the limit, {} new part files",
         stats.manifest_writes,
-        commits_per_write,
+        commits_per_write_x10 / 10,
+        commits_per_write_x10 % 10,
         bytes[bytes.len() / 2],
         bytes[bytes.len() * 9 / 10],
         bytes.last().expect("some"),

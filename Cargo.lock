@@ -8097,6 +8097,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "itertools 0.15.0",
  "mz-dyncfg",
  "mz-ore",
  "mz-persist",

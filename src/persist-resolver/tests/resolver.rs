@@ -31,8 +31,20 @@ use mz_persist_resolver::{Request, ResolverConfig, Running, start_and_serve};
 use mz_persist_types::codec_impls::StringSchema;
 use timely::progress::Antichain;
 
+/// Binds `addr`, retrying while a dropped resolver's serve task, which aborts
+/// asynchronously, still holds it.
+async fn bind(addr: std::net::SocketAddr) -> tokio::net::TcpListener {
+    for _ in 0..100 {
+        if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
+            return listener;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{addr} stayed in use");
+}
+
 async fn start(client: &PersistClient, addr: std::net::SocketAddr, control: ShardId) -> Running {
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    let listener = bind(addr).await;
     let cfg = ResolverConfig {
         resolver_id: format!("resolver-{}", uuid::Uuid::new_v4()),
         advertise_addr: String::new(),

@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use itertools::Itertools;
 use mz_ore::task::AbortOnDropHandle;
 use mz_persist_client::read::ListenEvent;
 use mz_persist_client::read::ReadHandle;
@@ -510,7 +511,7 @@ impl Resolver {
             stats.cycles += 1;
             stats.commits += u64::try_from(commits.len()).expect("fits");
             drop(stats);
-            for ((ops, tx), outcome) in commits.into_iter().zip(outcomes) {
+            for ((ops, tx), outcome) in commits.into_iter().zip_eq(outcomes) {
                 let mut shards: Vec<_> = ops.iter().filter_map(|op| op_shard(op).ok()).collect();
                 shards.dedup();
                 let views = shards

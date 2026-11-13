@@ -19,6 +19,7 @@ bench = false
 
 [dependencies]
 anyhow.workspace = true
+itertools.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 mz-ore = { path = "../ore", features = ["async", "tracing"] }
 mz-persist = { path = "../persist" }
