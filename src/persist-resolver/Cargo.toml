@@ -1,0 +1,37 @@
+[package]
+name = "mz-persist-resolver"
+description = "PROTOTYPE: a resolver that serves v2 persist shards from manifests."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "persist-resolver"
+path = "src/bin/persist-resolver.rs"
+bench = false
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+mz-ore = { path = "../ore", features = ["async", "tracing"] }
+mz-persist = { path = "../persist" }
+mz-persist-client = { path = "../persist-client" }
+mz-persist-types = { path = "../persist-types" }
+timely.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+mz-ore = { path = "../ore", features = ["async", "tracing", "test"] }
+tempfile.workspace = true

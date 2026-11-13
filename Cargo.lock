@@ -8091,6 +8091,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mz-persist-resolver"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "mz-ore",
+ "mz-persist",
+ "mz-persist-client",
+ "mz-persist-types",
+ "tempfile",
+ "timely",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "mz-persist-types"
 version = "0.0.0"
 dependencies = [
