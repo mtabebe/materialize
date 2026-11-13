@@ -503,7 +503,10 @@ where
             leased_readers.insert(
                 id,
                 LeasedReaderState {
-                    seqno,
+                    // A reader's seqno hold only guards seqno-based GC, which data
+                    // shards don't have. Its outstanding leases can be older than
+                    // the view, and `downgrade_since` asserts they don't go back.
+                    seqno: SeqNo::minimum(),
                     since: f,
                     last_heartbeat_timestamp_ms: now,
                     // v2 intents don't expire.
