@@ -359,6 +359,15 @@ impl View {
                     ));
                 }
                 let new = r.new.clone().unwrap_or_default();
+                if let Some(current) = &current {
+                    let (old, f) = (frontier(&current.frontier), frontier(&new.frontier));
+                    if !PartialOrder::less_equal(&old, &f) {
+                        return Err(CommitError::Invalid(format!(
+                            "{shard} intent {} moves back from {old:?} to {f:?}",
+                            r.reader
+                        )));
+                    }
+                }
                 if current.is_none() {
                     if let Some(readable) = self.readable(&shard) {
                         let f = frontier(&new.frontier);
@@ -387,7 +396,12 @@ impl View {
                         d.reader, d.expected
                     ));
                 }
-                let dropped = current.expect("checked");
+                let Some(dropped) = current else {
+                    return Err(CommitError::Invalid(format!(
+                        "{shard} has no intent {}",
+                        d.reader
+                    )));
+                };
                 self.set(out, key, None);
                 if self.intents(&shard).is_empty() {
                     let sentinel = ProtoIntent {
@@ -626,6 +640,23 @@ mod tests {
             Err(CommitError::Rejected(_))
         ));
         view.commit(&[read_intent(s, "r2", None, 4)]).expect("r2");
+        // An intent never moves back.
+        assert!(matches!(
+            view.commit(&[read_intent(s, "r2", Some(4), 3)]),
+            Err(CommitError::Invalid(_))
+        ));
+        // Dropping an intent that doesn't exist is a usage error, not a panic.
+        let drop_missing = op(
+            s,
+            OpKind::DropIntent(ProtoDropIntent {
+                reader: "nobody".into(),
+                expected: None,
+            }),
+        );
+        assert!(matches!(
+            view.commit(&[drop_missing]),
+            Err(CommitError::Invalid(_))
+        ));
         assert_eq!(view.readable(&s), Some(Antichain::from_elem(4)));
 
         let drop = |r: &str| {

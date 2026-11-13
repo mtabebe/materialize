@@ -415,7 +415,11 @@ impl Resolver {
         if changed > known || self.view.shard_meta(&shard).is_none() {
             let _ = tx.send(self.view.shard_view(&shard));
         } else {
-            self.watches.entry(shard).or_default().push((known, tx));
+            let parked = self.watches.entry(shard).or_default();
+            // Callers time out and ask again, so an idle shard collects closed
+            // watches until it changes.
+            parked.retain(|(_, tx)| !tx.is_closed());
+            parked.push((known, tx));
         }
     }
 
