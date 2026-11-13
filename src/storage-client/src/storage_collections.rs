@@ -29,7 +29,7 @@ use mz_ore::now::NowFn;
 use mz_ore::task::AbortOnDropHandle;
 use mz_ore::{assert_none, instrument, soft_assert_or_log};
 use mz_persist_client::cache::PersistClientCache;
-use mz_persist_client::cfg::USE_CRITICAL_SINCE_SNAPSHOT;
+use mz_persist_client::cfg::{PERSIST_V2_REGISTER_USER_SHARDS, USE_CRITICAL_SINCE_SNAPSHOT};
 use mz_persist_client::critical::{Opaque, SinceHandle};
 use mz_persist_client::read::{Cursor, ReadHandle};
 use mz_persist_client::schema::CaESchema;
@@ -1837,6 +1837,20 @@ impl StorageCollections for StorageCollectionsImpl {
                     } else {
                         description.since.as_ref()
                     };
+
+                    // PROTOTYPE: put new user collections on v2 shards, before
+                    // anything opens them.
+                    if id.is_user()
+                        && !this.read_only
+                        && PERSIST_V2_REGISTER_USER_SHARDS.get(persist_client.dyncfgs())
+                    {
+                        let v2 = persist_client
+                            .maybe_register_v2::<SourceData, (), Timestamp, StorageDiff>(
+                                metadata.data_shard,
+                            )
+                            .await;
+                        info!("{id} shard {} is v2: {v2}", metadata.data_shard);
+                    }
 
                     let (write, mut since_handle) = this
                         .open_data_handles(
