@@ -108,6 +108,13 @@ async fn resolver_end_to_end() {
             .maybe_register_v2::<String, String, u64, i64>(shard)
             .await
     );
+    // Registering wrote control, then the partition with the control time it
+    // landed at.
+    {
+        let stats = running.stats.lock().expect("lock").clone();
+        let c = stats.control_at.expect("registration writes ControlAt");
+        assert!(c < stats.control_time, "{stats:?}");
+    }
 
     let (mut write, mut read) = client
         .open::<String, String, u64, i64>(
@@ -242,6 +249,11 @@ async fn resolver_end_to_end() {
     // claims the partition with a newer token, and the open handles keep working.
     drop(running);
     let running = start(&client, addr, control).await;
+    {
+        // Hydration reached at least the control time the partition names.
+        let stats = running.stats.lock().expect("lock").clone();
+        assert!(stats.control_at.expect("ControlAt") < stats.control_time);
+    }
     let view_after = resolver.fetch(&shard).await.expect("v2 shard");
     assert_eq!(view_after.batches, view.batches);
     assert_eq!(view_after.intents, view.intents);

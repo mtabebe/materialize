@@ -113,6 +113,26 @@ impl View {
         }
     }
 
+    /// The control manifest time the partition's rows are consistent with.
+    pub fn control_at(&self) -> Option<u64> {
+        match self.rows.get(&ManifestKey::ControlAt) {
+            Some(ValKind::ControlAt(c)) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// Records that the partition is consistent with control as of the control
+    /// write at manifest time `c`.
+    pub fn set_control_at(&mut self, c: u64) -> Vec<RowDiff> {
+        let mut out = Vec::new();
+        self.set(
+            &mut out,
+            ManifestKey::ControlAt,
+            Some(ValKind::ControlAt(c)),
+        );
+        out
+    }
+
     pub fn claim(&self) -> Option<ProtoClaim> {
         match self.rows.get(&ManifestKey::Claim) {
             Some(ValKind::Claim(c)) => Some(c.clone()),
@@ -232,7 +252,23 @@ impl View {
                 Some(ValKind::Assign(self.partition.clone())),
             );
             let min = ProtoFrontier { elements: vec![0] };
-            self.set(out, ManifestKey::Upper(shard), Some(ValKind::Upper(min)));
+            self.set(
+                out,
+                ManifestKey::Upper(shard),
+                Some(ValKind::Upper(min.clone())),
+            );
+            // Every data shard has a since from the start, as a new persist shard
+            // does.
+            let sentinel = ProtoIntent {
+                frontier: Some(min),
+                opaque_codec: None,
+                opaque: None,
+            };
+            self.set(
+                out,
+                ManifestKey::Intent(shard, SENTINEL_READER.to_owned()),
+                Some(ValKind::Intent(sentinel)),
+            );
             return Ok(());
         }
 
@@ -254,9 +290,13 @@ impl View {
                 self.set(out, key, Some(ValKind::Schema(schema)));
             }
             OpKind::Finalize(_) => {
-                let upper = self.upper(&shard).unwrap_or_default();
-                if !upper.is_empty() {
-                    return rejected(format!("finalize {shard} with upper {upper:?}"));
+                let readers: Vec<_> = self
+                    .intents(&shard)
+                    .into_keys()
+                    .filter(|r| r != SENTINEL_READER)
+                    .collect();
+                if !readers.is_empty() {
+                    return rejected(format!("finalize {shard} with read intents {readers:?}"));
                 }
                 let keys: Vec<_> = self
                     .rows
@@ -513,8 +553,15 @@ mod tests {
         let manifests: Vec<_> = diffs.iter().map(|(k, _, _)| k.manifest()).collect();
         assert_eq!(
             manifests,
-            vec![Manifest::Control, Manifest::Control, Manifest::Partition]
+            vec![
+                Manifest::Control,
+                Manifest::Control,
+                Manifest::Partition,
+                Manifest::Partition
+            ]
         );
+        // A new data shard is readable from the minimum time.
+        assert_eq!(view.readable(&s), Some(Antichain::from_elem(0)));
         assert_eq!(view.upper(&s), Some(Antichain::from_elem(0)));
         assert!(matches!(
             view.commit(&[register(s)]),
@@ -629,23 +676,26 @@ mod tests {
     fn finalize_keeps_a_tombstone() {
         let s = ShardId::new();
         let mut view = view_with(&[s]);
-        view.commit(&[append(s, 0, 2, true)]).expect("append");
+        view.commit(&[append(s, 0, 2, true), read_intent(s, "r1", None, 0)])
+            .expect("append");
         let finalize = op(s, OpKind::Finalize(ProtoEmpty {}));
+        // A reader's intent blocks it.
         assert!(matches!(
             view.commit(std::slice::from_ref(&finalize)),
             Err(CommitError::Rejected(_))
         ));
-        let to_empty = op(
+        let drop = op(
             s,
-            OpKind::Append(ProtoAppend {
-                batch: None,
-                expected: Some(f(2)),
-                new: Some(ProtoFrontier { elements: vec![] }),
+            OpKind::DropIntent(ProtoDropIntent {
+                reader: "r1".into(),
+                expected: Some(intent(0)),
             }),
         );
-        view.commit(&[to_empty, finalize]).expect("finalize");
+        // Only the sentinel left: it goes.
+        view.commit(&[drop, finalize]).expect("finalize");
         assert!(view.shard_meta(&s).expect("still registered").finalized);
         assert!(view.batches(&s).is_empty());
+        assert!(view.intents(&s).is_empty());
         assert!(view.upper(&s).is_none());
         assert!(view.invariant_violations().is_empty());
     }

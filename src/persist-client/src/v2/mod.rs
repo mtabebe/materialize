@@ -7,18 +7,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! PROTOTYPE: v2 shards, served by a resolver from manifests.
+//! PROTOTYPE: data shards, served by a resolver from manifest shards.
 //!
-//! A v2 shard is a view over rows in two manifests (ordinary v1 shards): a control
-//! manifest (which shards exist, their codecs and schemas, which partition they're
-//! in) and a partition manifest (each shard's upper, batches and read intents, and
-//! the partition's claim). The resolver (`mz-persist-resolver`) checks commits
-//! against its view, writes them to the manifests, and serves views to clients.
+//! A data shard is a view over rows in two manifest shards (persist shards as they
+//! work today): the control manifest shard (which data shards exist, their codecs
+//! and schemas, which partition they're in) and a partition manifest shard (each
+//! data shard's upper, batches and read intents, and the partition's claim). The
+//! resolver (`mz-persist-resolver`) checks commits against its view, writes them
+//! to the manifest shards, and serves views to clients.
 //!
 //! This module holds what both sides need: the row and wire types, and the client.
-//! A client redirects a v2 shard at [crate::internal::apply::Applier]: it builds
-//! today's `State` from the resolver's view of the shard, and turns each state
-//! transition into ops for the resolver ([client]).
+//! A client redirects a data shard at [crate::internal::apply::Applier]: it builds
+//! today's `State` from the resolver's view of the data shard, and turns each
+//! state transition into ops for the resolver ([client]). The code calls data
+//! shards "v2" and persist shards "v1" in names.
 //!
 //! Times are `Codec64`-encoded `T`s read as little-endian u64s, so the resolver
 //! orders them as u64s. That is right for `mz_repr::Timestamp` and `u64`, and is a
@@ -121,6 +123,8 @@ pub enum ManifestKey {
     Upper(ShardId),
     Batch(ShardId, BatchId),
     Intent(ShardId, ReaderId),
+    /// The control manifest time this partition is consistent with.
+    ControlAt,
 }
 
 /// Which manifest a row lives in.
@@ -138,6 +142,7 @@ impl ManifestKey {
             | ManifestKey::Assign(_)
             | ManifestKey::Partition(_) => Manifest::Control,
             ManifestKey::Claim
+            | ManifestKey::ControlAt
             | ManifestKey::Upper(_)
             | ManifestKey::Batch(..)
             | ManifestKey::Intent(..) => Manifest::Partition,
@@ -152,7 +157,7 @@ impl ManifestKey {
             | ManifestKey::Upper(s)
             | ManifestKey::Batch(s, _)
             | ManifestKey::Intent(s, _) => Some(*s),
-            ManifestKey::Partition(_) | ManifestKey::Claim => None,
+            ManifestKey::Partition(_) | ManifestKey::Claim | ManifestKey::ControlAt => None,
         }
     }
 
@@ -183,6 +188,7 @@ impl ManifestKey {
                 shard: s.to_string(),
                 reader: r.clone(),
             }),
+            ManifestKey::ControlAt => Kind::ControlAt(ProtoEmpty {}),
         };
         ProtoManifestKey { kind: Some(kind) }
     }
@@ -211,6 +217,7 @@ impl ManifestKey {
                 )
             }
             Kind::Intent(k) => ManifestKey::Intent(shard(&k.shard)?, k.reader),
+            Kind::ControlAt(_) => ManifestKey::ControlAt,
         };
         Ok(key)
     }
@@ -239,7 +246,7 @@ pub fn decode_val(buf: &[u8]) -> Result<ValKind, String> {
         .ok_or_else(|| "missing val kind".to_owned())
 }
 
-/// The shard a v1 op names.
+/// The data shard an op names.
 pub fn op_shard(op: &ProtoOp) -> Result<ShardId, String> {
     ShardId::from_str(&op.shard)
 }

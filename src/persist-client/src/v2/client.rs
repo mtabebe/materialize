@@ -368,7 +368,19 @@ pub(crate) fn ops_for_transition<T: Timestamp + Lattice + Codec64>(
     };
     let (old, new) = (&old.collections, &new.collections);
     if new.is_tombstone() && !old.is_tombstone() {
-        return vec![op(OpKind::Finalize(ProtoEmpty {}))];
+        // Becoming a tombstone drops every reader. Finalize needs their intents
+        // gone, and retracts everything else itself.
+        let mut ops: Vec<_> = intents_of(old)
+            .into_iter()
+            .map(|(reader, intent)| {
+                op(OpKind::DropIntent(ProtoDropIntent {
+                    reader,
+                    expected: Some(intent),
+                }))
+            })
+            .collect();
+        ops.push(op(OpKind::Finalize(ProtoEmpty {})));
+        return ops;
     }
     let mut ops = Vec::new();
 

@@ -7,27 +7,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! PROTOTYPE: a resolver serving v2 persist shards from two manifests.
+//! PROTOTYPE: a resolver serving data shards from two manifest shards.
 //!
-//! The control manifest holds which shards exist, their codecs, schemas and
-//! partition, and which partitions exist. One partition manifest holds its
-//! shards' uppers, batches and read intents, and the partition's claim. Both are
-//! ordinary v1 shards of `(key, val, manifest time, diff)` with proto-encoded
-//! keys and values ([mz_persist_client::v2]).
+//! The control manifest shard holds which data shards exist, their codecs,
+//! schemas and partition, and which partitions exist. One partition manifest
+//! shard holds its data shards' uppers, batches and read intents, the
+//! partition's claim, and `ControlAt`. Both are persist shards as they work today,
+//! of `(key, val, manifest time, diff)` with proto-encoded keys and values
+//! ([mz_persist_client::v2]).
 //!
 //! The resolver claims its partition, then runs a cycle: take every request that
 //! arrived, check each commit against its [View] and apply it in place, then
-//! write the cycle's row changes with one `compare_and_append` per manifest that
-//! changed, at the manifest's current time. Correctness rests on that CaS, not on
-//! the resolver: if it loses, something else wrote the manifest, so the resolver
-//! rebuilds its view from the manifests and reruns the same commits, or stops if
-//! the claim is no longer its own.
+//! write the cycle's row changes with one `compare_and_append` per manifest shard
+//! that changed, at its current time. Correctness rests on that CaS, not on the
+//! resolver: if it loses, something else wrote the manifest shard, so the
+//! resolver hydrates its view again and reruns the same commits, or stops if the
+//! claim is no longer its own.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mz_ore::task::AbortOnDropHandle;
+use mz_persist_client::read::ListenEvent;
 use mz_persist_client::read::ReadHandle;
 use mz_persist_client::v2::{
     Manifest, PartitionId, ProtoClaim, ProtoCommitRequest, ProtoWatchRequest,
@@ -40,6 +42,7 @@ use mz_persist_client::v2::{
 use mz_persist_client::write::WriteHandle;
 use mz_persist_client::{Diagnostics, PersistClient, ShardId};
 use mz_persist_types::codec_impls::VecU8Schema;
+use timely::PartialOrder;
 use timely::progress::Antichain;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -109,8 +112,10 @@ impl ManifestShard {
         }
     }
 
-    /// The manifest's live rows and its upper.
-    async fn read_all(&mut self) -> (Vec<(ManifestKey, ValKind)>, u64) {
+    /// Hydrates the manifest shard's live rows the way any persist reader
+    /// starts: a snapshot at its since, then a listen up to its current upper.
+    /// Returns the rows and that upper.
+    async fn hydrate(&mut self) -> (Vec<(ManifestKey, ValKind)>, u64) {
         let upper = *self
             .write
             .fetch_recent_upper()
@@ -120,16 +125,42 @@ impl ManifestShard {
         if upper == 0 {
             return (Vec::new(), 0);
         }
-        let updates = self
+        let since = self.read.since().clone();
+        let mut rows: BTreeMap<(Vec<u8>, Vec<u8>), i64> = BTreeMap::new();
+        let snapshot = self
             .read
-            .snapshot_and_fetch(Antichain::from_elem(upper - 1))
+            .snapshot_and_fetch(since.clone())
             .await
-            .expect("the resolver holds the manifest's since below its upper");
-        let mut consolidated: BTreeMap<(Vec<u8>, Vec<u8>), i64> = BTreeMap::new();
-        for ((k, v), _t, d) in updates {
-            *consolidated.entry((k, v)).or_default() += d;
+            .expect("the resolver holds the manifest's since");
+        for ((k, v), _t, d) in snapshot {
+            *rows.entry((k, v)).or_default() += d;
         }
-        let rows = consolidated
+        let mut listen = self
+            .read
+            .clone("resolver hydrate")
+            .await
+            .listen(since)
+            .await
+            .expect("the resolver holds the manifest's since");
+        'listen: loop {
+            for event in listen.fetch_next().await {
+                match event {
+                    ListenEvent::Updates(updates) => {
+                        for ((k, v), t, d) in updates {
+                            if t < upper {
+                                *rows.entry((k, v)).or_default() += d;
+                            }
+                        }
+                    }
+                    ListenEvent::Progress(p) => {
+                        if PartialOrder::less_equal(&Antichain::from_elem(upper), &p) {
+                            break 'listen;
+                        }
+                    }
+                }
+            }
+        }
+        let rows = rows
             .into_iter()
             .filter(|(_, d)| *d != 0)
             .map(|((k, v), d)| {
@@ -192,6 +223,10 @@ pub struct Stats {
     pub rows_written: u64,
     pub encoded_bytes_written: u64,
     pub write_micros: Vec<u64>,
+    /// The view's `ControlAt` and control manifest time, as of the last cycle or
+    /// hydration.
+    pub control_at: Option<u64>,
+    pub control_time: u64,
 }
 
 impl Resolver {
@@ -199,7 +234,7 @@ impl Resolver {
     /// it.
     pub async fn start(client: &PersistClient, cfg: ResolverConfig) -> Resolver {
         let mut control = ManifestShard::open(client, cfg.control_shard, "control").await;
-        let (rows, control_time) = control.read_all().await;
+        let (rows, control_time) = control.hydrate().await;
         let mut view = View::new(cfg.partition.clone());
         for (k, v) in rows {
             view.apply(k, v, 1);
@@ -224,7 +259,7 @@ impl Resolver {
                 }
                 Err(_) => {
                     // Another resolver bootstrapped it first.
-                    let (rows, t) = control.read_all().await;
+                    let (rows, t) = control.hydrate().await;
                     view = View::new(cfg.partition.clone());
                     rows.into_iter().for_each(|(k, v)| view.apply(k, v, 1));
                     view.control_time = t;
@@ -251,8 +286,24 @@ impl Resolver {
 
     /// Rebuilds the view from the manifests.
     async fn reload(&mut self) {
-        let (control_rows, control_time) = self.control.read_all().await;
-        let (partition_rows, partition_time) = self.partition.read_all().await;
+        let (partition_rows, partition_time) = self.partition.hydrate().await;
+        // The partition's view is only usable with control at or past the time
+        // its `ControlAt` names: a registration's partition rows can land before
+        // this resolver's view of control has the shard.
+        let control_at = partition_rows.iter().find_map(|(k, v)| match (k, v) {
+            (ManifestKey::ControlAt, ValKind::ControlAt(c)) => Some(*c),
+            _ => None,
+        });
+        let (control_rows, control_time) = loop {
+            let (rows, time) = self.control.hydrate().await;
+            match control_at {
+                Some(c) if time <= c => {
+                    debug!("control at {time}, partition needs it past {c}; waiting");
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                _ => break (rows, time),
+            }
+        };
         let mut view = View::new(self.cfg.partition.clone());
         for (k, v) in control_rows.into_iter().chain(partition_rows) {
             view.apply(k, v, 1);
@@ -265,6 +316,10 @@ impl Resolver {
         view.changed_at = shards.into_iter().map(|s| (s, seqno)).collect();
         let violations = view.invariant_violations();
         assert!(violations.is_empty(), "manifest invariants: {violations:?}");
+        let mut stats = self.stats.lock().expect("lock");
+        stats.control_at = view.control_at();
+        stats.control_time = view.control_time;
+        drop(stats);
         self.view = view;
     }
 
@@ -388,12 +443,22 @@ impl Resolver {
                 .iter()
                 .filter(|(k, _, _)| k.manifest() == Manifest::Partition)
                 .collect();
+            let mut partition: Vec<RowDiff> = partition.into_iter().cloned().collect();
             let mut lost = false;
             if !control.is_empty() {
+                let c = self.view.control_time;
                 lost = !self.write(true, &control).await;
+                if !partition.is_empty() {
+                    // NOTE: without a multi-key CaS (C7) this is a second CaS. A
+                    // crash between the two leaves control ahead of the partition:
+                    // a registered data shard with no `Upper` row, which the
+                    // invariant check in `reload` reports.
+                    partition.extend(self.view.set_control_at(c));
+                }
             }
             if !lost && !partition.is_empty() {
-                lost = !self.write(false, &partition).await;
+                let refs: Vec<_> = partition.iter().collect();
+                lost = !self.write(false, &refs).await;
             }
             if lost {
                 self.reload().await;
@@ -414,6 +479,8 @@ impl Resolver {
             }
             self.notify(&diffs);
             let mut stats = self.stats.lock().expect("lock");
+            stats.control_at = self.view.control_at();
+            stats.control_time = self.view.control_time;
             stats.cycles += 1;
             stats.commits += u64::try_from(commits.len()).expect("fits");
             drop(stats);

@@ -65,6 +65,7 @@ message ProtoManifestKey {
     string upper = 6;
     ProtoBatchKey batch = 7;
     ProtoIntentKey intent = 8;
+    ProtoEmpty control_at = 9;
   }
 }
 
@@ -94,6 +95,9 @@ message ProtoManifestVal {
     ProtoFrontier upper = 6;
     mz_persist_client.internal.state.ProtoHollowBatch batch = 7;
     ProtoIntent intent = 8;
+    // The control manifest time a write that changed both control and this
+    // partition landed at.
+    uint64 control_at = 9;
   }
 }
 
