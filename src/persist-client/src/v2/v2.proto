@@ -1,0 +1,182 @@
+// Copyright Materialize, Inc. and contributors. All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+// Prototype wire format for v2 shards: manifest rows, ops, shard views, and the
+// resolver service. Times are `Codec64`-encoded `T`s read as little-endian u64s.
+
+syntax = "proto3";
+
+package mz_persist_client.v2;
+
+import "persist-client/src/internal/state.proto";
+
+message ProtoFrontier {
+  repeated uint64 elements = 1;
+}
+
+message ProtoCodecs {
+  string key = 1;
+  string val = 2;
+  string ts = 3;
+  string diff = 4;
+}
+
+message ProtoIntent {
+  ProtoFrontier frontier = 1;
+  optional string opaque_codec = 2;
+  optional uint64 opaque = 3;
+}
+
+message ProtoBatchId {
+  ProtoFrontier lower = 1;
+  ProtoFrontier upper = 2;
+}
+
+message ProtoEmpty {}
+
+message ProtoSchemaKey {
+  string shard = 1;
+  uint64 schema_id = 2;
+}
+
+message ProtoBatchKey {
+  string shard = 1;
+  ProtoBatchId id = 2;
+}
+
+message ProtoIntentKey {
+  string shard = 1;
+  string reader = 2;
+}
+
+message ProtoManifestKey {
+  oneof kind {
+    string shard = 1;
+    ProtoSchemaKey schema = 2;
+    string assign = 3;
+    string partition = 4;
+    ProtoEmpty claim = 5;
+    string upper = 6;
+    ProtoBatchKey batch = 7;
+    ProtoIntentKey intent = 8;
+  }
+}
+
+message ProtoShardMeta {
+  ProtoCodecs codecs = 1;
+  bool finalized = 2;
+}
+
+message ProtoPartitionVal {
+  string manifest_shard = 1;
+  bool retired = 2;
+}
+
+message ProtoClaim {
+  string resolver = 1;
+  uint64 token = 2;
+  string addr = 3;
+}
+
+message ProtoManifestVal {
+  oneof kind {
+    ProtoShardMeta shard = 1;
+    mz_persist_client.internal.state.ProtoEncodedSchemas schema = 2;
+    string assign = 3;
+    ProtoPartitionVal partition = 4;
+    ProtoClaim claim = 5;
+    ProtoFrontier upper = 6;
+    mz_persist_client.internal.state.ProtoHollowBatch batch = 7;
+    ProtoIntent intent = 8;
+  }
+}
+
+message ProtoRegister {
+  ProtoCodecs codecs = 1;
+}
+
+message ProtoEvolve {
+  uint64 schema_id = 1;
+  mz_persist_client.internal.state.ProtoEncodedSchemas schema = 2;
+}
+
+message ProtoAppend {
+  optional mz_persist_client.internal.state.ProtoHollowBatch batch = 1;
+  ProtoFrontier expected = 2;
+  ProtoFrontier new = 3;
+}
+
+message ProtoReadIntent {
+  string reader = 1;
+  optional ProtoIntent expected = 2;
+  ProtoIntent new = 3;
+}
+
+message ProtoDropIntent {
+  string reader = 1;
+  ProtoIntent expected = 2;
+}
+
+message ProtoCompact {
+  repeated mz_persist_client.internal.state.ProtoHollowBatch remove = 1;
+  repeated mz_persist_client.internal.state.ProtoHollowBatch add = 2;
+}
+
+message ProtoOp {
+  string shard = 1;
+  oneof kind {
+    ProtoRegister register = 2;
+    ProtoEvolve evolve = 3;
+    ProtoEmpty finalize = 4;
+    ProtoAppend append = 5;
+    ProtoReadIntent read_intent = 6;
+    ProtoDropIntent drop_intent = 7;
+    ProtoCompact compact = 8;
+  }
+}
+
+message ProtoShardView {
+  string shard = 1;
+  uint64 seqno = 2;
+  ProtoShardMeta meta = 3;
+  map<uint64, mz_persist_client.internal.state.ProtoEncodedSchemas> schemas = 4;
+  ProtoFrontier upper = 5;
+  repeated mz_persist_client.internal.state.ProtoHollowBatch batches = 6;
+  map<string, ProtoIntent> intents = 7;
+}
+
+message ProtoCommitRequest {
+  repeated ProtoOp ops = 1;
+}
+
+message ProtoCommitResponse {
+  oneof result {
+    ProtoEmpty ok = 1;
+    // A precondition failed: the caller's view was stale.
+    string rejected = 2;
+    // A programming error.
+    string invalid = 3;
+    // This resolver no longer holds the partition.
+    string fenced = 4;
+  }
+  repeated ProtoShardView views = 5;
+}
+
+message ProtoFetchRequest {
+  string shard = 1;
+}
+
+message ProtoFetchResponse {
+  optional ProtoShardView view = 1;
+}
+
+service ProtoPersistResolver {
+  rpc Commit(ProtoCommitRequest) returns (ProtoCommitResponse);
+  rpc Fetch(ProtoFetchRequest) returns (ProtoFetchResponse);
+}

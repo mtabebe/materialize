@@ -44,6 +44,7 @@ use crate::internal::state::{
     BatchPart, HollowBlobRef, HollowRollup, NoOpStateTransition, RunPart, State, TypedState,
 };
 use crate::internal::state_diff::{StateDiff, StateFieldValDiff};
+use crate::v2::client::ResolverClient;
 use crate::{Metrics, PersistConfig, ShardId};
 
 /// A durable, truncatable log of versions of [State].
@@ -102,6 +103,8 @@ pub struct StateVersions {
     pub(crate) consensus: Arc<dyn Consensus>,
     pub(crate) blob: Arc<dyn Blob>,
     pub(crate) metrics: Arc<Metrics>,
+    /// PROTOTYPE: where v2 shards live, if this process routes any.
+    pub(crate) v2: Option<Arc<ResolverClient>>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +142,14 @@ impl StateVersions {
             consensus,
             blob,
             metrics,
+            v2: crate::v2::client::resolver(),
         }
+    }
+
+    /// PROTOTYPE: the resolver serving `shard_id`, if it is a v2 shard. Only
+    /// meaningful once [Self::maybe_init_shard] has run for the shard.
+    pub(crate) fn v2_for(&self, shard_id: &ShardId) -> Option<&Arc<ResolverClient>> {
+        self.v2.as_ref().filter(|v2| v2.is_v2(shard_id))
     }
 
     /// Fetches the `current` state of the requested shard, or creates it if
@@ -155,6 +165,12 @@ impl StateVersions {
         D: Monoid + Codec64,
     {
         let shard_id = shard_metrics.shard_id;
+
+        if let Some(v2) = self.v2.as_ref().filter(|v2| !v2.known_v1(&shard_id)) {
+            if let Some(view) = v2.fetch(&shard_id).await {
+                return crate::v2::client::state_from_view(&self.cfg, &view);
+            }
+        }
 
         // The common case is that the shard is initialized, so try that first
         let recent_live_diffs = self.fetch_recent_live_diffs::<T>(&shard_id).await;

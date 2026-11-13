@@ -35,7 +35,9 @@ use crate::internal::watch::StateWatch;
 use crate::read::LeasedReaderId;
 use crate::rpc::{PUBSUB_PUSH_DIFF_ENABLED, PubSubSender};
 use crate::schema::SchemaCache;
+use crate::v2::client::{Committed, ops_for_transition, state_from_view};
 use crate::{Diagnostics, PersistConfig, ShardId, cfg};
+use bytes::Bytes;
 use differential_dataflow::difference::Monoid;
 use differential_dataflow::lattice::Lattice;
 use mz_ore::cast::CastFrom;
@@ -392,7 +394,9 @@ where
                     cmd.succeeded.inc();
                     self.shard_metrics.cmd_succeeded.inc();
                     self.update_state(new_state);
-                    if PUBSUB_PUSH_DIFF_ENABLED.get(&self.cfg) {
+                    if PUBSUB_PUSH_DIFF_ENABLED.get(&self.cfg)
+                        && self.state_versions.v2_for(&self.shard_id).is_none()
+                    {
                         self.pubsub_sender.push_diff(&self.shard_id, &diff);
                     }
                     return Ok((diff.seqno, Ok(res), maintenance));
@@ -435,12 +439,16 @@ where
         // this attempt completes or times out.
         let _permit_opt = state.lease_for_update().await;
 
-        let computed_next_state = state
-            .read_lock(&metrics.locks.applier_read_noncacheable, |state| {
-                Self::compute_next_state_locked(state, work_fn, metrics, cmd, cfg)
+        let v2 = state_versions.v2_for(&shard_metrics.shard_id);
+        let computed_next_state =
+            state.read_lock(&metrics.locks.applier_read_noncacheable, |state| {
+                Self::compute_next_state_locked(state, work_fn, metrics, cmd, cfg).map(|next| {
+                    let v2_ops = v2.map(|_| ops_for_transition(&state.state, &next.state.state));
+                    (next, v2_ops)
+                })
             });
 
-        let next_state = match computed_next_state {
+        let (next_state, v2_ops) = match computed_next_state {
             Ok(x) => x,
             Err((seqno, err)) => {
                 return ApplyCmdResult::SkippedStateTransition((
@@ -459,6 +467,30 @@ where
             write_rollup,
             work_ret,
         } = next_state;
+
+        // PROTOTYPE: a v2 shard commits through its resolver, which checks the
+        // ops' preconditions in place of the seqno CaS. Its state lives in the
+        // manifests, so rollups and GC don't apply.
+        if let (Some(v2), Some(ops)) = (v2, v2_ops) {
+            return match v2
+                .commit_transition::<K, V, T, D>(cfg, &state.shard_id, ops)
+                .await
+            {
+                Committed::Ok(new_state) => {
+                    let diff = VersionedData {
+                        seqno: new_state.seqno,
+                        data: Bytes::new(),
+                    };
+                    ApplyCmdResult::Committed((
+                        diff,
+                        new_state,
+                        work_ret,
+                        RoutineMaintenance::default(),
+                    ))
+                }
+                Committed::Rejected => ApplyCmdResult::ExpectationMismatch(state.seqno()),
+            };
+        }
 
         {
             let build_version = &cfg.build_version;
@@ -673,6 +705,13 @@ where
                 current_seqno
             }
         };
+
+        if let Some(v2) = self.state_versions.v2_for(&self.shard_id) {
+            let view = v2.fetch(&self.shard_id).await.expect("v2 shard");
+            let new_state = state_from_view(&self.cfg, &view).expect("codecs checked at open");
+            self.update_state(new_state);
+            return;
+        }
 
         let diffs_to_current = self
             .state_versions

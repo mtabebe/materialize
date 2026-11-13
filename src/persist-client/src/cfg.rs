@@ -313,6 +313,7 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&crate::batch::MAX_RUN_LEN)
         .add(&crate::batch::MAX_RUNS)
         .add(&BLOB_OPERATION_TIMEOUT)
+        .add(&PERSIST_V2_REGISTER_USER_SHARDS)
         .add(&BLOB_OPERATION_ATTEMPT_TIMEOUT)
         .add(&BLOB_CONNECT_TIMEOUT)
         .add(&BLOB_READ_TIMEOUT)
@@ -503,6 +504,16 @@ pub const CRDB_KEEPALIVES_RETRIES: Config<u32> = Config::new(
 );
 
 /// Migrate the txns code to use the critical since when opening a new read handle.
+/// PROTOTYPE: whether the storage controller registers new user collections'
+/// shards as v2 shards, served by the resolver at `MZ_PERSIST_RESOLVER_URL`. A
+/// no-op in a process without a resolver.
+pub const PERSIST_V2_REGISTER_USER_SHARDS: Config<bool> = Config::new(
+    "persist_v2_register_user_shards",
+    false,
+    "PROTOTYPE: register new user collections' shards as v2 shards on the resolver.",
+    ParameterScope::Environment,
+);
+
 pub const USE_CRITICAL_SINCE_TXN: Config<bool> = Config::new(
     "persist_use_critical_since_txn",
     true,

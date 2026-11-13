@@ -87,6 +87,7 @@ fn main() {
                 PathBuf::from("persist-client/src/internal/service.proto"),
                 PathBuf::from("persist-client/src/internal/state.proto"),
                 PathBuf::from("persist-client/src/internal/diff.proto"),
+                PathBuf::from("persist-client/src/v2/v2.proto"),
             ],
             &[PathBuf::from(".."), mz_build_tools::protoc_include()],
         )

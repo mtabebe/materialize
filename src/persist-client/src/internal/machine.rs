@@ -139,6 +139,14 @@ where
     }
 
     pub async fn add_rollup_for_current_seqno(&self) -> RoutineMaintenance {
+        if self
+            .applier
+            .state_versions
+            .v2_for(&self.shard_id())
+            .is_some()
+        {
+            return RoutineMaintenance::default();
+        }
         let rollup = self.applier.write_rollup_for_state().await;
         let Some(rollup) = rollup else {
             return RoutineMaintenance::default();

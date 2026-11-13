@@ -103,6 +103,7 @@ pub mod rpc;
 pub mod schema;
 pub mod stats;
 pub mod usage;
+pub mod v2;
 pub mod write;
 
 /// Internal durable-state types re-exported under `cfg(feature = "fuzzing")` so
@@ -247,6 +248,37 @@ impl PersistClient {
     /// Returns persist's [ConfigSet].
     pub fn dyncfgs(&self) -> &ConfigSet {
         &self.cfg.configs
+    }
+
+    /// PROTOTYPE: makes `shard_id` a v2 shard, if this process has a resolver and
+    /// the shard is new. Returns whether the shard is v2.
+    ///
+    /// Must run before anything opens the shard: a process decides a shard's
+    /// version on first open and never revisits it.
+    pub async fn maybe_register_v2<K, V, T, D>(&self, shard_id: ShardId) -> bool
+    where
+        K: Codec,
+        V: Codec,
+        T: Codec64,
+        D: Codec64,
+    {
+        let Some(v2) = crate::v2::client::resolver() else {
+            return false;
+        };
+        if v2.fetch(&shard_id).await.is_some() {
+            return true;
+        }
+        let key = shard_id.to_string();
+        let head = retry_external(&self.metrics.retries.external.fetch_state_scan, || {
+            self.consensus.head(&key)
+        })
+        .await;
+        if head.is_some() {
+            v2.mark_v1(&shard_id);
+            return false;
+        }
+        v2.register::<K, V, T, D>(&shard_id).await;
+        true
     }
 
     async fn make_machine<K, V, T, D>(
