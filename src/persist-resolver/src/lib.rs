@@ -29,7 +29,9 @@ use std::time::Instant;
 
 use mz_ore::task::AbortOnDropHandle;
 use mz_persist_client::read::ReadHandle;
-use mz_persist_client::v2::{Manifest, PartitionId, ProtoClaim, ProtoCommitRequest};
+use mz_persist_client::v2::{
+    Manifest, PartitionId, ProtoClaim, ProtoCommitRequest, ProtoWatchRequest,
+};
 use mz_persist_client::v2::{
     ManifestKey, ProtoCommitResponse, ProtoCommitResult, ProtoEmpty, ProtoFetchRequest,
     ProtoFetchResponse, ProtoOp, ProtoPartitionVal, ProtoPersistResolver,
@@ -61,6 +63,8 @@ pub struct ResolverConfig {
 #[derive(Debug)]
 pub enum Request {
     Fetch(ShardId, oneshot::Sender<Option<ProtoShardView>>),
+    /// Answered once the shard's rows change past the given view seqno.
+    Watch(ShardId, u64, oneshot::Sender<Option<ProtoShardView>>),
     Commit(Vec<ProtoOp>, oneshot::Sender<ProtoCommitResponse>),
 }
 
@@ -173,6 +177,8 @@ pub struct Resolver {
     control: ManifestShard,
     partition: ManifestShard,
     view: View,
+    /// Parked watches, by shard: the seqno the watcher knows, and where to reply.
+    watches: BTreeMap<ShardId, Vec<(u64, oneshot::Sender<Option<ProtoShardView>>)>>,
     /// Cycles and write latencies, for rough numbers.
     pub stats: Arc<std::sync::Mutex<Stats>>,
 }
@@ -231,6 +237,7 @@ impl Resolver {
             control,
             partition,
             view,
+            watches: BTreeMap::new(),
             stats: Default::default(),
         };
         resolver.reload().await;
@@ -252,6 +259,10 @@ impl Resolver {
         }
         view.control_time = control_time;
         view.partition_time = partition_time;
+        // Watchers may have missed anything: wake them all.
+        let seqno = view.seqno();
+        let shards: Vec<_> = view.rows.keys().filter_map(|k| k.shard()).collect();
+        view.changed_at = shards.into_iter().map(|s| (s, seqno)).collect();
         let violations = view.invariant_violations();
         assert!(violations.is_empty(), "manifest invariants: {violations:?}");
         self.view = view;
@@ -304,6 +315,7 @@ impl Resolver {
                         let _ = tx.send(self.view.shard_view(&shard));
                     }
                     Request::Commit(ops, tx) => commits.push((ops, tx)),
+                    Request::Watch(shard, known, tx) => self.watch(shard, known, tx),
                 }
             }
             if commits.is_empty() {
@@ -314,6 +326,39 @@ impl Resolver {
                 return;
             }
         }
+    }
+
+    fn watch(&mut self, shard: ShardId, known: u64, tx: oneshot::Sender<Option<ProtoShardView>>) {
+        let changed = self.view.changed_at.get(&shard).copied().unwrap_or(0);
+        if changed > known || self.view.shard_meta(&shard).is_none() {
+            let _ = tx.send(self.view.shard_view(&shard));
+        } else {
+            self.watches.entry(shard).or_default().push((known, tx));
+        }
+    }
+
+    /// Records which shards a successful cycle changed, and answers their
+    /// watches.
+    fn notify(&mut self, diffs: &[RowDiff]) {
+        let seqno = self.view.seqno();
+        let mut shards: Vec<_> = diffs.iter().filter_map(|(k, _, _)| k.shard()).collect();
+        shards.sort();
+        shards.dedup();
+        for shard in shards {
+            self.view.changed_at.insert(shard, seqno);
+            let Some(watches) = self.watches.remove(&shard) else {
+                continue;
+            };
+            let view = self.view.shard_view(&shard);
+            for (_, tx) in watches {
+                let _ = tx.send(view.clone());
+            }
+        }
+        // Drop watches whose callers went away.
+        self.watches.retain(|_, ws| {
+            ws.retain(|(_, tx)| !tx.is_closed());
+            !ws.is_empty()
+        });
     }
 
     /// Commits one cycle's worth of commits. Returns false if the claim was lost.
@@ -367,6 +412,7 @@ impl Resolver {
                 );
                 continue;
             }
+            self.notify(&diffs);
             let mut stats = self.stats.lock().expect("lock");
             stats.cycles += 1;
             stats.commits += u64::try_from(commits.len()).expect("fits");
@@ -452,6 +498,25 @@ impl ProtoPersistResolver for Service {
             .await
             .map_err(|_| tonic::Status::unavailable("resolver stopped"))?;
         Ok(tonic::Response::new(resp))
+    }
+
+    async fn watch(
+        &self,
+        request: tonic::Request<ProtoWatchRequest>,
+    ) -> Result<tonic::Response<ProtoFetchResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let shard = req
+            .shard
+            .parse::<ShardId>()
+            .map_err(tonic::Status::invalid_argument)?;
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Request::Watch(shard, req.known_seqno, tx))
+            .map_err(|_| tonic::Status::unavailable("resolver stopped"))?;
+        let view = rx
+            .await
+            .map_err(|_| tonic::Status::unavailable("resolver stopped"))?;
+        Ok(tonic::Response::new(ProtoFetchResponse { view }))
     }
 
     async fn fetch(

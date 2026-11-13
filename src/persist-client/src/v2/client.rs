@@ -42,7 +42,7 @@ use crate::v2::{
     BatchId, OpKind, ProtoAppend, ProtoCodecs, ProtoCommitRequest, ProtoCommitResponse,
     ProtoCommitResult, ProtoCompact, ProtoDropIntent, ProtoEmpty, ProtoEvolve, ProtoFetchRequest,
     ProtoHollowBatch, ProtoIntent, ProtoOp, ProtoPersistResolverClient, ProtoReadIntent,
-    ProtoRegister, ProtoShardView, SENTINEL_READER, frontier, proto_frontier,
+    ProtoRegister, ProtoShardView, ProtoWatchRequest, SENTINEL_READER, frontier, proto_frontier,
 };
 
 /// The env var that points a process's persist clients at a resolver. Unset, every
@@ -167,6 +167,26 @@ impl ResolverClient {
             .expect("lock")
             .insert(*shard, view.is_some());
         view
+    }
+
+    /// Waits for `shard`'s view to change past `known_seqno`. Returns None if it
+    /// didn't within a while, or the call failed: the caller asks again.
+    pub async fn watch(&self, shard: &ShardId, known_seqno: u64) -> Option<ProtoShardView> {
+        let req = ProtoWatchRequest {
+            shard: shard.to_string(),
+            known_seqno,
+        };
+        let mut rpc = self.rpc();
+        match tokio::time::timeout(Duration::from_secs(30), rpc.watch(req)).await {
+            Ok(Ok(resp)) => resp.into_inner().view,
+            Ok(Err(status)) => {
+                warn!("persist v2 watch to {} failed: {status}", self.url);
+                self.reconnect();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                None
+            }
+            Err(_elapsed) => None,
+        }
     }
 
     /// Sends `ops` as one commit. Retries transport errors forever.

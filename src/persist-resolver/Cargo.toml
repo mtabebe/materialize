@@ -34,4 +34,5 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 mz-ore = { path = "../ore", features = ["async", "tracing", "test"] }
+mz-dyncfg = { path = "../dyncfg" }
 tempfile.workspace = true

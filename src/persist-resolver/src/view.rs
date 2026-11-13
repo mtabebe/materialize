@@ -50,6 +50,8 @@ pub struct View {
     pub partition_time: u64,
     /// The partition the partition rows belong to.
     pub partition: PartitionId,
+    /// The view seqno at which each shard's rows last changed, for watches.
+    pub changed_at: BTreeMap<ShardId, u64>,
 }
 
 impl View {

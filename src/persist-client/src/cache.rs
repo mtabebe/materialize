@@ -648,6 +648,8 @@ pub(crate) struct LockingTypedState<K, V, T, D> {
     /// don't propagate to basically every struct in persist.
     schema_cache: Arc<dyn Any + Send + Sync>,
     _subscription_token: Arc<ShardSubscriptionToken>,
+    /// PROTOTYPE: set once a v2 watcher task follows this state.
+    pub(crate) v2_watched: std::sync::atomic::AtomicBool,
 }
 
 impl<K, V, T: Debug, D> Debug for LockingTypedState<K, V, T, D> {
@@ -662,6 +664,7 @@ impl<K, V, T: Debug, D> Debug for LockingTypedState<K, V, T, D> {
             update_semaphore: _,
             schema_cache: _schema_cache,
             _subscription_token,
+            v2_watched: _,
         } = self;
         f.debug_struct("LockingTypedState")
             .field("shard_id", shard_id)
@@ -693,6 +696,7 @@ impl<K: Codec, V: Codec, T, D> LockingTypedState<K, V, T, D> {
             cfg: Arc::clone(&cfg),
             shard_metrics: metrics.shards.shard(&shard_id, &diagnostics.shard_name),
             update_semaphore: AwaitableState::new(None),
+            v2_watched: std::sync::atomic::AtomicBool::new(false),
             schema_cache: Arc::new(SchemaCacheMaps::<K, V>::new(&metrics.schema)),
             metrics,
             _subscription_token: subscription_token,

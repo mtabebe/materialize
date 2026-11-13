@@ -314,6 +314,7 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&crate::batch::MAX_RUNS)
         .add(&BLOB_OPERATION_TIMEOUT)
         .add(&PERSIST_V2_REGISTER_USER_SHARDS)
+        .add(&PERSIST_V2_WATCH)
         .add(&BLOB_OPERATION_ATTEMPT_TIMEOUT)
         .add(&BLOB_CONNECT_TIMEOUT)
         .add(&BLOB_READ_TIMEOUT)
@@ -511,6 +512,16 @@ pub const PERSIST_V2_REGISTER_USER_SHARDS: Config<bool> = Config::new(
     "persist_v2_register_user_shards",
     false,
     "PROTOTYPE: register new user collections' shards as v2 shards on the resolver.",
+    ParameterScope::Environment,
+);
+
+/// PROTOTYPE: whether a process follows each open v2 shard with a long-poll
+/// watch on the resolver. Off, a listen on a v2 shard learns of new data only by
+/// polling.
+pub const PERSIST_V2_WATCH: Config<bool> = Config::new(
+    "persist_v2_watch",
+    true,
+    "PROTOTYPE: follow open v2 shards with a long-poll watch on the resolver.",
     ParameterScope::Environment,
 );
 

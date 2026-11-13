@@ -172,6 +172,13 @@ message ProtoFetchRequest {
   string shard = 1;
 }
 
+// Returns once `shard`'s rows changed past `known_seqno` (a view seqno), or
+// right away if they already have.
+message ProtoWatchRequest {
+  string shard = 1;
+  uint64 known_seqno = 2;
+}
+
 message ProtoFetchResponse {
   optional ProtoShardView view = 1;
 }
@@ -179,4 +186,5 @@ message ProtoFetchResponse {
 service ProtoPersistResolver {
   rpc Commit(ProtoCommitRequest) returns (ProtoCommitResponse);
   rpc Fetch(ProtoFetchRequest) returns (ProtoFetchResponse);
+  rpc Watch(ProtoWatchRequest) returns (ProtoFetchResponse);
 }

@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use crate::cache::{LockingTypedState, StateCache};
 use crate::cfg::GC_REMOVE_FINALIZED_ROLLUPS;
+use crate::cfg::PERSIST_V2_WATCH;
 use crate::error::{CodecMismatch, InvalidUsage};
 use crate::internal::gc::GcReq;
 use crate::internal::maintenance::RoutineMaintenance;
@@ -35,7 +36,7 @@ use crate::internal::watch::StateWatch;
 use crate::read::LeasedReaderId;
 use crate::rpc::{PUBSUB_PUSH_DIFF_ENABLED, PubSubSender};
 use crate::schema::SchemaCache;
-use crate::v2::client::{Committed, ops_for_transition, state_from_view};
+use crate::v2::client::{Committed, ResolverClient, ops_for_transition, state_from_view};
 use crate::{Diagnostics, PersistConfig, ShardId, cfg};
 use bytes::Bytes;
 use differential_dataflow::difference::Monoid;
@@ -124,7 +125,48 @@ where
             shard_id,
             state,
         };
+        if let Some(v2) = ret.state_versions.v2_for(&shard_id) {
+            if PERSIST_V2_WATCH.get(&ret.cfg) {
+                ret.spawn_v2_watcher(Arc::clone(v2));
+            }
+        }
         Ok(ret)
+    }
+
+    /// PROTOTYPE: follows a v2 shard's view on the resolver, for as long as this
+    /// process keeps the shard's state, and applies each change to the shared
+    /// state. This stands in for pubsub: the update wakes [StateWatch]ers, so a
+    /// waiting listen advances without polling. One task per cached state.
+    fn spawn_v2_watcher(&self, v2: Arc<ResolverClient>) {
+        let shard_id = self.shard_id;
+        if self
+            .state
+            .v2_watched
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let weak = Arc::downgrade(&self.state);
+        let cfg = self.cfg.clone();
+        let metrics = Arc::clone(&self.metrics);
+        mz_ore::task::spawn(|| format!("persist-v2-watch-{shard_id}"), async move {
+            loop {
+                let Some(state) = weak.upgrade() else { break };
+                let known = state.read_lock(&metrics.locks.applier_read_cacheable, |s| s.seqno);
+                drop(state);
+                let Some(view) = v2.watch(&shard_id, known.0).await else {
+                    continue;
+                };
+                let Some(state) = weak.upgrade() else { break };
+                let new_state =
+                    state_from_view::<K, V, T, D>(&cfg, &view).expect("codecs checked at open");
+                state.write_lock(&metrics.locks.applier_write, |s| {
+                    if s.seqno < new_state.seqno {
+                        *s = new_state;
+                    }
+                });
+            }
+        });
     }
 
     /// Returns a new [StateWatch] for changes to this Applier's State.

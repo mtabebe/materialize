@@ -8096,6 +8096,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "mz-dyncfg",
  "mz-ore",
  "mz-persist",
  "mz-persist-client",
