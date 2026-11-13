@@ -160,6 +160,8 @@ async fn listener_follows_appends_and_idle_ticks() {
         advertise_addr: String::new(),
         control_shard: ShardId::new(),
         partition: "p0".into(),
+        manifest_inline_single_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_SINGLE_MAX_BYTES,
+        manifest_inline_total_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES,
     };
     let _running = start_and_serve(&resolver_client, cfg, listener)
         .await

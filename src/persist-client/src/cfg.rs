@@ -315,6 +315,7 @@ pub fn all_dyncfgs(configs: ConfigSet) -> ConfigSet {
         .add(&BLOB_OPERATION_TIMEOUT)
         .add(&PERSIST_V2_REGISTER_USER_SHARDS)
         .add(&PERSIST_V2_WATCH)
+        .add(&PERSIST_V2_INLINE_WRITES_SINGLE_MAX_BYTES)
         .add(&BLOB_OPERATION_ATTEMPT_TIMEOUT)
         .add(&BLOB_CONNECT_TIMEOUT)
         .add(&BLOB_READ_TIMEOUT)
@@ -522,6 +523,16 @@ pub const PERSIST_V2_WATCH: Config<bool> = Config::new(
     "persist_v2_watch",
     true,
     "PROTOTYPE: follow open v2 shards with a long-poll watch on the resolver.",
+    ParameterScope::Environment,
+);
+
+/// PROTOTYPE: `persist_inline_writes_single_max_bytes` for data shards. Their
+/// inline parts live in `Batch` rows, so they grow every manifest shard write that
+/// carries one.
+pub const PERSIST_V2_INLINE_WRITES_SINGLE_MAX_BYTES: Config<usize> = Config::new(
+    "persist_v2_inline_writes_single_max_bytes",
+    4096,
+    "PROTOTYPE: the inline write limit for data shards (persist_inline_writes_single_max_bytes for manifest and persist shards).",
     ParameterScope::Environment,
 );
 

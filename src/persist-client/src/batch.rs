@@ -450,7 +450,16 @@ pub(crate) const INLINE_WRITES_TOTAL_MAX_BYTES: Config<usize> = Config::new(
 
 impl BatchBuilderConfig {
     /// Initialize a batch builder config based on a snapshot of the Persist config.
-    pub fn new(value: &PersistConfig, _shard_id: ShardId) -> Self {
+    pub fn new(value: &PersistConfig, shard_id: ShardId) -> Self {
+        // PROTOTYPE: a data shard's inline parts end up in its `Batch` rows in a
+        // manifest shard, so it has its own limit, independent of the one that
+        // governs persist shards (manifest shards included).
+        let is_data_shard = crate::v2::client::resolver().is_some_and(|r| r.is_v2(&shard_id));
+        let inline_writes_single_max_bytes = if is_data_shard {
+            crate::cfg::PERSIST_V2_INLINE_WRITES_SINGLE_MAX_BYTES.get(value)
+        } else {
+            INLINE_WRITES_SINGLE_MAX_BYTES.get(value)
+        };
         let writer_key = WriterKey::for_version(&value.build_version);
 
         let preferred_order = RunOrder::Structured;
@@ -460,7 +469,7 @@ impl BatchBuilderConfig {
             blob_target_size: BLOB_TARGET_SIZE.get(value).clamp(1, usize::MAX),
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(value),
             batch_builder_max_outstanding_parts: BATCH_BUILDER_MAX_OUTSTANDING_PARTS.get(value),
-            inline_writes_single_max_bytes: INLINE_WRITES_SINGLE_MAX_BYTES.get(value),
+            inline_writes_single_max_bytes,
             stats_collection_enabled: STATS_COLLECTION_ENABLED.get(value),
             stats_budget: STATS_BUDGET_BYTES.get(value),
             stats_untrimmable_columns: Arc::new(untrimmable_columns(value)),

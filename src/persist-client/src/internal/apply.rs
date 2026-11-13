@@ -155,6 +155,8 @@ where
                 let known = state.read_lock(&metrics.locks.applier_read_cacheable, |s| s.seqno);
                 drop(state);
                 let Some(view) = v2.watch(&shard_id, known.0).await else {
+                    // A timeout, an error, or a shard this resolver doesn't serve.
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     continue;
                 };
                 let Some(state) = weak.upgrade() else { break };

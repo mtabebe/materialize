@@ -40,6 +40,12 @@ struct Args {
     control_shard: ShardId,
     #[clap(long, default_value = "p0")]
     partition: String,
+    /// The manifest shards' `persist_inline_writes_single_max_bytes`.
+    #[clap(long, default_value_t = ResolverConfig::DEFAULT_MANIFEST_INLINE_SINGLE_MAX_BYTES)]
+    manifest_inline_single_max_bytes: usize,
+    /// The manifest shards' `persist_inline_writes_total_max_bytes`.
+    #[clap(long, default_value_t = ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES)]
+    manifest_inline_total_max_bytes: usize,
 }
 
 #[tokio::main]
@@ -70,6 +76,8 @@ async fn main() -> anyhow::Result<()> {
         advertise_addr: String::new(),
         control_shard: args.control_shard,
         partition: args.partition,
+        manifest_inline_single_max_bytes: args.manifest_inline_single_max_bytes,
+        manifest_inline_total_max_bytes: args.manifest_inline_total_max_bytes,
     };
     let listener = tokio::net::TcpListener::bind(args.listen_addr).await?;
     info!(

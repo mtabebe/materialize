@@ -246,6 +246,15 @@ pub fn decode_val(buf: &[u8]) -> Result<ValKind, String> {
         .ok_or_else(|| "missing val kind".to_owned())
 }
 
+/// Sets the inline write limits of persist shards in `configs`, which in a
+/// resolver process are its manifest shards.
+pub fn set_inline_write_limits(configs: &mz_dyncfg::ConfigSet, single: usize, total: usize) {
+    let mut updates = mz_dyncfg::ConfigUpdates::default();
+    updates.add(&crate::batch::INLINE_WRITES_SINGLE_MAX_BYTES, single);
+    updates.add(&crate::batch::INLINE_WRITES_TOTAL_MAX_BYTES, total);
+    updates.apply(configs);
+}
+
 /// The data shard an op names.
 pub fn op_shard(op: &ProtoOp) -> Result<ShardId, String> {
     ShardId::from_str(&op.shard)

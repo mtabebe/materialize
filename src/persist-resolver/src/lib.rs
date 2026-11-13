@@ -60,6 +60,20 @@ pub struct ResolverConfig {
     pub advertise_addr: String,
     pub control_shard: ShardId,
     pub partition: PartitionId,
+    /// `persist_inline_writes_single_max_bytes` for the manifest shards: a cycle's
+    /// write stays in the consensus row, with no blob PUT, while it fits.
+    pub manifest_inline_single_max_bytes: usize,
+    /// `persist_inline_writes_total_max_bytes` for the manifest shards.
+    pub manifest_inline_total_max_bytes: usize,
+}
+
+impl ResolverConfig {
+    /// Room for a cycle carrying 16 data shard batches inlined at today's 4 KiB
+    /// limit (`persist_v2_inline_writes_single_max_bytes`).
+    pub const DEFAULT_MANIFEST_INLINE_SINGLE_MAX_BYTES: usize = 64 * 1024;
+    /// Four times today's 1 MiB, so 16 cycles at the single limit fit before the
+    /// manifest shard's own compaction has to flush them.
+    pub const DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES: usize = 4 * 1024 * 1024;
 }
 
 /// A request to the resolver's cycle.
@@ -205,6 +219,7 @@ impl ManifestShard {
 /// A running resolver.
 pub struct Resolver {
     cfg: ResolverConfig,
+    partition_shard: ShardId,
     control: ManifestShard,
     partition: ManifestShard,
     view: View,
@@ -223,6 +238,11 @@ pub struct Stats {
     pub rows_written: u64,
     pub encoded_bytes_written: u64,
     pub write_micros: Vec<u64>,
+    /// Encoded row bytes of each manifest shard write.
+    pub write_bytes: Vec<u64>,
+    /// Writes whose rows alone exceed the manifest inline limit, so persist
+    /// writes them to blob. A lower bound: the encoded part adds overhead.
+    pub spilled_writes: u64,
     /// The view's `ControlAt` and control manifest time, as of the last cycle or
     /// hydration.
     pub control_at: Option<u64>,
@@ -233,6 +253,11 @@ impl Resolver {
     /// Opens the manifests, creates the partition if it doesn't exist, and claims
     /// it.
     pub async fn start(client: &PersistClient, cfg: ResolverConfig) -> Resolver {
+        mz_persist_client::v2::set_inline_write_limits(
+            client.dyncfgs(),
+            cfg.manifest_inline_single_max_bytes,
+            cfg.manifest_inline_total_max_bytes,
+        );
         let mut control = ManifestShard::open(client, cfg.control_shard, "control").await;
         let (rows, control_time) = control.hydrate().await;
         let mut view = View::new(cfg.partition.clone());
@@ -269,6 +294,7 @@ impl Resolver {
         let partition = ManifestShard::open(client, partition_shard, "partition").await;
         let mut resolver = Resolver {
             cfg,
+            partition_shard,
             control,
             partition,
             view,
@@ -525,10 +551,15 @@ impl Resolver {
                 let mut stats = self.stats.lock().expect("lock");
                 stats.manifest_writes += 1;
                 stats.rows_written += u64::try_from(diffs.len()).expect("fits");
-                stats.encoded_bytes_written += diffs
+                let bytes = diffs
                     .iter()
                     .map(|(k, v, _)| k.encode().len() + encode_val(v).len())
-                    .sum::<usize>() as u64;
+                    .sum::<usize>();
+                stats.encoded_bytes_written += u64::try_from(bytes).expect("fits");
+                stats.write_bytes.push(u64::try_from(bytes).expect("fits"));
+                if bytes > self.cfg.manifest_inline_single_max_bytes {
+                    stats.spilled_writes += 1;
+                }
                 stats
                     .write_micros
                     .push(u64::try_from(elapsed.as_micros()).expect("fits"));
@@ -625,6 +656,8 @@ pub struct Running {
     /// Sends requests straight to the cycle, bypassing gRPC.
     pub tx: mpsc::UnboundedSender<Request>,
     pub stats: Arc<std::sync::Mutex<Stats>>,
+    /// The partition manifest shard.
+    pub partition_shard: ShardId,
     pub serve: AbortOnDropHandle<anyhow::Result<()>>,
     /// Ends when the resolver loses its claim.
     pub cycle: AbortOnDropHandle<()>,
@@ -642,6 +675,7 @@ pub async fn start_and_serve(
     }
     let resolver = Resolver::start(client, cfg).await;
     let stats = Arc::clone(&resolver.stats);
+    let partition_shard = resolver.partition_shard;
     let (tx, rx) = mpsc::unbounded_channel();
     let service = Service { tx: tx.clone() };
     let serve =
@@ -650,6 +684,7 @@ pub async fn start_and_serve(
     Ok(Running {
         tx,
         stats,
+        partition_shard,
         serve,
         cycle,
     })
