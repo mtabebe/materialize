@@ -50,7 +50,9 @@ use crate::internal::machine::{
     CompareAndAppendRes, ExpireFn, Machine, MultiAppendRes, next_listen_batch_retry_params,
 };
 use crate::internal::metrics::{BatchWriteMetrics, Metrics, ShardMetrics};
-use crate::internal::state::{BatchPart, HandleDebugState, HollowBatch, RunOrder, RunPart};
+use crate::internal::state::{
+    BatchPart, HandleDebugState, HollowBatch, IdempotencyToken, RunOrder, RunPart,
+};
 use crate::read::ReadHandle;
 use crate::schema::PartMigration;
 use crate::{GarbageCollector, IsolatedRuntime, PersistConfig, ShardId, parse_id};
@@ -463,6 +465,10 @@ where
             }
             batches.push(batch);
         }
+        // One token per shard for every attempt, and whether any attempt's
+        // outcome was unknown, across inline backpressure flushes too.
+        let tokens: Vec<_> = order.iter().map(|_| IdempotencyToken::new()).collect();
+        let mut indeterminate = None;
         let res = loop {
             let args: Vec<_> = order
                 .iter()
@@ -476,7 +482,7 @@ where
                     )
                 })
                 .collect();
-            let res = Machine::compare_and_append_multi(&args).await;
+            let res = Machine::compare_and_append_multi(&args, &tokens, &mut indeterminate).await;
             drop(args);
             if let MultiAppendRes::InlineBackpressure(j) = res {
                 let i = order[j];
@@ -514,6 +520,8 @@ where
                 return Ok(Err((i, UpperMismatch { current, expected })));
             }
         };
+        // NOTE: if an attempt from before an inline backpressure flush is the one
+        // that landed, the flushed parts are unreferenced and leak.
         for batch in batches.iter_mut() {
             batch.mark_consumed();
         }
@@ -1621,10 +1629,15 @@ mod tests {
             inner: Arc::new(MemConsensus::default()),
             armed: Arc::clone(&armed),
         });
-        let (c1, c2, _) = clients_sharing(consensus);
+        let (c1, c2, metrics) = clients_sharing(consensus);
         let (a, b) = (ShardId::new(), ShardId::new());
         let (mut a1, _) = c1.expect_open::<String, String, u64, i64>(a).await;
         let (mut b1, _) = c1.expect_open::<String, String, u64, i64>(b).await;
+        // Register the schemas first, so the multi-key CaS is the next CaS and
+        // the one whose response is lost.
+        a1.try_register_schema().await;
+        b1.try_register_schema().await;
+        let failed = metrics.cmds.compare_and_append.failed.get();
         armed.store(true, Ordering::SeqCst);
         let res = WriteHandle::compare_and_append_multi(vec![
             (
@@ -1643,6 +1656,11 @@ mod tests {
         .await
         .expect("usage");
         assert!(!armed.load(Ordering::SeqCst), "the response was lost");
+        assert_eq!(
+            metrics.cmds.compare_and_append.failed.get(),
+            failed + 1,
+            "the multi-key CaS is the one that saw the lost response"
+        );
         assert_eq!(res, Ok(()), "the retry finds its own write");
         assert_eq!(contents(&c2, a).await, (1, vec!["a0".to_owned()]));
         assert_eq!(contents(&c2, b).await, (1, vec!["b0".to_owned()]));

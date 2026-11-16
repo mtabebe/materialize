@@ -655,12 +655,17 @@ where
     }
 
     /// PROTOTYPE (C7): [Self::compare_and_append] on several shards, committed
-    /// with one multi-key compare-and-set. `appends` must be in shard order.
+    /// with one multi-key compare-and-set. `appends` must be in shard order, with
+    /// one idempotency token each.
     ///
-    /// Indeterminate errors are retried with the same idempotency tokens, so a
-    /// write that landed reports `AlreadyCommitted` on every shard at once.
+    /// Indeterminate errors are retried with the same tokens, so a write that
+    /// landed reports `AlreadyCommitted` on every shard at once. The caller keeps
+    /// `tokens` and `indeterminate` across calls (an inline backpressure flush
+    /// calls again), since an earlier attempt may still land.
     pub(crate) async fn compare_and_append_multi(
         appends: &[(&Self, &HollowBatch<T>, &WriterId, &HandleDebugState)],
+        tokens: &[IdempotencyToken],
+        indeterminate: &mut Option<Indeterminate>,
     ) -> MultiAppendRes<T> {
         let (first, _, _, _) = appends.first().expect("at least one shard");
         let metrics = Arc::clone(&first.applier.metrics);
@@ -671,13 +676,12 @@ where
             .as_millis()
             .try_into()
             .expect("reasonable duration");
-        let tokens: Vec<_> = appends.iter().map(|_| IdempotencyToken::new()).collect();
+        assert_eq!(tokens.len(), appends.len());
         let appliers: Vec<_> = appends.iter().map(|(m, _, _, _)| &m.applier).collect();
         let mut retry = metrics
             .retries
             .compare_and_append_idempotent
             .stream(Retry::persist_defaults(SystemTime::now()).into_retry_stream());
-        let mut indeterminate = None;
         loop {
             let res = Applier::apply_unbatched_cmd_multi(
                 &appliers,

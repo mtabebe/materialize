@@ -974,18 +974,20 @@ pub mod tests {
         assert_eq!(heads().await, (Some(1), Some(2)));
         assert_eq!(consensus.head(&b).await?, Some(at(2, "b2")));
 
-        // Racing writes over the same keys, listed in opposite orders: exactly
-        // one lands.
+        // Racing writes over the same keys, listed in opposite orders: one
+        // lands and the other sees a mismatch, not an error (a deadlock abort
+        // or a serialization failure would be one).
         let (x, y) = futures_util::future::join(
             multi(vec![(&a, at(2, "x")), (&b, at(3, "x"))]),
             multi(vec![(&b, at(3, "y")), (&a, at(2, "y"))]),
         )
         .await;
-        let committed = [&x, &y]
-            .iter()
-            .filter(|r| matches!(r, Ok(CaSResult::Committed)))
-            .count();
-        assert_eq!(committed, 1, "{x:?} {y:?}");
+        let mut results = [x, y];
+        results.sort_by_key(|r| format!("{r:?}"));
+        assert_eq!(
+            results,
+            [Ok(CaSResult::Committed), Ok(CaSResult::ExpectationMismatch)]
+        );
         let a_data = consensus.head(&a).await?.expect("a").data;
         assert_eq!(consensus.head(&b).await?.expect("b").data, a_data);
 

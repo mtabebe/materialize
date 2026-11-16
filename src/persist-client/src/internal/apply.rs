@@ -486,6 +486,12 @@ where
             "appliers must be distinct and in shard order"
         );
         let first = appliers.first().expect("at least one shard");
+        // The data pointers, since vtable pointers of one type can differ.
+        let consensus = |a: &Self| Arc::as_ptr(&a.state_versions.consensus).cast::<()>();
+        assert!(
+            appliers.iter().all(|a| consensus(a) == consensus(first)),
+            "multi-shard commands need one Consensus for every shard"
+        );
         loop {
             cmd.started.inc();
             // Every other command holds one shard's update lease at a time, so
