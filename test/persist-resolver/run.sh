@@ -95,5 +95,5 @@ for shard in $shards; do
     fi
     echo "user shard $shard: v2 (no consensus rows)"
 done
-grep "is v2: true" "$logs/environmentd.log" | sed 's/.*INFO//' || true
+grep -a "is v2: true" "$logs/environmentd.log" | sed 's/.*INFO//' || true
 echo "OK"
