@@ -18,6 +18,7 @@ use differential_dataflow::difference::Monoid;
 use differential_dataflow::lattice::Lattice;
 use futures::FutureExt;
 use futures::future::{self, BoxFuture};
+use itertools::Itertools;
 use mz_dyncfg::{Config, ConfigSet, ParameterScope};
 use mz_ore::cast::CastFrom;
 use mz_ore::error::ErrorExt;
@@ -720,7 +721,7 @@ where
                 Ok(results) => {
                     let maintenance = appends
                         .iter()
-                        .zip(results)
+                        .zip_eq(results)
                         .map(|((machine, _, _, _), (_seqno, merge_reqs, routine))| {
                             let compaction = merge_reqs
                                 .into_iter()

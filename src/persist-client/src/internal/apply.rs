@@ -42,6 +42,7 @@ use crate::{Diagnostics, PersistConfig, ShardId, cfg};
 use bytes::Bytes;
 use differential_dataflow::difference::Monoid;
 use differential_dataflow::lattice::Lattice;
+use itertools::Itertools;
 use mz_ore::cast::CastFrom;
 use mz_ore::soft_assert_or_log;
 use mz_persist::location::{CaSResult, Indeterminate, SeqNo, VersionedData};
@@ -548,7 +549,7 @@ where
                 Ok(CaSResult::Committed) => {
                     cmd.succeeded.inc();
                     let mut results = Vec::with_capacity(nexts.len());
-                    for (applier, next) in appliers.iter().zip(nexts) {
+                    for (applier, next) in appliers.iter().zip_eq(nexts) {
                         applier.shard_metrics.cmd_succeeded.inc();
                         let seqno = next.state.seqno();
                         applier.update_state(next.state);
