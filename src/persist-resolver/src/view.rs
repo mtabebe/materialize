@@ -460,6 +460,13 @@ impl View {
                 (ManifestKey::Intent(s, r), _) if self.shard_meta(s).is_none() => {
                     out.push(format!("intent {r} of unregistered shard {s}"));
                 }
+                (k, _) if k.manifest() == Manifest::Partition => {
+                    if let Some(s) = k.shard() {
+                        if self.shard_meta(&s).is_some_and(|m| m.finalized) {
+                            out.push(format!("finalized shard {s} still has {k:?}"));
+                        }
+                    }
+                }
                 _ => {}
             }
         }

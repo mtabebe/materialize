@@ -18,11 +18,13 @@
 //!
 //! The resolver claims its partition, then runs a cycle: take every request that
 //! arrived, check each commit against its [View] and apply it in place, then
-//! write the cycle's row changes with one `compare_and_append` per manifest shard
-//! that changed, at its current time. Correctness rests on that CaS, not on the
-//! resolver: if it loses, something else wrote the manifest shard, so the
-//! resolver hydrates its view again and reruns the same commits, or stops if the
-//! claim is no longer its own.
+//! write the cycle's row changes at each changed manifest shard's current time.
+//! A cycle that changed both manifest shards, such as one carrying a `Register`
+//! or `Finalize`, writes them as one multi-key CaS (C7,
+//! [WriteHandle::compare_and_append_multi]), so neither half lands alone.
+//! Correctness rests on that CaS, not on the resolver: if it loses, something
+//! else wrote a manifest shard, so the resolver hydrates its view again and
+//! reruns the same commits, or stops if the claim is no longer its own.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -191,10 +193,7 @@ impl ManifestShard {
     /// Writes `diffs` at manifest time `at`. On a lost CaS, returns the
     /// manifest's current upper.
     async fn write(&mut self, at: u64, diffs: &[&RowDiff]) -> Result<(), u64> {
-        let updates: Vec<ManifestUpdate> = diffs
-            .iter()
-            .map(|(k, v, d)| ((k.encode(), encode_val(v)), at, *d))
-            .collect();
+        let updates = Self::updates(at, diffs);
         let res = self
             .write
             .compare_and_append(
@@ -206,13 +205,60 @@ impl ManifestShard {
             .expect("valid manifest write");
         match res {
             Ok(()) => {
-                self.writes += 1;
-                if self.writes % DOWNGRADE_EVERY == 0 {
-                    self.read.downgrade_since(&Antichain::from_elem(at)).await;
-                }
+                self.landed(at).await;
                 Ok(())
             }
             Err(mismatch) => Err(*mismatch.current.as_option().expect("not finalized")),
+        }
+    }
+
+    /// Writes `control_diffs` to `control` at `control_at` and `partition_diffs`
+    /// to `partition` at `partition_at`, both or neither. On a lost CaS, returns
+    /// which manifest shard's upper had moved.
+    async fn write_both(
+        (control, control_at, control_diffs): (&mut Self, u64, &[&RowDiff]),
+        (partition, partition_at, partition_diffs): (&mut Self, u64, &[&RowDiff]),
+    ) -> Result<(), &'static str> {
+        let at = |t: u64| (Antichain::from_elem(t), Antichain::from_elem(t + 1));
+        let ((c_lower, c_upper), (p_lower, p_upper)) = (at(control_at), at(partition_at));
+        let res = WriteHandle::compare_and_append_multi(vec![
+            (
+                &mut control.write,
+                Self::updates(control_at, control_diffs),
+                c_lower,
+                c_upper,
+            ),
+            (
+                &mut partition.write,
+                Self::updates(partition_at, partition_diffs),
+                p_lower,
+                p_upper,
+            ),
+        ])
+        .await
+        .expect("valid manifest write");
+        match res {
+            Ok(()) => {
+                control.landed(control_at).await;
+                partition.landed(partition_at).await;
+                Ok(())
+            }
+            Err((0, _)) => Err(control.name),
+            Err(_) => Err(partition.name),
+        }
+    }
+
+    fn updates(at: u64, diffs: &[&RowDiff]) -> Vec<ManifestUpdate> {
+        diffs
+            .iter()
+            .map(|(k, v, d)| ((k.encode(), encode_val(v)), at, *d))
+            .collect()
+    }
+
+    async fn landed(&mut self, at: u64) {
+        self.writes += 1;
+        if self.writes % DOWNGRADE_EVERY == 0 {
+            self.read.downgrade_since(&Antichain::from_elem(at)).await;
         }
     }
 }
@@ -244,6 +290,11 @@ pub struct Stats {
     /// Writes whose rows alone exceed the manifest inline limit, so persist
     /// writes them to blob. A lower bound: the encoded part adds overhead.
     pub spilled_writes: u64,
+    /// Writes to both manifest shards as one multi-key CaS. Each also counts
+    /// as two `manifest_writes`.
+    pub multi_writes: u64,
+    /// Manifest shard CaSes (single or multi-key) that lost.
+    pub lost_writes: u64,
     /// The view's `ControlAt` and control manifest time, as of the last cycle or
     /// hydration.
     pub control_at: Option<u64>,
@@ -315,8 +366,10 @@ impl Resolver {
     async fn reload(&mut self) {
         let (partition_rows, partition_time) = self.partition.hydrate().await;
         // The partition's view is only usable with control at or past the time
-        // its `ControlAt` names: a registration's partition rows can land before
-        // this resolver's view of control has the shard.
+        // its `ControlAt` names. Both halves of a write land in one multi-key
+        // CaS and control is read after the partition, so this doesn't wait
+        // here, but it is the pairing rule for anything that follows the two
+        // manifest shards separately.
         let control_at = partition_rows.iter().find_map(|(k, v)| match (k, v) {
             (ManifestKey::ControlAt, ValKind::ControlAt(c)) => Some(*c),
             _ => None,
@@ -464,33 +517,28 @@ impl Resolver {
                     Err(e) => outcomes.push(Err(e)),
                 }
             }
-            // NOTE: not atomic across manifests (no multi-key CaS). A commit that
-            // touches both, such as a registration, lands control first.
             let control: Vec<_> = diffs
                 .iter()
                 .filter(|(k, _, _)| k.manifest() == Manifest::Control)
                 .collect();
-            let partition: Vec<_> = diffs
+            let mut partition: Vec<RowDiff> = diffs
                 .iter()
                 .filter(|(k, _, _)| k.manifest() == Manifest::Partition)
+                .cloned()
                 .collect();
-            let mut partition: Vec<RowDiff> = partition.into_iter().cloned().collect();
-            let mut lost = false;
-            if !control.is_empty() {
-                let c = self.view.control_time;
-                lost = !self.write(true, &control).await;
-                if !partition.is_empty() {
-                    // NOTE: without a multi-key CaS (C7) this is a second CaS. A
-                    // crash between the two leaves control ahead of the partition:
-                    // a registered data shard with no `Upper` row, which the
-                    // invariant check in `reload` reports.
-                    partition.extend(self.view.set_control_at(c));
+            let lost = match (control.is_empty(), partition.is_empty()) {
+                (true, true) => false,
+                (false, true) => !self.write(true, &control).await,
+                (true, false) => {
+                    let refs: Vec<_> = partition.iter().collect();
+                    !self.write(false, &refs).await
                 }
-            }
-            if !lost && !partition.is_empty() {
-                let refs: Vec<_> = partition.iter().collect();
-                lost = !self.write(false, &refs).await;
-            }
+                (false, false) => {
+                    partition.extend(self.view.set_control_at(self.view.control_time));
+                    let refs: Vec<_> = partition.iter().collect();
+                    !self.write_both(&control, &refs).await
+                }
+            };
             if lost {
                 self.reload().await;
                 if !self.holds_claim() {
@@ -536,6 +584,34 @@ impl Resolver {
         }
     }
 
+    /// Writes to both manifests at their current times as one multi-key CaS.
+    /// Returns false on a lost CaS.
+    async fn write_both(&mut self, control: &[&RowDiff], partition: &[&RowDiff]) -> bool {
+        let (c, p) = (self.view.control_time, self.view.partition_time);
+        let start = Instant::now();
+        let res = ManifestShard::write_both(
+            (&mut self.control, c, control),
+            (&mut self.partition, p, partition),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        match res {
+            Ok(()) => {
+                self.view.control_time += 1;
+                self.view.partition_time += 1;
+                self.record_write(control, elapsed);
+                self.record_write(partition, elapsed);
+                self.stats.lock().expect("lock").multi_writes += 1;
+                true
+            }
+            Err(moved) => {
+                debug!("resolver lost multi-key CaS at control {c} partition {p}: {moved} moved");
+                self.stats.lock().expect("lock").lost_writes += 1;
+                false
+            }
+        }
+    }
+
     /// Writes to one manifest at its current time. Returns false on a lost CaS.
     async fn write(&mut self, control: bool, diffs: &[&RowDiff]) -> bool {
         let (manifest, at) = if control {
@@ -553,21 +629,7 @@ impl Resolver {
                 } else {
                     self.view.partition_time += 1;
                 }
-                let mut stats = self.stats.lock().expect("lock");
-                stats.manifest_writes += 1;
-                stats.rows_written += u64::try_from(diffs.len()).expect("fits");
-                let bytes = diffs
-                    .iter()
-                    .map(|(k, v, _)| k.encode().len() + encode_val(v).len())
-                    .sum::<usize>();
-                stats.encoded_bytes_written += u64::try_from(bytes).expect("fits");
-                stats.write_bytes.push(u64::try_from(bytes).expect("fits"));
-                if bytes > self.cfg.manifest_inline_single_max_bytes {
-                    stats.spilled_writes += 1;
-                }
-                stats
-                    .write_micros
-                    .push(u64::try_from(elapsed.as_micros()).expect("fits"));
+                self.record_write(diffs, elapsed);
                 true
             }
             Err(current) => {
@@ -575,9 +637,28 @@ impl Resolver {
                     "resolver lost CaS on {} manifest at {at}, now {current}",
                     manifest.name
                 );
+                self.stats.lock().expect("lock").lost_writes += 1;
                 false
             }
         }
+    }
+
+    fn record_write(&self, diffs: &[&RowDiff], elapsed: std::time::Duration) {
+        let mut stats = self.stats.lock().expect("lock");
+        stats.manifest_writes += 1;
+        stats.rows_written += u64::try_from(diffs.len()).expect("fits");
+        let bytes = diffs
+            .iter()
+            .map(|(k, v, _)| k.encode().len() + encode_val(v).len())
+            .sum::<usize>();
+        stats.encoded_bytes_written += u64::try_from(bytes).expect("fits");
+        stats.write_bytes.push(u64::try_from(bytes).expect("fits"));
+        if bytes > self.cfg.manifest_inline_single_max_bytes {
+            stats.spilled_writes += 1;
+        }
+        stats
+            .write_micros
+            .push(u64::try_from(elapsed.as_micros()).expect("fits"));
     }
 }
 
