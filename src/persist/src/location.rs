@@ -457,6 +457,17 @@ pub trait Consensus: std::fmt::Debug + Send + Sync {
         new: VersionedData,
     ) -> Result<CaSResult, ExternalError>;
 
+    /// [Consensus::compare_and_set] on several keys at once (C7): every key's
+    /// new data commits only if each key's head is still the seqno its
+    /// [VersionedData] expects, and otherwise none does.
+    ///
+    /// Keys must be distinct. An implementation that can't make the writes
+    /// atomic returns a determinate error instead of writing.
+    async fn compare_and_set_multi(
+        &self,
+        writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError>;
+
     /// Return `limit` versions of data stored for this `key` at sequence numbers >= `from`,
     /// in ascending order of sequence number.
     ///
@@ -476,6 +487,27 @@ pub trait Consensus: std::fmt::Debug + Send + Sync {
     /// `seqno` is greater than the current sequence number, or if there is no
     /// data at this key.
     async fn truncate(&self, key: &str, seqno: SeqNo) -> Result<Option<usize>, ExternalError>;
+}
+
+/// Checks the arguments of a [Consensus::compare_and_set_multi]: distinct keys,
+/// and seqnos within `[0, i64::MAX]`.
+pub fn validate_multi(writes: &[(String, VersionedData)]) -> Result<(), ExternalError> {
+    let mut keys = std::collections::BTreeSet::new();
+    for (key, new) in writes {
+        if !keys.insert(key) {
+            return Err(
+                Determinate::new(anyhow!("duplicate key in compare_and_set_multi: {key}")).into(),
+            );
+        }
+        if i64::try_from(new.seqno.0).is_err() {
+            return Err(Determinate::new(anyhow!(
+                "sequence numbers must fit within [0, i64::MAX], received: {:?}",
+                new.seqno
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -509,6 +541,18 @@ impl<A: Consensus + 'static> Consensus for Tasked<A> {
         mz_ore::task::spawn(
             || "persist::task::cas",
             async move { backing.compare_and_set(&key, new).await }.instrument(Span::current()),
+        )
+        .await
+    }
+
+    async fn compare_and_set_multi(
+        &self,
+        writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        let backing = self.clone_backing();
+        mz_ore::task::spawn(
+            || "persist::task::cas_multi",
+            async move { backing.compare_and_set_multi(writes).await }.instrument(Span::current()),
         )
         .await
     }
@@ -870,6 +914,83 @@ pub mod tests {
             Some(values[1].clone())
         );
 
+        Ok(())
+    }
+
+    /// Common test of [Consensus::compare_and_set_multi] for implementations
+    /// that support it.
+    pub async fn consensus_multi_cas_test<C: Consensus>(consensus: C) -> Result<(), ExternalError> {
+        // Random keys so independent runs don't interfere. `a` sorts first, so
+        // mismatches are tried both on the first key written and the last.
+        let prefix = Uuid::new_v4().to_string();
+        let (a, b) = (format!("{prefix}-a"), format!("{prefix}-b"));
+        let at = |seqno, data: &str| VersionedData {
+            seqno: SeqNo(seqno),
+            data: Bytes::from(data.to_owned()),
+        };
+        let heads = || async {
+            let a = consensus.head(&a).await.expect("head").map(|v| v.seqno.0);
+            let b = consensus.head(&b).await.expect("head").map(|v| v.seqno.0);
+            (a, b)
+        };
+        let multi = |w: Vec<(&String, VersionedData)>| {
+            consensus.compare_and_set_multi(w.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+        };
+
+        // Creating both keys at once.
+        assert_eq!(
+            multi(vec![(&a, at(0, "a0")), (&b, at(0, "b0"))]).await,
+            Ok(CaSResult::Committed)
+        );
+        assert_eq!(heads().await, (Some(0), Some(0)));
+
+        // One stale key fails the whole write, whichever key it is, and creating
+        // a key that exists is stale too.
+        for writes in [
+            vec![(&a, at(1, "a1")), (&b, at(2, "b2"))],
+            vec![(&a, at(2, "a2")), (&b, at(1, "b1"))],
+            vec![(&a, at(1, "a1")), (&b, at(0, "b0"))],
+        ] {
+            assert_eq!(multi(writes).await, Ok(CaSResult::ExpectationMismatch));
+            assert_eq!(heads().await, (Some(0), Some(0)), "neither half lands");
+        }
+
+        // A single-key CaS on one key makes a multi-key write that read it stale.
+        assert_eq!(
+            consensus.compare_and_set(&b, at(1, "b1")).await,
+            Ok(CaSResult::Committed)
+        );
+        assert_eq!(
+            multi(vec![(&a, at(1, "a1")), (&b, at(1, "b1'"))]).await,
+            Ok(CaSResult::ExpectationMismatch)
+        );
+        assert_eq!(heads().await, (Some(0), Some(1)));
+
+        // Both current: both land, with their data.
+        assert_eq!(
+            multi(vec![(&b, at(2, "b2")), (&a, at(1, "a1"))]).await,
+            Ok(CaSResult::Committed)
+        );
+        assert_eq!(heads().await, (Some(1), Some(2)));
+        assert_eq!(consensus.head(&b).await?, Some(at(2, "b2")));
+
+        // Racing writes over the same keys, listed in opposite orders: exactly
+        // one lands.
+        let (x, y) = futures_util::future::join(
+            multi(vec![(&a, at(2, "x")), (&b, at(3, "x"))]),
+            multi(vec![(&b, at(3, "y")), (&a, at(2, "y"))]),
+        )
+        .await;
+        let committed = [&x, &y]
+            .iter()
+            .filter(|r| matches!(r, Ok(CaSResult::Committed)))
+            .count();
+        assert_eq!(committed, 1, "{x:?} {y:?}");
+        let a_data = consensus.head(&a).await?.expect("a").data;
+        assert_eq!(consensus.head(&b).await?.expect("b").data, a_data);
+
+        // Keys must be distinct.
+        assert_err!(multi(vec![(&a, at(3, "a3")), (&a, at(3, "a3"))]).await);
         Ok(())
     }
 

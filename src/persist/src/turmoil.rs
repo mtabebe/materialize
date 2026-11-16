@@ -210,6 +210,15 @@ impl Consensus for TurmoilConsensus {
         .await
     }
 
+    async fn compare_and_set_multi(
+        &self,
+        _writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        Err(ExternalError::Determinate(Determinate::new(anyhow!(
+            "TurmoilConsensus doesn't support compare_and_set_multi"
+        ))))
+    }
+
     async fn scan(
         &self,
         key: &str,

@@ -258,6 +258,21 @@ impl Consensus for ReadOnly<Arc<dyn Consensus>> {
         Ok(CaSResult::Committed)
     }
 
+    async fn compare_and_set_multi(
+        &self,
+        writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        for (key, new) in writes {
+            warn!(
+                "ignoring cas({key}) in read-only mode ({} bytes at seqno {:?})",
+                new.data.len(),
+                new.seqno,
+            );
+        }
+        self.ignoring_write();
+        Ok(CaSResult::Committed)
+    }
+
     async fn scan(
         &self,
         key: &str,

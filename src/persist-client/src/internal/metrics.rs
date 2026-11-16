@@ -3496,6 +3496,32 @@ impl Consensus for MetricsConsensus {
         res
     }
 
+    // PROTOTYPE: counted as one compare_and_set, with its keys' bytes summed.
+    #[instrument(name = "consensus::compare_and_set_multi", fields(keys=writes.len()))]
+    async fn compare_and_set_multi(
+        &self,
+        writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        let bytes: usize = writes.iter().map(|(_, new)| new.data.len()).sum();
+        let res = self
+            .metrics
+            .consensus
+            .compare_and_set
+            .run_op(
+                || self.consensus.compare_and_set_multi(writes),
+                Self::on_err,
+            )
+            .await;
+        if let Ok(CaSResult::Committed) = res.as_ref() {
+            self.metrics
+                .consensus
+                .compare_and_set
+                .bytes
+                .inc_by(u64::cast_from(bytes));
+        }
+        res
+    }
+
     #[instrument(name = "consensus::scan", fields(shard=key))]
     async fn scan(
         &self,

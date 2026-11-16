@@ -157,6 +157,15 @@ impl Consensus for MaelstromConsensus {
         }
     }
 
+    async fn compare_and_set_multi(
+        &self,
+        _writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        Err(ExternalError::Determinate(Determinate::new(anyhow!(
+            "MaelstromConsensus doesn't support compare_and_set_multi"
+        ))))
+    }
+
     async fn scan(
         &self,
         _key: &str,

@@ -734,6 +734,13 @@ mod tests {
             res
         }
 
+        async fn compare_and_set_multi(
+            &self,
+            writes: Vec<(String, VersionedData)>,
+        ) -> Result<CaSResult, ExternalError> {
+            self.inner.compare_and_set_multi(writes).await
+        }
+
         async fn scan(
             &self,
             key: &str,

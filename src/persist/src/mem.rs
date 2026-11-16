@@ -23,7 +23,7 @@ use mz_ore::future::yield_now;
 use crate::error::Error;
 use crate::location::{
     Blob, BlobMetadata, CaSResult, Consensus, Determinate, ExternalError, ResultStream, SeqNo,
-    VersionedData,
+    VersionedData, validate_multi,
 };
 
 /// An in-memory representation of a set of [Log]s and [Blob]s that can be reused
@@ -289,6 +289,27 @@ impl Consensus for MemConsensus {
         Ok(CaSResult::Committed)
     }
 
+    async fn compare_and_set_multi(
+        &self,
+        writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        // Yield to maximize our chances for getting interesting orderings.
+        let () = yield_now().await;
+        validate_multi(&writes)?;
+        let mut store = self.data.lock().map_err(Error::from)?;
+        let all_match = writes.iter().all(|(key, new)| {
+            let head = store.get(key).and_then(|values| values.last());
+            head.map(|data| data.seqno) == new.seqno.previous()
+        });
+        if !all_match {
+            return Ok(CaSResult::ExpectationMismatch);
+        }
+        for (key, new) in writes {
+            store.entry(key).or_default().push(new);
+        }
+        Ok(CaSResult::Committed)
+    }
+
     async fn scan(
         &self,
         key: &str,
@@ -327,7 +348,7 @@ impl Consensus for MemConsensus {
 
 #[cfg(test)]
 mod tests {
-    use crate::location::tests::{blob_impl_test, consensus_impl_test};
+    use crate::location::tests::{blob_impl_test, consensus_impl_test, consensus_multi_cas_test};
 
     use super::*;
 
@@ -357,5 +378,11 @@ mod tests {
     #[cfg_attr(miri, ignore)] // unsupported operation: returning ready events from epoll_wait is not yet implemented
     async fn mem_consensus() -> Result<(), ExternalError> {
         consensus_impl_test(|| async { Ok(MemConsensus::default()) }).await
+    }
+
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn mem_consensus_multi_cas() -> Result<(), ExternalError> {
+        consensus_multi_cas_test(MemConsensus::default()).await
     }
 }

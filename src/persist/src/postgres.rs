@@ -36,7 +36,9 @@ use tokio_postgres::{Row, Statement};
 use tracing::{info, warn};
 
 use crate::error::Error;
-use crate::location::{CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData};
+use crate::location::{
+    CaSResult, Consensus, ExternalError, ResultStream, SeqNo, VersionedData, validate_multi,
+};
 
 /// Flag to run PostgreSQL consensus connections under READ COMMITTED isolation instead of SERIALIZABLE.
 ///
@@ -122,6 +124,15 @@ async fn pg_execute_prepared(
 ) -> Result<u64, tokio_postgres::Error> {
     #[allow(clippy::disallowed_methods)]
     client.execute(statement, params).await
+}
+
+async fn pg_txn_execute_prepared(
+    txn: &deadpool_postgres::Transaction<'_>,
+    statement: &Statement,
+    params: &[&(dyn ToSql + Sync)],
+) -> Result<u64, tokio_postgres::Error> {
+    #[allow(clippy::disallowed_methods)]
+    txn.execute(statement, params).await
 }
 
 impl ToSql for SeqNo {
@@ -419,6 +430,47 @@ impl PostgresConsensus {
     }
 }
 
+// The compare-and-set statements, shared by `compare_and_set` and `compare_and_set_multi`.
+// Their correctness arguments are at their uses in `compare_and_set`.
+
+/// This query has been written to execute within a single
+/// network round-trip. The insert performance has been tuned
+/// against CockroachDB, ensuring it goes through the fast-path
+/// 1-phase commit of CRDB. Any changes to this query should
+/// confirm an EXPLAIN ANALYZE (VERBOSE) query plan contains
+/// `auto commit`
+static CRDB_CAS_QUERY: &str = "
+    INSERT INTO consensus (shard, sequence_number, data)
+    SELECT $1, $2, $3
+    WHERE (SELECT sequence_number FROM consensus
+        WHERE shard = $1
+        ORDER BY sequence_number DESC LIMIT 1) = $4;
+";
+
+static POSTGRES_CAS_QUERY: &str = "
+WITH expected_row AS (
+    SELECT sequence_number FROM consensus
+    WHERE shard = $1 AND sequence_number = $4
+    FOR KEY SHARE
+)
+INSERT INTO consensus (shard, sequence_number, data)
+SELECT $1, $2, $3
+FROM expected_row;
+";
+
+static POSTGRES_INIT_QUERY: &str = "
+INSERT INTO consensus (shard, sequence_number, data)
+SELECT v.shard, v.sequence_number, v.data
+FROM (VALUES ($1::text, -1::bigint, ''::bytea), ($1::text, $2::bigint, $3::bytea))
+    AS v (shard, sequence_number, data)
+WHERE NOT EXISTS (SELECT * FROM consensus WHERE shard = $1)
+";
+
+static CRDB_INIT_QUERY: &str = "INSERT INTO consensus SELECT $1, $2, $3 WHERE
+NOT EXISTS (
+    SELECT * FROM consensus WHERE shard = $1
+)";
+
 #[async_trait]
 impl Consensus for PostgresConsensus {
     fn list_keys(&self) -> ResultStream<'_, String> {
@@ -469,20 +521,6 @@ impl Consensus for PostgresConsensus {
 
         let result = match expected {
             Some(expected) => {
-                /// This query has been written to execute within a single
-                /// network round-trip. The insert performance has been tuned
-                /// against CockroachDB, ensuring it goes through the fast-path
-                /// 1-phase commit of CRDB. Any changes to this query should
-                /// confirm an EXPLAIN ANALYZE (VERBOSE) query plan contains
-                /// `auto commit`
-                static CRDB_CAS_QUERY: &str = "
-                    INSERT INTO consensus (shard, sequence_number, data)
-                    SELECT $1, $2, $3
-                    WHERE (SELECT sequence_number FROM consensus
-                        WHERE shard = $1
-                        ORDER BY sequence_number DESC LIMIT 1) = $4;
-                ";
-
                 // ## Correctness argument
                 //
                 // The Postgres tuned queries are designed to be correct under READ COMMITTED
@@ -583,17 +621,6 @@ impl Consensus for PostgresConsensus {
                 //
                 // Truncation does not remove the marker, so a delayed init cannot re-use seqno 0
                 // if a gap is left by truncation.
-                static POSTGRES_CAS_QUERY: &str = "
-                WITH expected_row AS (
-                    SELECT sequence_number FROM consensus
-                    WHERE shard = $1 AND sequence_number = $4
-                    FOR KEY SHARE
-                )
-                INSERT INTO consensus (shard, sequence_number, data)
-                SELECT $1, $2, $3
-                FROM expected_row;
-                ";
-
                 let q = match self.mode {
                     PostgresMode::CockroachDB => CRDB_CAS_QUERY,
                     PostgresMode::Postgres => POSTGRES_CAS_QUERY,
@@ -676,13 +703,6 @@ impl Consensus for PostgresConsensus {
                         // v26.31 first write against a shard created here fails on the marker, and
                         // a stale first write from here against a shard created by v26.31 fails
                         // the same way.
-                        static POSTGRES_INIT_QUERY: &str = "
-                        INSERT INTO consensus (shard, sequence_number, data)
-                        SELECT v.shard, v.sequence_number, v.data
-                        FROM (VALUES ($1::text, -1::bigint, ''::bytea), ($1::text, $2::bigint, $3::bytea))
-                            AS v (shard, sequence_number, data)
-                        WHERE NOT EXISTS (SELECT * FROM consensus WHERE shard = $1)
-                        ";
                         let client = self.get_connection().await?;
                         let statement = client.prepare_cached(POSTGRES_INIT_QUERY).await?;
                         pg_execute_prepared(
@@ -693,11 +713,6 @@ impl Consensus for PostgresConsensus {
                         .await
                     }
                     PostgresMode::CockroachDB => {
-                        static CRDB_INIT_QUERY: &str =
-                            "INSERT INTO consensus SELECT $1, $2, $3 WHERE
-                        NOT EXISTS (
-                            SELECT * FROM consensus WHERE shard = $1
-                        )";
                         let client = self.get_connection().await?;
                         let statement = client.prepare_cached(CRDB_INIT_QUERY).await?;
                         pg_execute_prepared(
@@ -719,6 +734,61 @@ impl Consensus for PostgresConsensus {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn compare_and_set_multi(
+        &self,
+        mut writes: Vec<(String, VersionedData)>,
+    ) -> Result<CaSResult, ExternalError> {
+        validate_multi(&writes)?;
+        // One transaction running each key's `compare_and_set` statement. Each
+        // statement keeps the per-key argument in `compare_and_set` (a row
+        // lands iff its expected seqno is the head), and the transaction holds
+        // every inserted row and expected-row lock until it commits, so all
+        // land or none does.
+        //
+        // NOTE: keys are written in sorted order. Two transactions inserting
+        // overlapping keys in different orders each wait on the other's
+        // uncommitted row, which Postgres resolves by aborting one.
+        writes.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut client = self.get_connection().await?;
+        let txn = client.transaction().await?;
+        for (key, new) in &writes {
+            let data = new.data.as_ref();
+            let result = match (new.seqno.previous(), self.mode) {
+                (Some(expected), mode) => {
+                    let q = match mode {
+                        PostgresMode::CockroachDB => CRDB_CAS_QUERY,
+                        PostgresMode::Postgres => POSTGRES_CAS_QUERY,
+                    };
+                    let statement = txn.prepare_cached(q).await?;
+                    pg_txn_execute_prepared(&txn, &statement, &[key, &new.seqno, &data, &expected])
+                        .await
+                }
+                (None, mode) => {
+                    let q = match mode {
+                        PostgresMode::CockroachDB => CRDB_INIT_QUERY,
+                        PostgresMode::Postgres => POSTGRES_INIT_QUERY,
+                    };
+                    let statement = txn.prepare_cached(q).await?;
+                    pg_txn_execute_prepared(&txn, &statement, &[key, &new.seqno, &data]).await
+                }
+            };
+            match result {
+                Ok(n) if n >= 1 => {}
+                Ok(_) => {
+                    txn.rollback().await?;
+                    return Ok(CaSResult::ExpectationMismatch);
+                }
+                Err(e) if e.code() == Some(&SqlState::UNIQUE_VIOLATION) => {
+                    txn.rollback().await?;
+                    return Ok(CaSResult::ExpectationMismatch);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        txn.commit().await?;
+        Ok(CaSResult::Committed)
     }
 
     async fn scan(
@@ -805,9 +875,33 @@ mod tests {
     use tracing::info;
     use uuid::Uuid;
 
-    use crate::location::tests::consensus_impl_test;
+    use crate::location::tests::{consensus_impl_test, consensus_multi_cas_test};
 
     use super::*;
+
+    #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
+    #[cfg_attr(miri, ignore)] // error: unsupported operation: can't call foreign function `TLS_client_method` on OS `linux`
+    async fn postgres_consensus_multi_cas() -> Result<(), ExternalError> {
+        let Some(config) = PostgresConsensusConfig::new_for_test()? else {
+            info!(
+                "{} env not set: skipping test that uses external service",
+                PostgresConsensusConfig::EXTERNAL_TESTS_POSTGRES_URL
+            );
+            return Ok(());
+        };
+        let consensus = PostgresConsensus::open(config).await?;
+        let mode = consensus.mode;
+        consensus_multi_cas_test(consensus).await?;
+        // `get_connection` refuses READ COMMITTED on CockroachDB.
+        if mode == PostgresMode::CockroachDB {
+            return Ok(());
+        }
+        let config = PostgresConsensusConfig::new_for_test()?.expect("postgres url was set above");
+        let mut updates = ConfigUpdates::default();
+        updates.add(&PG_CONSENSUS_READ_COMMITTED, true);
+        updates.apply(&config.dyncfg);
+        consensus_multi_cas_test(PostgresConsensus::open(config).await?).await
+    }
 
     #[mz_ore::test(tokio::test(flavor = "multi_thread"))]
     #[cfg_attr(miri, ignore)] // error: unsupported operation: can't call foreign function `TLS_client_method` on OS `linux`
