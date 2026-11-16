@@ -47,7 +47,7 @@ use crate::fetch::{
 use crate::internal::compact::{CompactConfig, Compactor};
 use crate::internal::encoding::{Schemas, assert_code_can_read_data};
 use crate::internal::machine::{
-    CompareAndAppendRes, ExpireFn, Machine, next_listen_batch_retry_params,
+    CompareAndAppendRes, ExpireFn, Machine, MultiAppendRes, next_listen_batch_retry_params,
 };
 use crate::internal::metrics::{BatchWriteMetrics, Metrics, ShardMetrics};
 use crate::internal::state::{BatchPart, HandleDebugState, HollowBatch, RunOrder, RunPart};
@@ -435,6 +435,94 @@ where
                 err
             }
         }
+    }
+
+    /// PROTOTYPE (C7): [Self::compare_and_append] on several shards as one
+    /// write. Every shard's updates land, or none do, and the first shard whose
+    /// upper isn't its expected upper comes back by index into `appends`.
+    ///
+    /// The shards must be distinct and share a [crate::PersistClient], so one
+    /// [mz_persist::location::Consensus] holds them all.
+    pub async fn compare_and_append_multi(
+        mut appends: Vec<(&mut Self, Vec<((K, V), T, D)>, Antichain<T>, Antichain<T>)>,
+    ) -> Result<Result<(), (usize, UpperMismatch<T>)>, InvalidUsage<T>>
+    where
+        D: Send + Sync,
+    {
+        // The multi-key CaS takes shard leases in shard order.
+        let mut order: Vec<usize> = (0..appends.len()).collect();
+        order.sort_by_key(|i| appends[*i].0.shard_id());
+        let mut batches = Vec::with_capacity(appends.len());
+        for (handle, updates, expected, new) in appends.iter_mut() {
+            let schema_id = handle.try_register_schema().await;
+            let mut batch = handle
+                .batch(updates.iter(), expected.clone(), new.clone())
+                .await?;
+            if let Some(schema_id) = schema_id {
+                ensure_batch_schema(&mut batch.batch, handle.shard_id(), schema_id);
+            }
+            batches.push(batch);
+        }
+        let res = loop {
+            let args: Vec<_> = order
+                .iter()
+                .map(|&i| {
+                    let handle = &appends[i].0;
+                    (
+                        &handle.machine,
+                        &batches[i].batch,
+                        &handle.writer_id,
+                        &handle.debug_state,
+                    )
+                })
+                .collect();
+            let res = Machine::compare_and_append_multi(&args).await;
+            drop(args);
+            if let MultiAppendRes::InlineBackpressure(j) = res {
+                let i = order[j];
+                let handle = &appends[i].0;
+                let cfg = BatchBuilderConfig::new(&handle.cfg, handle.shard_id());
+                batches[i]
+                    .flush_to_blob(
+                        &cfg,
+                        &handle.metrics.inline.backpressure,
+                        &handle.isolated_runtime,
+                        &handle.write_schemas,
+                    )
+                    .await;
+                continue;
+            }
+            break res;
+        };
+        let maintenance = match res {
+            MultiAppendRes::Success(maintenance) => maintenance,
+            MultiAppendRes::InlineBackpressure(_) => unreachable!("flushed and retried above"),
+            MultiAppendRes::InvalidUsage(err) => {
+                for batch in batches {
+                    batch.delete().await;
+                }
+                return Err(err);
+            }
+            MultiAppendRes::UpperMismatch(j, current) => {
+                for batch in batches {
+                    batch.delete().await;
+                }
+                let i = order[j];
+                let (handle, _, expected, _) = &mut appends[i];
+                handle.upper.clone_from(&current);
+                let expected = expected.clone();
+                return Ok(Err((i, UpperMismatch { current, expected })));
+            }
+        };
+        for batch in batches.iter_mut() {
+            batch.mark_consumed();
+        }
+        for (j, maintenance) in maintenance.into_iter().enumerate() {
+            let (handle, _, _, new) = &mut appends[order[j]];
+            handle.upper.clone_from(new);
+            maintenance.start_performing(&handle.machine, &handle.gc, handle.compact.as_ref());
+        }
+        Ok(Ok(()))
     }
 
     /// Appends the batch of updates to the shard and downgrades this handle's
@@ -1170,9 +1258,17 @@ mod tests {
     use mz_ore::task;
     use serde_json::json;
 
-    use crate::cache::PersistClientCache;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use mz_ore::metrics::MetricsRegistry;
+    use mz_persist::location::{Blob, Consensus};
+    use mz_persist::mem::{MemBlob, MemBlobConfig, MemConsensus};
+
+    use crate::cache::{PersistClientCache, StateCache};
+    use crate::rpc::NoopPubSubSender;
+    use crate::schema::tests::LoseOneCasResponse;
     use crate::tests::{all_ok, new_test_client};
-    use crate::{PersistLocation, ShardId};
+    use crate::{PersistClient, PersistLocation, ShardId};
 
     use super::*;
 
@@ -1414,5 +1510,141 @@ mod tests {
         }
 
         task.await;
+    }
+
+    /// Two clients with separate state caches over one blob and consensus, so
+    /// each can be behind the other.
+    fn clients_sharing(
+        consensus: Arc<dyn Consensus>,
+    ) -> (PersistClient, PersistClient, Arc<Metrics>) {
+        let cfg = PersistConfig::new_for_tests();
+        let metrics = Arc::new(Metrics::new(&cfg, &MetricsRegistry::new()));
+        let blob: Arc<dyn Blob> = Arc::new(MemBlob::open(MemBlobConfig::default()));
+        let client = || {
+            PersistClient::new(
+                cfg.clone(),
+                Arc::clone(&blob),
+                Arc::clone(&consensus),
+                Arc::clone(&metrics),
+                Arc::new(IsolatedRuntime::new_for_tests()),
+                Arc::new(StateCache::new_no_metrics()),
+                Arc::new(NoopPubSubSender),
+            )
+            .expect("client")
+        };
+        (client(), client(), metrics)
+    }
+
+    async fn contents(client: &PersistClient, shard: ShardId) -> (u64, Vec<String>) {
+        let (write, mut read) = client.expect_open::<String, String, u64, i64>(shard).await;
+        let upper = *write.shared_upper().as_option().expect("not finalized");
+        if upper == 0 {
+            return (upper, Vec::new());
+        }
+        let mut keys: Vec<_> = read
+            .snapshot_and_fetch(Antichain::from_elem(upper - 1))
+            .await
+            .expect("snapshot")
+            .into_iter()
+            .map(|((k, _), _, _)| k)
+            .collect();
+        keys.sort();
+        (upper, keys)
+    }
+
+    fn update(k: &str, t: u64) -> ((String, String), u64, i64) {
+        ((k.to_owned(), String::new()), t, 1)
+    }
+
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn compare_and_append_multi_is_all_or_nothing() {
+        let (c1, c2, metrics) = clients_sharing(Arc::new(MemConsensus::default()));
+        let (a, b) = (ShardId::new(), ShardId::new());
+        let (mut a1, _) = c1.expect_open::<String, String, u64, i64>(a).await;
+        let (mut b1, _) = c1.expect_open::<String, String, u64, i64>(b).await;
+        let from = |t: u64| Antichain::from_elem(t);
+
+        let res = WriteHandle::compare_and_append_multi(vec![
+            (&mut a1, vec![update("a0", 0)], from(0), from(1)),
+            (&mut b1, vec![update("b0", 0)], from(0), from(1)),
+        ])
+        .await
+        .expect("usage");
+        assert_eq!(res, Ok(()));
+        assert_eq!(contents(&c2, a).await, (1, vec!["a0".to_owned()]));
+        assert_eq!(contents(&c2, b).await, (1, vec!["b0".to_owned()]));
+
+        // A stale expected upper on one shard: neither lands, and the error
+        // names that shard.
+        let res = WriteHandle::compare_and_append_multi(vec![
+            (&mut a1, vec![update("a1", 1)], from(1), from(2)),
+            (&mut b1, vec![update("b1", 0)], from(0), from(2)),
+        ])
+        .await
+        .expect("usage");
+        let (i, mismatch) = res.expect_err("b is stale");
+        assert_eq!((i, mismatch.current), (1, from(1)));
+        assert_eq!(contents(&c2, a).await, (1, vec!["a0".to_owned()]));
+
+        // A lost multi-key CaS: c2 advances `a` behind c1's cached state, so
+        // c1's write computes against a stale `a`, loses the CaS on that key,
+        // and leaves `b` alone too.
+        let (mut a2, _) = c2.expect_open::<String, String, u64, i64>(a).await;
+        a2.expect_compare_and_append(&[update("a1", 1)], 1, 2).await;
+        let mismatches = metrics.cmds.compare_and_append.cas_mismatch.get();
+        let res = WriteHandle::compare_and_append_multi(vec![
+            (&mut a1, vec![update("x", 1)], from(1), from(2)),
+            (&mut b1, vec![update("y", 1)], from(1), from(2)),
+        ])
+        .await
+        .expect("usage");
+        assert_eq!(
+            metrics.cmds.compare_and_append.cas_mismatch.get(),
+            mismatches + 1,
+            "the multi-key CaS ran and lost"
+        );
+        let (i, mismatch) = res.expect_err("a moved");
+        assert_eq!((i, mismatch.current), (0, from(2)));
+        assert_eq!(
+            contents(&c2, a).await,
+            (2, vec!["a0".to_owned(), "a1".to_owned()])
+        );
+        assert_eq!(contents(&c2, b).await, (1, vec!["b0".to_owned()]));
+    }
+
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // unsupported operation: returning ready events from epoll_wait is not yet implemented
+    async fn compare_and_append_multi_retries_a_lost_response() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let consensus = Arc::new(LoseOneCasResponse {
+            inner: Arc::new(MemConsensus::default()),
+            armed: Arc::clone(&armed),
+        });
+        let (c1, c2, _) = clients_sharing(consensus);
+        let (a, b) = (ShardId::new(), ShardId::new());
+        let (mut a1, _) = c1.expect_open::<String, String, u64, i64>(a).await;
+        let (mut b1, _) = c1.expect_open::<String, String, u64, i64>(b).await;
+        armed.store(true, Ordering::SeqCst);
+        let res = WriteHandle::compare_and_append_multi(vec![
+            (
+                &mut a1,
+                vec![update("a0", 0)],
+                Antichain::from_elem(0),
+                Antichain::from_elem(1),
+            ),
+            (
+                &mut b1,
+                vec![update("b0", 0)],
+                Antichain::from_elem(0),
+                Antichain::from_elem(1),
+            ),
+        ])
+        .await
+        .expect("usage");
+        assert!(!armed.load(Ordering::SeqCst), "the response was lost");
+        assert_eq!(res, Ok(()), "the retry finds its own write");
+        assert_eq!(contents(&c2, a).await, (1, vec!["a0".to_owned()]));
+        assert_eq!(contents(&c2, b).await, (1, vec!["b0".to_owned()]));
     }
 }

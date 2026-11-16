@@ -426,7 +426,7 @@ impl<K: Codec, V: Codec> PartMigration<K, V> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use arrow::array::{
         Array, ArrayBuilder, StringArray, StringBuilder, StructArray, as_string_array,
     };
@@ -703,11 +703,11 @@ mod tests {
     ///
     /// UnreliableConsensus can also run-then-timeout, but only probabilistically
     /// and per-op-kind. This test needs one deterministic timeout on one
-    /// `compare_and_set`.
+    /// `compare_and_set` (or `compare_and_set_multi`).
     #[derive(Debug)]
-    struct LoseOneCasResponse {
-        inner: Arc<dyn Consensus>,
-        armed: Arc<AtomicBool>,
+    pub(crate) struct LoseOneCasResponse {
+        pub(crate) inner: Arc<dyn Consensus>,
+        pub(crate) armed: Arc<AtomicBool>,
     }
 
     #[async_trait]
@@ -738,7 +738,11 @@ mod tests {
             &self,
             writes: Vec<(String, VersionedData)>,
         ) -> Result<CaSResult, ExternalError> {
-            self.inner.compare_and_set_multi(writes).await
+            let res = self.inner.compare_and_set_multi(writes).await;
+            if self.armed.swap(false, Ordering::SeqCst) {
+                return Err(ExternalError::new_timeout(Instant::now()));
+            }
+            res
         }
 
         async fn scan(

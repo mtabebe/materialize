@@ -653,6 +653,139 @@ where
         }
     }
 
+    /// PROTOTYPE (C7): [Self::compare_and_append] on several shards, committed
+    /// with one multi-key compare-and-set. `appends` must be in shard order.
+    ///
+    /// Indeterminate errors are retried with the same idempotency tokens, so a
+    /// write that landed reports `AlreadyCommitted` on every shard at once.
+    pub(crate) async fn compare_and_append_multi(
+        appends: &[(&Self, &HollowBatch<T>, &WriterId, &HandleDebugState)],
+    ) -> MultiAppendRes<T> {
+        let (first, _, _, _) = appends.first().expect("at least one shard");
+        let metrics = Arc::clone(&first.applier.metrics);
+        let lease_duration_ms = first
+            .applier
+            .cfg
+            .writer_lease_duration
+            .as_millis()
+            .try_into()
+            .expect("reasonable duration");
+        let tokens: Vec<_> = appends.iter().map(|_| IdempotencyToken::new()).collect();
+        let appliers: Vec<_> = appends.iter().map(|(m, _, _, _)| &m.applier).collect();
+        let mut retry = metrics
+            .retries
+            .compare_and_append_idempotent
+            .stream(Retry::persist_defaults(SystemTime::now()).into_retry_stream());
+        let mut indeterminate = None;
+        loop {
+            let res = Applier::apply_unbatched_cmd_multi(
+                &appliers,
+                &metrics.cmds.compare_and_append,
+                |i, _, cfg, state| {
+                    let (_, batch, writer_id, debug_info) = appends[i];
+                    state.compare_and_append(
+                        batch,
+                        writer_id,
+                        (cfg.now)(),
+                        lease_duration_ms,
+                        &tokens[i],
+                        debug_info,
+                        INLINE_WRITES_TOTAL_MAX_BYTES.get(cfg),
+                        if CLAIM_UNCLAIMED_COMPACTIONS.get(cfg) {
+                            CLAIM_COMPACTION_PERCENT.get(cfg)
+                        } else {
+                            0
+                        },
+                        Version::parse(&CLAIM_COMPACTION_MIN_VERSION.get(cfg))
+                            .ok()
+                            .as_ref(),
+                    )
+                },
+            )
+            .await;
+            let res = match res {
+                Ok(res) => res,
+                Err(err) => {
+                    info!(
+                        "compare_and_append_multi received an indeterminate error, retrying in {:?}: {}",
+                        retry.next_sleep(),
+                        err.display_with_causes()
+                    );
+                    indeterminate.get_or_insert(err);
+                    retry = retry.sleep().await;
+                    continue;
+                }
+            };
+            match res {
+                Ok(results) => {
+                    let maintenance = appends
+                        .iter()
+                        .zip(results)
+                        .map(|((machine, _, _, _), (_seqno, merge_reqs, routine))| {
+                            let compaction = merge_reqs
+                                .into_iter()
+                                .map(|req| CompactReq {
+                                    shard_id: machine.shard_id(),
+                                    desc: req.desc,
+                                    inputs: req.inputs,
+                                })
+                                .collect();
+                            WriterMaintenance {
+                                routine,
+                                compaction,
+                            }
+                        })
+                        .collect();
+                    return MultiAppendRes::Success(maintenance);
+                }
+                // The multi-key CaS commits every shard or none, so the first
+                // shard having it means all do.
+                Err((_, _, CompareAndAppendBreak::AlreadyCommitted)) => {
+                    assert!(indeterminate.is_some());
+                    let maintenance = appends.iter().map(|_| WriterMaintenance::default());
+                    return MultiAppendRes::Success(maintenance.collect());
+                }
+                Err((_, _, CompareAndAppendBreak::InvalidUsage(err))) => {
+                    assert_none!(indeterminate);
+                    return MultiAppendRes::InvalidUsage(err);
+                }
+                Err((i, _, CompareAndAppendBreak::InlineBackpressure)) => {
+                    return MultiAppendRes::InlineBackpressure(i);
+                }
+                Err((
+                    i,
+                    seqno,
+                    CompareAndAppendBreak::Upper {
+                        shard_upper,
+                        writer_upper,
+                    },
+                )) => {
+                    let (machine, batch, _, _) = appends[i];
+                    if indeterminate.is_some()
+                        && !PartialOrder::less_than(&writer_upper, batch.desc.upper())
+                    {
+                        // As in `compare_and_append_idempotent`: a previous
+                        // attempt may have landed, and nothing tells us.
+                        panic!(
+                            "cannot distinguish compare_and_append_multi success or failure \
+                             on shard {}: writer_upper={:?} shard_upper={:?} err={:?}",
+                            machine.shard_id(),
+                            writer_upper.elements(),
+                            shard_upper.elements(),
+                            indeterminate,
+                        );
+                    }
+                    // Our cached state may be behind, as in `compare_and_append`.
+                    machine.applier.fetch_and_update_state(Some(seqno)).await;
+                    let current = machine.applier.clone_upper();
+                    if &current != batch.desc.lower() {
+                        return MultiAppendRes::UpperMismatch(i, current);
+                    }
+                }
+            }
+        }
+    }
+
     /// Downgrades the reader's since capability, also heartbeating its lease.
     pub async fn downgrade_since(
         &self,
@@ -1141,6 +1274,16 @@ impl Debug for ExpireFn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExpireFn").finish_non_exhaustive()
     }
+}
+
+/// PROTOTYPE (C7): the result of [Machine::compare_and_append_multi]. Indices
+/// are into its `appends`.
+#[derive(Debug)]
+pub(crate) enum MultiAppendRes<T> {
+    Success(Vec<WriterMaintenance<T>>),
+    InvalidUsage(InvalidUsage<T>),
+    UpperMismatch(usize, Antichain<T>),
+    InlineBackpressure(usize),
 }
 
 #[derive(Debug)]

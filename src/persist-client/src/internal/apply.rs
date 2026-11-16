@@ -20,6 +20,7 @@ use crate::cfg::GC_REMOVE_FINALIZED_ROLLUPS;
 use crate::cfg::PERSIST_V2_WATCH;
 use crate::error::{CodecMismatch, InvalidUsage};
 use crate::internal::gc::GcReq;
+use crate::internal::machine::retry_determinate;
 use crate::internal::maintenance::RoutineMaintenance;
 use crate::internal::metrics::{CmdMetrics, Metrics, ShardMetrics};
 use crate::internal::paths::{PartialRollupKey, RollupId};
@@ -457,6 +458,118 @@ where
                 ApplyCmdResult::ExpectationMismatch(seqno) => {
                     cmd.cas_mismatch.inc();
                     self.fetch_and_update_state(Some(seqno)).await;
+                }
+            }
+        }
+    }
+
+    /// PROTOTYPE (C7): [Self::apply_unbatched_cmd] on several shards at once.
+    /// Runs `work_fn(i, ..)` on `appliers[i]`'s state and commits every new state
+    /// with one [mz_persist::location::Consensus::compare_and_set_multi], so all
+    /// land or none does.
+    ///
+    /// `appliers` must be distinct v1 shards in shard order. If any `work_fn`
+    /// breaks, nothing is written and its index comes back. An expectation
+    /// mismatch on any key refreshes every shard's state and retries.
+    pub(crate) async fn apply_unbatched_cmd_multi<
+        R,
+        E,
+        WorkFn: FnMut(usize, SeqNo, &PersistConfig, &mut StateCollections<T>) -> ControlFlow<E, R>,
+    >(
+        appliers: &[&Self],
+        cmd: &CmdMetrics,
+        mut work_fn: WorkFn,
+    ) -> Result<Result<Vec<(SeqNo, R, RoutineMaintenance)>, (usize, SeqNo, E)>, Indeterminate> {
+        assert!(
+            appliers.windows(2).all(|w| w[0].shard_id < w[1].shard_id),
+            "appliers must be distinct and in shard order"
+        );
+        let first = appliers.first().expect("at least one shard");
+        loop {
+            cmd.started.inc();
+            // Every other command holds one shard's update lease at a time, so
+            // taking several in shard order can't deadlock with them.
+            let mut permits = Vec::with_capacity(appliers.len());
+            for applier in appliers {
+                assert!(
+                    applier.state_versions.v2_for(&applier.shard_id).is_none(),
+                    "multi-shard commands are for v1 shards"
+                );
+                permits.push(applier.state.lease_for_update().await);
+            }
+            let mut nexts = Vec::with_capacity(appliers.len());
+            for (i, applier) in appliers.iter().enumerate() {
+                let next = applier.state.read_lock(
+                    &applier.metrics.locks.applier_read_noncacheable,
+                    |state| {
+                        Self::compute_next_state_locked(
+                            state,
+                            &mut |seqno, cfg: &PersistConfig, s: &mut StateCollections<T>| {
+                                work_fn(i, seqno, cfg, s)
+                            },
+                            &applier.metrics,
+                            cmd,
+                            &applier.cfg,
+                        )
+                    },
+                );
+                match next {
+                    Ok(next) => nexts.push(next),
+                    Err((seqno, err)) => {
+                        cmd.succeeded.inc();
+                        return Ok(Err((i, seqno, err)));
+                    }
+                }
+            }
+            let writes: Vec<_> = nexts
+                .iter()
+                .map(|next| {
+                    let mut buf = Vec::new();
+                    next.diff.encode(&mut buf);
+                    let new = VersionedData {
+                        seqno: next.state.seqno(),
+                        data: Bytes::from(buf),
+                    };
+                    (next.state.shard_id.to_string(), new)
+                })
+                .collect();
+            let res = retry_determinate(
+                &first.metrics.retries.determinate.apply_unbatched_cmd_cas,
+                || async {
+                    first
+                        .state_versions
+                        .consensus
+                        .compare_and_set_multi(writes.clone())
+                        .await
+                },
+            )
+            .await;
+            match res {
+                Ok(CaSResult::Committed) => {
+                    cmd.succeeded.inc();
+                    let mut results = Vec::with_capacity(nexts.len());
+                    for (applier, next) in appliers.iter().zip(nexts) {
+                        applier.shard_metrics.cmd_succeeded.inc();
+                        let seqno = next.state.seqno();
+                        applier.update_state(next.state);
+                        let maintenance = RoutineMaintenance {
+                            garbage_collection: next.garbage_collection,
+                            write_rollup: next.write_rollup,
+                        };
+                        results.push((seqno, next.work_ret, maintenance));
+                    }
+                    return Ok(Ok(results));
+                }
+                Ok(CaSResult::ExpectationMismatch) => {
+                    cmd.cas_mismatch.inc();
+                    drop(permits);
+                    for applier in appliers {
+                        applier.fetch_and_update_state(None).await;
+                    }
+                }
+                Err(err) => {
+                    cmd.failed.inc();
+                    return Err(err);
                 }
             }
         }
