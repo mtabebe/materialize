@@ -100,6 +100,7 @@ pub mod operators {
     );
 }
 pub mod read;
+pub mod reaper;
 pub mod rpc;
 pub mod schema;
 pub mod stats;
