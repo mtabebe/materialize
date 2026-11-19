@@ -222,13 +222,10 @@ impl ShardRules {
     async fn case_a(
         &self,
         shard: ShardId,
+        pending: Option<Option<(BTreeSet<String>, Version)>>,
         reach: ShardReach,
         keys: Vec<(String, u64, PartialBlobKey)>,
     ) -> Vec<(String, u64, Verdict)> {
-        let pending = match &self.pending {
-            Some(p) => Some(p.pending(shard).await),
-            None => None,
-        };
         let mut floor = WriterKey::for_version(&reach.version);
         if let Some(Some((_, txns_version))) = &pending {
             floor = std::cmp::min(floor, WriterKey::for_version(txns_version));
@@ -346,8 +343,15 @@ impl Rules for ShardRules {
         }
         let mut absent_with_rollup = 0;
         for (shard, keys) in by_shard {
+            // NOTE: the txns shard must be read before the data shard's state. A txn applied
+            // between the two reads then shows up in the second. Read the other way round, a part
+            // applied (and dropped from the txns shard) in between is in neither.
+            let pending = match &self.pending {
+                Some(p) => Some(p.pending(shard).await),
+                None => None,
+            };
             let per_key = match self.reach(shard).await {
-                Some(reach) => self.case_a(shard, reach, keys).await,
+                Some(reach) => self.case_a(shard, pending, reach, keys).await,
                 None => {
                     let (v, has_rollup) = self.case_b(shard, keys).await;
                     if has_rollup {
@@ -1072,6 +1076,7 @@ mod tests {
             .difference(&before)
             .cloned()
             .collect();
+        assert!(!orphan_keys.is_empty());
         w.expire().await;
         let c27 = open(&mut cache, &V27).await;
         c27.upgrade_version::<String, String, u64, i64>(shard, Diagnostics::for_tests())
@@ -1098,6 +1103,120 @@ mod tests {
         for k in &orphan_keys {
             assert_eq!(v[k], Verdict::Report(Reason::WriterNotOlder), "{k}");
         }
+    }
+
+    /// A txns shard whose one pending txn gets applied at the moment the rules read it: the
+    /// batch is appended to the data shard and drops out of the pending set.
+    struct ApplyOnRead(Mutex<Option<(W, crate::batch::Batch<String, String, u64, i64>)>>);
+    #[async_trait]
+    impl PendingParts for ApplyOnRead {
+        async fn pending(&self, _shard: ShardId) -> Option<(BTreeSet<String>, Version)> {
+            if let Some((mut w, mut batch)) = self.0.lock().await.take() {
+                w.compare_and_append_batch(
+                    &mut [&mut batch],
+                    Antichain::from_elem(10),
+                    Antichain::from_elem(11),
+                    true,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                w.expire().await;
+            }
+            Some((BTreeSet::new(), V27))
+        }
+    }
+
+    // Case A must read the txns shard before the data shard's state. Here the txn is applied
+    // between the two reads, so the part is pending in neither or linked in the second.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)]
+    async fn case_a_reads_txns_before_shard() {
+        let mut cache = cache();
+        let c26 = open(&mut cache, &V26).await;
+        let shard = ShardId::new();
+        let (w, orphan_keys, orphan) = shard_with_orphan(&c26, shard).await;
+        w.expire().await;
+        let c27 = open(&mut cache, &V27).await;
+        c27.upgrade_version::<String, String, u64, i64>(shard, Diagnostics::for_tests())
+            .await
+            .unwrap();
+        let (mut w27, r27) = c27.expect_open::<String, String, u64, i64>(shard).await;
+        r27.expire().await;
+        w27.compare_and_append_batch(
+            &mut [],
+            Antichain::from_elem(1),
+            Antichain::from_elem(10),
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let batch = w27.batch_from_transmittable_batch(orphan);
+        let provider = Arc::new(ApplyOnRead(Mutex::new(Some((w27, batch)))));
+        let r = ShardRules::new(&c27, Some(provider), None, 10);
+
+        // In the implemented order the apply lands before the shard read, which sees it.
+        let v = verdicts(&r, &*c27.blob, &shard.to_string()).await;
+        for k in &orphan_keys {
+            assert_eq!(v[k], Verdict::Keep, "{k}");
+        }
+
+        // The other order, by hand: shard state first, then the txns shard.
+        let mut cache = self::cache();
+        let c26 = open(&mut cache, &V26).await;
+        let shard = ShardId::new();
+        let (w, orphan_keys, orphan) = shard_with_orphan(&c26, shard).await;
+        w.expire().await;
+        let c27 = open(&mut cache, &V27).await;
+        c27.upgrade_version::<String, String, u64, i64>(shard, Diagnostics::for_tests())
+            .await
+            .unwrap();
+        let (mut w27, r27) = c27.expect_open::<String, String, u64, i64>(shard).await;
+        r27.expire().await;
+        w27.compare_and_append_batch(
+            &mut [],
+            Antichain::from_elem(1),
+            Antichain::from_elem(10),
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let batch = w27.batch_from_transmittable_batch(orphan);
+        let provider = ApplyOnRead(Mutex::new(Some((w27, batch))));
+        let r = ShardRules::new(&c27, None, None, 10);
+        let reach = r.reach(shard).await.unwrap();
+        let pending = provider.pending(shard).await;
+        let keys = keys_under(&*c27.blob, &shard.to_string())
+            .await
+            .into_iter()
+            .map(|k| {
+                let (_, p) = BlobKey::parse_ids(&k).unwrap();
+                (k, 0, p)
+            })
+            .collect();
+        let v: BTreeMap<_, _> = r
+            .case_a(shard, Some(pending), reach, keys)
+            .await
+            .into_iter()
+            .map(|(k, _, v)| (k, v))
+            .collect();
+        for k in &orphan_keys {
+            assert!(
+                matches!(v[k], Verdict::Candidate(_)),
+                "a linked part is a candidate: {k}"
+            );
+        }
+        assert!(
+            rules(&c27, None)
+                .reach(shard)
+                .await
+                .unwrap()
+                .referenced
+                .is_superset(&orphan_keys),
+            "and it is linked"
+        );
     }
 
     fn fake_part(shard: ShardId, v: &Version) -> String {
@@ -1174,12 +1293,14 @@ mod tests {
             .unwrap();
         let p = created.to_string();
         let v = verdicts(&rules(&c, Some(V27)), &*c.blob, &p).await;
+        assert_eq!(v.len(), 2);
         assert!(
             v.values()
                 .all(|x| *x == Verdict::Report(Reason::WriterNotBelowFloor)),
             "{v:?}"
         );
         let v = verdicts(&rules(&c, Some(V28)), &*c.blob, &p).await;
+        assert_eq!(v.len(), 2);
         assert!(
             v.values().all(|x| matches!(x, Verdict::Candidate(_))),
             "{v:?}"
@@ -1433,6 +1554,31 @@ mod tests {
             .await
             .unwrap();
         assert!(deleted.is_empty());
+
+        // A crash after the deletes and before the append: the journal is unchanged, the keys
+        // are gone. The rerun deletes nothing and commits.
+        let (_stash2, keys2) = stash_in(&c, "456", 2).await;
+        visit(unit, None, None, &r, &mut ja, &*c.blob, opts(true, t1 + 2))
+            .await
+            .unwrap();
+        let t2 = t1 + 2 + 7 * DAY_MS;
+        let crashed = plan_visit(unit, None, None, &r, &mut ja, &*c.blob, opts(true, t2))
+            .await
+            .unwrap();
+        assert_eq!(
+            crashed.to_delete.iter().cloned().collect::<BTreeSet<_>>(),
+            keys2
+        );
+        for k in &crashed.to_delete {
+            c.blob.delete(k).await.unwrap();
+        }
+        let upper = ja.load().await.upper;
+        assert_eq!(upper, crashed.upper, "the crashed visit never appended");
+        let (plan, deleted) = visit(unit, None, None, &r, &mut ja, &*c.blob, opts(true, t2 + 1))
+            .await
+            .unwrap();
+        assert!(deleted.is_empty() && plan.to_delete.is_empty());
+        assert!(ja.load().await.upper > upper);
     }
 
     // R5 test 4: a tripwire stops the visit before the journal or the blob changes.
@@ -1442,24 +1588,47 @@ mod tests {
         let mut cache = cache();
         let c = open(&mut cache, &V27).await;
         let (_stash, keys) = stash_in(&c, "789", 2).await;
-        let s = shard_in_unit("789");
-        c.blob
-            .set(&fake_rollup(s), rollup_bytes(&V26))
-            .await
-            .unwrap();
-        let r = ShardRules::new(&c, Some(Arc::new(NotTxnWal)), Some(V27), 0);
         let mut j = Journal::open(&c, ShardId::new()).await;
+        // Start the stash's clock, so that without the tripwire the next visit would delete.
+        visit(
+            "s789",
+            None,
+            None,
+            &rules(&c, Some(V27)),
+            &mut j,
+            &*c.blob,
+            opts(true, 0),
+        )
+        .await
+        .unwrap();
+        let s = shard_in_unit("789");
+        let rollup = fake_rollup(s);
+        c.blob.set(&rollup, rollup_bytes(&V26)).await.unwrap();
+        let aged = opts(true, 8 * DAY_MS);
+        let plan = plan_visit(
+            "s789",
+            None,
+            None,
+            &rules(&c, Some(V27)),
+            &mut j,
+            &*c.blob,
+            aged,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            plan.to_delete.len(),
+            2,
+            "without the tripwire the stash parts go"
+        );
+        let r = ShardRules::new(&c, Some(Arc::new(NotTxnWal)), Some(V27), 0);
         let before = j.load().await.upper;
-        let res = visit("s789", None, None, &r, &mut j, &*c.blob, opts(true, 0)).await;
+        let res = visit("s789", None, None, &r, &mut j, &*c.blob, aged).await;
         assert!(matches!(res, Err(VisitError::Tripwire(_))), "{res:?}");
         assert_eq!(j.load().await.upper, before);
-        assert_eq!(
-            keys_under(&*c.blob, "s789")
-                .await
-                .intersection(&keys)
-                .count(),
-            keys.len()
-        );
+        let mut all = keys.clone();
+        all.insert(rollup);
+        assert_eq!(keys_under(&*c.blob, "s789").await, all);
     }
 
     fn leased_unit(lease: BlobLeaseId) -> String {

@@ -2138,6 +2138,10 @@ mod tests {
             remaining.len()
         );
         assert!(!remaining.is_empty());
+        assert!(
+            remaining.len() < written.len(),
+            "delete removed the batch's own keys"
+        );
         assert!(remaining.iter().all(|k| k.starts_with(&prefix)));
     }
 
@@ -2188,9 +2192,17 @@ mod tests {
         let shard_batch = write
             .expect_batch(&[(("a".to_owned(), ()), 0, 1)], 0, 1)
             .await;
+        let shard_part = shard_batch.batch.parts[0]
+            .expect_hollow_part()
+            .key
+            .complete(&shard_batch.shard_id())
+            .to_string();
         shard_batch.delete().await;
         let shard_keys = all_blob_keys(&*client.blob).await;
-        assert!(!shard_keys.is_empty());
+        assert!(
+            shard_keys.contains(&shard_part),
+            "the flag kept the shard part"
+        );
 
         // A leased batch can't be appended, and the shard's upper doesn't move.
         let mut batch = leased(&client).await;
@@ -2264,8 +2276,13 @@ mod tests {
                 let msg = msg
                     .downcast_ref::<String>()
                     .cloned()
-                    .or_else(|| msg.downcast_ref::<&str>().map(|s| s.to_string()));
-                eprintln!("F13: builder panicked: {msg:?}");
+                    .or_else(|| msg.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                eprintln!("F13: builder panicked: {msg}");
+                assert!(
+                    msg.starts_with("successful compaction: missing unleased key leased/"),
+                    "{msg}"
+                );
             }
             other => panic!("expected the builder to panic, got {other:?}"),
         }

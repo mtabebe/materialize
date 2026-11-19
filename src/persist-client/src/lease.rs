@@ -446,12 +446,13 @@ impl BlobLeaseHolder {
             // completion: an observer's clock starts no earlier than the renewal's commit, which
             // comes after the start. Every await below races this deadline, so a renewal stuck
             // retrying an unreachable shard can't delay the fence.
-            let fence_at = last_renew_started + timing.fence_timeout;
             macro_rules! or_fence {
                 ($fut:expr) => {
                     tokio::select! {
                         biased;
-                        _ = tokio::time::sleep_until(fence_at) => {
+                        _ = tokio::time::sleep_until(
+                            last_renew_started + timing.fence_timeout
+                        ) => {
                             on_fenced("blob lease: no successful renewal within fence timeout");
                             return;
                         }
