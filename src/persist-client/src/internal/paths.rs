@@ -403,8 +403,6 @@ pub enum BlobKeyPrefix<'a> {
     Shard(&'a ShardId),
     /// Scoped to every blob under one lease.
     Leased(&'a BlobLeaseId),
-    /// Scoped to every leased blob.
-    AllLeased,
     /// Scoped to the batch blobs of an individual writer
     #[cfg(test)]
     Writer(&'a ShardId, &'a WriterKey),
@@ -419,7 +417,6 @@ impl std::fmt::Display for BlobKeyPrefix<'_> {
             BlobKeyPrefix::All => "".into(),
             BlobKeyPrefix::Shard(shard) => format!("{}", shard),
             BlobKeyPrefix::Leased(lease) => format!("{LEASED_PREFIX}/{lease}/"),
-            BlobKeyPrefix::AllLeased => format!("{LEASED_PREFIX}/"),
             #[cfg(test)]
             BlobKeyPrefix::Writer(shard, writer) => format!("{}/{}", shard, writer),
             #[cfg(test)]

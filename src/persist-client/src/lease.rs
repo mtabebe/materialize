@@ -405,6 +405,7 @@ impl LeaseShard {
 pub type OnFenced = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Holds one blob lease: renews it, self-fences, and expires other holders' leases.
+#[derive(Debug)]
 pub struct BlobLeaseHolder;
 
 impl BlobLeaseHolder {
@@ -804,8 +805,8 @@ mod tests {
         let (fenced_a, log_a) = fence_recorder();
         let shard_a = LeaseShard::open(&client, shard_id).await;
         BlobLeaseHolder::run(shard_a, lease_a, TIMING, Instant::now(), fenced_a).await;
-        let log_a = log_a.lock().unwrap();
-        assert!(log_a[0].1.contains("no longer live"), "{log_a:?}");
+        let msg = log_a.lock().unwrap()[0].1.clone();
+        assert!(msg.contains("no longer live"), "{msg}");
         let row = reader.snapshot().await[&lease_a].clone();
         assert_eq!((row.state, row.renewal), (LeaseState::Expired, 0));
     }

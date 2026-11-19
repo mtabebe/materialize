@@ -453,7 +453,7 @@ impl JournalState {
     pub fn cursor(&self) -> Option<&str> {
         self.rows.iter().find_map(|r| match r {
             JournalRow::Cursor { unit } => Some(unit.as_str()),
-            _ => None,
+            JournalRow::Clock { .. } => None,
         })
     }
 }
@@ -1260,7 +1260,7 @@ mod tests {
                     first_seen_ms,
                     ..
                 } => Some((group.clone(), *first_seen_ms)),
-                _ => None,
+                JournalRow::Cursor { .. } => None,
             })
             .collect()
     }
@@ -1453,11 +1453,13 @@ mod tests {
         let res = visit("s789", None, None, &r, &mut j, &*c.blob, opts(true, 0)).await;
         assert!(matches!(res, Err(VisitError::Tripwire(_))), "{res:?}");
         assert_eq!(j.load().await.upper, before);
-        assert!(keys.iter().all(|k| {
-            futures::executor::block_on(c.blob.get(k))
-                .unwrap()
-                .is_some()
-        }));
+        assert_eq!(
+            keys_under(&*c.blob, "s789")
+                .await
+                .intersection(&keys)
+                .count(),
+            keys.len()
+        );
     }
 
     fn leased_unit(lease: BlobLeaseId) -> String {
