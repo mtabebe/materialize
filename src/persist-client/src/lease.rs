@@ -508,9 +508,9 @@ impl BlobLeaseHolder {
 mod tests {
     use std::sync::Mutex;
 
+    use mz_ore::metrics::MetricsRegistry;
     use mz_persist::mem::{MemBlob, MemBlobConfig, MemConsensus};
     use mz_persist::unreliable::{UnreliableBlob, UnreliableConsensus, UnreliableHandle};
-    use mz_ore::metrics::MetricsRegistry;
 
     use super::*;
     use crate::cache::StateCache;
@@ -583,10 +583,7 @@ mod tests {
         assert_eq!(b.expire(lease, 1).await, Ok(()));
         assert_eq!(a.renew(lease).await, Err(RenewError::Expired));
         assert_eq!(b.expire(lease, 1).await, Err(ExpireError::AlreadyExpired));
-        assert_eq!(
-            a.renew(BlobLeaseId::new()).await,
-            Err(RenewError::Missing)
-        );
+        assert_eq!(a.renew(BlobLeaseId::new()).await, Err(RenewError::Missing));
         let snap = a.snapshot().await;
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[&lease].state, LeaseState::Expired);
@@ -644,9 +641,8 @@ mod tests {
     fn fence_recorder() -> (OnFenced, Arc<Mutex<Vec<(Instant, String)>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let log2 = Arc::clone(&log);
-        let f: OnFenced = Arc::new(move |msg: &str| {
-            log2.lock().unwrap().push((Instant::now(), msg.to_owned()))
-        });
+        let f: OnFenced =
+            Arc::new(move |msg: &str| log2.lock().unwrap().push((Instant::now(), msg.to_owned())));
         (f, log)
     }
 
@@ -666,9 +662,13 @@ mod tests {
         let client = unreliable_client(&reliable());
         let shard_id = ShardId::new();
         let (fenced, log) = fence_recorder();
-        let (lease, _task) =
-            BlobLeaseHolder::start(LeaseShard::open(&client, shard_id).await, TIMING, "t", fenced)
-                .await;
+        let (lease, _task) = BlobLeaseHolder::start(
+            LeaseShard::open(&client, shard_id).await,
+            TIMING,
+            "t",
+            fenced,
+        )
+        .await;
         let mut reader = LeaseShard::open(&client, shard_id).await;
         tokio::time::sleep(TIMING.renew_interval * 3 + TIMING.renew_interval / 2).await;
         let row = reader.snapshot().await[&lease].clone();

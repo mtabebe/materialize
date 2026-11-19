@@ -650,7 +650,10 @@ impl PersistClient {
         let root = root.into();
         assert_eq!(batch.root(), root);
 
-        let shard_metrics = self.metrics.shards.shard(&root.metrics_shard(), "peek_stash");
+        let shard_metrics = self
+            .metrics
+            .shards
+            .shard(&root.metrics_shard(), "peek_stash");
 
         let ret = Batch {
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(&self.cfg),
@@ -701,7 +704,10 @@ impl PersistClient {
         D: Monoid + Ord + Codec64 + Send + Sync,
     {
         let root = root.into();
-        let shard_metrics = self.metrics.shards.shard(&root.metrics_shard(), "peek_stash");
+        let shard_metrics = self
+            .metrics
+            .shards
+            .shard(&root.metrics_shard(), "peek_stash");
 
         let hollow_batches = batches.iter().map(|b| b.batch.clone()).collect_vec();
 

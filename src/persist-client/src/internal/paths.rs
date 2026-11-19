@@ -158,7 +158,18 @@ impl PartialBatchKey {
 ///
 /// A `Leased` batch never joins a shard: its parts live until its lease expires, and it must
 /// never be passed to `compare_and_append`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
 pub enum KeyRoot {
     /// `s<shard>`, the root of every shard's own blobs.
     Shard(ShardId),
@@ -183,8 +194,9 @@ impl KeyRoot {
     pub fn metrics_shard(&self) -> ShardId {
         match self {
             KeyRoot::Shard(shard) => *shard,
-            KeyRoot::Leased { object, .. } => ShardId::from_str(&format!("s{}", object))
-                .expect("a uuid is a valid shard id"),
+            KeyRoot::Leased { object, .. } => {
+                ShardId::from_str(&format!("s{}", object)).expect("a uuid is a valid shard id")
+            }
         }
     }
 }

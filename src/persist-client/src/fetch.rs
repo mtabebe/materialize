@@ -641,8 +641,7 @@ pub(crate) async fn fetch_batch_part<T>(
 where
     T: Timestamp + Lattice + Codec64,
 {
-    let buf =
-        fetch_batch_part_blob(root, blob, metrics, shard_metrics, read_metrics, part).await?;
+    let buf = fetch_batch_part_blob(root, blob, metrics, shard_metrics, read_metrics, part).await?;
     let part = decode_batch_part_blob(
         cfg,
         metrics,

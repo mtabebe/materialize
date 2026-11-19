@@ -1700,9 +1700,9 @@ mod tests {
     use crate::PersistLocation;
     use crate::cache::PersistClientCache;
     use crate::cfg::BATCH_BUILDER_MAX_OUTSTANDING_PARTS;
-    use crate::{BlobLeaseId, PersistClient};
     use crate::internal::paths::{BlobKey, ParsedBlobKey, PartialBlobKey};
     use crate::tests::{all_ok, new_test_client};
+    use crate::{BlobLeaseId, PersistClient};
     use mz_persist_types::codec_impls::{StringSchema, UnitSchema};
     use prost::Message;
 
