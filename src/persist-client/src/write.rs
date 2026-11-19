@@ -558,6 +558,10 @@ where
     where
         D: Send + Sync,
     {
+        if let Some(batch) = batches.iter().find(|b| b.root().is_leased()) {
+            return Err(InvalidUsage::LeasedBatch { root: batch.root() });
+        }
+
         // Before we append any data, we require a registered write schema.
         // We expect the caller to ensure our schema is already present... unless this shard is a
         // tombstone, in which case this write is either a noop or will fail gracefully.

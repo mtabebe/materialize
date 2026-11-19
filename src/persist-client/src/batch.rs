@@ -178,7 +178,9 @@ where
     /// marks them as deleted.
     #[instrument(level = "debug", fields(shard = %self.shard_id()))]
     pub async fn delete(mut self) {
-        if !self.batch_delete_enabled {
+        // The flag guards against deleting blobs a shard's state may have linked. A leased batch
+        // can never be linked (`compare_and_append_batch` rejects it).
+        if !self.batch_delete_enabled && !self.root.is_leased() {
             self.mark_consumed();
             return;
         }
@@ -1698,7 +1700,7 @@ mod tests {
     use crate::PersistLocation;
     use crate::cache::PersistClientCache;
     use crate::cfg::BATCH_BUILDER_MAX_OUTSTANDING_PARTS;
-    use crate::BlobLeaseId;
+    use crate::{BlobLeaseId, PersistClient};
     use crate::internal::paths::{BlobKey, ParsedBlobKey, PartialBlobKey};
     use crate::tests::{all_ok, new_test_client};
     use mz_persist_types::codec_impls::{StringSchema, UnitSchema};
@@ -2137,6 +2139,76 @@ mod tests {
         );
         assert!(!remaining.is_empty());
         assert!(remaining.iter().all(|k| k.starts_with(&prefix)));
+    }
+
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn leased_batch_delete_ungated_and_append_rejected() {
+        let cache = PersistClientCache::new_no_metrics();
+        cache.cfg.set_config(&BLOB_TARGET_SIZE, 0);
+        cache.cfg.set_config(&INLINE_WRITES_SINGLE_MAX_BYTES, 0);
+        cache.cfg.set_config(&INLINE_WRITES_TOTAL_MAX_BYTES, 0);
+        cache.cfg.set_config(&BATCH_DELETE_ENABLED, false);
+        let client = cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .expect("client construction failed");
+        let schemas = Schemas::<String, ()> {
+            id: None,
+            key: Arc::new(StringSchema),
+            val: Arc::new(UnitSchema),
+        };
+        let leased = |client: &PersistClient| {
+            let mut b = client.leased_batch_builder::<String, (), u64, i64>(
+                BlobLeaseId::new(),
+                uuid::Uuid::new_v4(),
+                "test",
+                schemas.clone(),
+                Antichain::from_elem(0),
+                None,
+            );
+            async move {
+                for k in ["a", "b"] {
+                    b.add(&k.to_owned(), &(), &0, &1).await.unwrap();
+                }
+                b.finish(Antichain::from_elem(1)).await.unwrap()
+            }
+        };
+
+        // With the flag off, a leased delete still deletes.
+        let batch = leased(&client).await;
+        assert!(!all_blob_keys(&*client.blob).await.is_empty());
+        batch.delete().await;
+        assert_eq!(all_blob_keys(&*client.blob).await, Vec::<String>::new());
+
+        // A shard batch with the flag off does not.
+        let (mut write, _read) = client
+            .expect_open::<String, (), u64, i64>(ShardId::new())
+            .await;
+        let shard_batch = write
+            .expect_batch(&[(("a".to_owned(), ()), 0, 1)], 0, 1)
+            .await;
+        shard_batch.delete().await;
+        let shard_keys = all_blob_keys(&*client.blob).await;
+        assert!(!shard_keys.is_empty());
+
+        // A leased batch can't be appended, and the shard's upper doesn't move.
+        let mut batch = leased(&client).await;
+        let res = write
+            .compare_and_append_batch(
+                &mut [&mut batch],
+                Antichain::from_elem(0),
+                Antichain::from_elem(1),
+                true,
+            )
+            .await;
+        assert!(
+            matches!(res, Err(InvalidUsage::LeasedBatch { root }) if root == batch.root()),
+            "{res:?}"
+        );
+        assert_eq!(write.fetch_recent_upper().await, &Antichain::from_elem(0));
+        batch.delete().await;
+        assert_eq!(all_blob_keys(&*client.blob).await, shard_keys);
     }
 
     #[mz_ore::test]

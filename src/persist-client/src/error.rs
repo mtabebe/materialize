@@ -14,6 +14,7 @@ use std::fmt::Debug;
 use timely::progress::{Antichain, Timestamp};
 
 use crate::ShardId;
+use crate::internal::paths::KeyRoot;
 
 /// An error resulting from invalid usage of the API.
 #[derive(Debug)]
@@ -73,6 +74,12 @@ pub enum InvalidUsage<T> {
         /// The shard of the handle
         handle_shard: ShardId,
     },
+    /// A leased [crate::batch::Batch] was given to `compare_and_append`. Its blobs are reclaimed
+    /// with its lease, so linking it into a shard would leave state naming deleted blobs.
+    LeasedBatch {
+        /// Where the batch's blobs live.
+        root: KeyRoot,
+    },
     /// Attempted to finalize a shard without advancing frontiers.
     FinalizationError {
         /// The current since of the shard.
@@ -126,6 +133,9 @@ impl<T: Debug> std::fmt::Display for InvalidUsage<T> {
                 batch_shard,
                 handle_shard,
             } => write!(f, "batch was from {} not {}", batch_shard, handle_shard),
+            InvalidUsage::LeasedBatch { root } => {
+                write!(f, "leased batch under {root} cannot be appended to a shard")
+            }
             InvalidUsage::FinalizationError { since, upper } => {
                 write!(
                     f,
