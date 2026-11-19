@@ -61,7 +61,9 @@ use crate::internal::encoding::{
 };
 use crate::internal::gc::GcReq;
 use crate::internal::machine::retry_external;
-use crate::internal::paths::{BlobKey, PartId, PartialBatchKey, PartialRollupKey, WriterKey};
+use crate::internal::paths::{
+    BlobKey, KeyRoot, PartId, PartialBatchKey, PartialRollupKey, WriterKey,
+};
 use crate::internal::trace::{
     ActiveCompaction, ApplyMergeResult, FueledMergeReq, FueledMergeRes, Trace,
 };
@@ -452,7 +454,7 @@ impl<T> HollowRunRef<T> {
 impl<T: Timestamp + Codec64> HollowRunRef<T> {
     /// Stores the given runs and returns a [HollowRunRef] that points to them.
     pub async fn set<D: Codec64 + Monoid>(
-        shard_id: ShardId,
+        root: KeyRoot,
         blob: &dyn Blob,
         writer: &WriterKey,
         data: HollowRun<T>,
@@ -489,7 +491,7 @@ impl<T: Timestamp + Codec64> HollowRunRef<T> {
             .encode();
 
         let key = PartialBatchKey::new(writer, &PartId::new());
-        let blob_key = key.complete(&shard_id);
+        let blob_key = root.complete(&key);
         let bytes = Bytes::from(prost::Message::encode_to_vec(&data.into_proto()));
         let () = retry_external(&metrics.retries.external.hollow_run_set, || {
             blob.set(&blob_key, bytes.clone())
@@ -511,11 +513,11 @@ impl<T: Timestamp + Codec64> HollowRunRef<T> {
     /// with the same shard id and backing store.
     pub async fn get(
         &self,
-        shard_id: ShardId,
+        root: impl Into<KeyRoot>,
         blob: &dyn Blob,
         metrics: &Metrics,
     ) -> Option<HollowRun<T>> {
-        let blob_key = self.key.complete(&shard_id);
+        let blob_key = root.into().complete(&self.key);
         let mut bytes = retry_external(&metrics.retries.external.hollow_run_get, || {
             blob.get(&blob_key)
         })
@@ -680,21 +682,22 @@ impl std::error::Error for MissingBlob {}
 impl<T: Timestamp + Codec64 + Sync> RunPart<T> {
     pub fn part_stream<'a>(
         &'a self,
-        shard_id: ShardId,
+        root: impl Into<KeyRoot>,
         blob: &'a dyn Blob,
         metrics: &'a Metrics,
     ) -> impl Stream<Item = Result<Cow<'a, BatchPart<T>>, MissingBlob>> + Send + 'a {
+        let root: KeyRoot = root.into();
         try_stream! {
             match self {
                 RunPart::Single(p) => {
                     yield Cow::Borrowed(p);
                 }
                 RunPart::Many(r) => {
-                    let fetched = r.get(shard_id, blob, metrics).await
-                        .ok_or_else(|| MissingBlob(r.key.complete(&shard_id)))?;
+                    let fetched = r.get(root, blob, metrics).await
+                        .ok_or_else(|| MissingBlob(root.complete(&r.key)))?;
                     for run_part in fetched.parts {
                         for await batch_part in
-                            run_part.part_stream(shard_id, blob, metrics).boxed()
+                            run_part.part_stream(root, blob, metrics).boxed()
                         {
                             yield Cow::Owned(batch_part?.into_owned());
                         }

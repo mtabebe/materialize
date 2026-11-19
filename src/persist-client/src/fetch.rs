@@ -51,7 +51,7 @@ use crate::internal::apply::Applier;
 use crate::internal::encoding::{LazyInlineBatchPart, LazyPartStats, LazyProto, Schemas};
 use crate::internal::machine::retry_external;
 use crate::internal::metrics::{Metrics, MetricsPermits, ReadMetrics, ShardMetrics};
-use crate::internal::paths::BlobKey;
+use crate::internal::paths::{BlobKey, KeyRoot};
 use crate::internal::state::{
     BatchPart, HollowBatchPart, ProtoHollowBatchPart, ProtoInlineBatchPart,
 };
@@ -567,7 +567,7 @@ where
 }
 
 pub(crate) async fn fetch_batch_part_blob<T>(
-    shard_id: &ShardId,
+    root: impl Into<KeyRoot>,
     blob: &dyn Blob,
     metrics: &Metrics,
     shard_metrics: &ShardMetrics,
@@ -576,7 +576,7 @@ pub(crate) async fn fetch_batch_part_blob<T>(
 ) -> Result<SegmentedBytes, BlobKey> {
     let now = Instant::now();
     let get_span = debug_span!("fetch_batch::get");
-    let blob_key = part.key.complete(shard_id);
+    let blob_key = root.into().complete(&part.key);
     let value = retry_external(&metrics.retries.external.fetch_batch_get, || async {
         shard_metrics.blob_gets.inc();
         // Name the blob in the error. A GET stuck retrying forever surfaces only in the retry log
@@ -630,7 +630,7 @@ where
 
 pub(crate) async fn fetch_batch_part<T>(
     cfg: &FetchConfig,
-    shard_id: &ShardId,
+    root: impl Into<KeyRoot>,
     blob: &dyn Blob,
     metrics: &Metrics,
     shard_metrics: &ShardMetrics,
@@ -642,7 +642,7 @@ where
     T: Timestamp + Lattice + Codec64,
 {
     let buf =
-        fetch_batch_part_blob(shard_id, blob, metrics, shard_metrics, read_metrics, part).await?;
+        fetch_batch_part_blob(root, blob, metrics, shard_metrics, read_metrics, part).await?;
     let part = decode_batch_part_blob(
         cfg,
         metrics,
@@ -1584,7 +1584,7 @@ where
 {
     pub async fn fetch(
         cfg: &FetchConfig,
-        shard_id: &ShardId,
+        root: impl Into<KeyRoot>,
         blob: &dyn Blob,
         metrics: &Metrics,
         shard_metrics: &ShardMetrics,
@@ -1596,7 +1596,7 @@ where
             BatchPart::Hollow(x) => {
                 fetch_batch_part(
                     cfg,
-                    shard_id,
+                    root,
                     blob,
                     metrics,
                     shard_metrics,

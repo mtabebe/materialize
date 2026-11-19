@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::internal::encoding::parse_id;
-use crate::{ShardId, WriterId};
+use crate::{BlobLeaseId, ShardId, WriterId};
 
 /// An opaque identifier for an individual batch of a persist durable TVC (aka
 /// shard).
@@ -150,7 +150,63 @@ impl PartialBatchKey {
     }
 
     pub fn complete(&self, shard_id: &ShardId) -> BlobKey {
-        BlobKey(format!("{}/{}", shard_id, self))
+        KeyRoot::Shard(*shard_id).complete(self)
+    }
+}
+
+/// The prefix a batch's parts are written under.
+///
+/// A `Leased` batch never joins a shard: its parts live until its lease expires, and it must
+/// never be passed to `compare_and_append`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum KeyRoot {
+    /// `s<shard>`, the root of every shard's own blobs.
+    Shard(ShardId),
+    /// `leased/l<lease>/<object>`.
+    Leased { lease: BlobLeaseId, object: Uuid },
+}
+
+/// The top-level segment of every leased key.
+pub const LEASED_PREFIX: &str = "leased";
+
+impl KeyRoot {
+    pub fn complete(&self, key: &PartialBatchKey) -> BlobKey {
+        BlobKey(format!("{}/{}", self, key))
+    }
+
+    pub fn is_leased(&self) -> bool {
+        matches!(self, KeyRoot::Leased { .. })
+    }
+
+    /// The shard id this root's metrics are recorded under. For a leased root this is a shard id
+    /// formed from the object uuid, matching what the peek stash used before leased roots.
+    pub fn metrics_shard(&self) -> ShardId {
+        match self {
+            KeyRoot::Shard(shard) => *shard,
+            KeyRoot::Leased { object, .. } => ShardId::from_str(&format!("s{}", object))
+                .expect("a uuid is a valid shard id"),
+        }
+    }
+}
+
+impl From<ShardId> for KeyRoot {
+    fn from(shard: ShardId) -> Self {
+        KeyRoot::Shard(shard)
+    }
+}
+
+impl From<&ShardId> for KeyRoot {
+    fn from(shard: &ShardId) -> Self {
+        KeyRoot::Shard(*shard)
+    }
+}
+
+impl std::fmt::Display for KeyRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyRoot::Shard(shard) => write!(f, "{}", shard),
+            KeyRoot::Leased { lease, object } => write!(f, "{LEASED_PREFIX}/{lease}/{object}"),
+        }
     }
 }
 
@@ -269,7 +325,42 @@ impl Deref for BlobKey {
     }
 }
 
+/// Any key persist writes to [mz_persist::location::Blob], parsed.
+#[derive(Debug, PartialEq)]
+pub enum ParsedBlobKey {
+    Shard(ShardId, PartialBlobKey),
+    Leased {
+        lease: BlobLeaseId,
+        object: Uuid,
+        writer: WriterKey,
+        part: PartId,
+    },
+}
+
 impl BlobKey {
+    /// Parses a shard key or a leased key.
+    pub fn parse(key: &str) -> Result<ParsedBlobKey, String> {
+        let Some(rest) = key
+            .strip_prefix(LEASED_PREFIX)
+            .and_then(|r| r.strip_prefix('/'))
+        else {
+            return Self::parse_ids(key).map(|(s, k)| ParsedBlobKey::Shard(s, k));
+        };
+        let mut it = rest.splitn(3, '/');
+        let (Some(lease), Some(object), Some(part)) = (it.next(), it.next(), it.next()) else {
+            return Err(format!("invalid leased blob key: {}", key));
+        };
+        let lease = BlobLeaseId::from_str(lease)?;
+        let object = Uuid::parse_str(object).map_err(|e| format!("invalid object {key}: {e}"))?;
+        let (writer, part) = split_batch_key(part)?;
+        Ok(ParsedBlobKey::Leased {
+            lease,
+            object,
+            writer,
+            part,
+        })
+    }
+
     pub fn parse_ids(key: &str) -> Result<(ShardId, PartialBlobKey), String> {
         let err = || {
             format!(
@@ -298,6 +389,10 @@ pub enum BlobKeyPrefix<'a> {
     All,
     /// Scoped to the batch and state rollup blobs of an individual shard
     Shard(&'a ShardId),
+    /// Scoped to every blob under one lease.
+    Leased(&'a BlobLeaseId),
+    /// Scoped to every leased blob.
+    AllLeased,
     /// Scoped to the batch blobs of an individual writer
     #[cfg(test)]
     Writer(&'a ShardId, &'a WriterKey),
@@ -311,6 +406,8 @@ impl std::fmt::Display for BlobKeyPrefix<'_> {
         let s = match self {
             BlobKeyPrefix::All => "".into(),
             BlobKeyPrefix::Shard(shard) => format!("{}", shard),
+            BlobKeyPrefix::Leased(lease) => format!("{LEASED_PREFIX}/{lease}/"),
+            BlobKeyPrefix::AllLeased => format!("{LEASED_PREFIX}/"),
             #[cfg(test)]
             BlobKeyPrefix::Writer(shard, writer) => format!("{}/{}", shard, writer),
             #[cfg(test)]
@@ -380,7 +477,7 @@ mod tests {
             )),
             Ok((
                 shard_id,
-                PartialBlobKey::Batch(WriterKey::for_version(&version), part_id)
+                PartialBlobKey::Batch(WriterKey::for_version(&version), part_id.clone())
             ))
         );
 
@@ -413,6 +510,45 @@ mod tests {
             Err(_)
         ));
 
+        // leased keys round trip through `parse` and are rejected by `parse_ids`.
+        let (lease, object) = (BlobLeaseId::new(), Uuid::new_v4());
+        let root = KeyRoot::Leased { lease, object };
+        let partial = PartialBatchKey::new(&WriterKey::for_version(&version), &part_id);
+        let key = root.complete(&partial);
+        assert_eq!(
+            key.to_string(),
+            format!("leased/{lease}/{object}/{partial}")
+        );
+        assert_eq!(
+            BlobKey::parse(&key),
+            Ok(ParsedBlobKey::Leased {
+                lease,
+                object,
+                writer: WriterKey::for_version(&version),
+                part: part_id.clone(),
+            })
+        );
+        assert!(BlobKey::parse_ids(&key).is_err());
+        assert!(key.starts_with(&BlobKeyPrefix::Leased(&lease).to_string()));
+        assert!(matches!(
+            BlobKey::parse(&partial.complete(&shard_id)),
+            Ok(ParsedBlobKey::Shard(..))
+        ));
+
         Ok(())
+    }
+
+    #[mz_ore::test]
+    #[cfg_attr(miri, ignore)]
+    fn leased_and_shard_keys_disjoint() {
+        proptest!(|(shard in any::<ShardId>(), lease in any::<BlobLeaseId>(), object in any::<[u8; 16]>())| {
+            let shard_s = shard.to_string();
+            prop_assert!(!shard_s.starts_with(LEASED_PREFIX));
+            let partial = PartialBatchKey::new(&WriterKey::Version("0010000".into()), &PartId::new());
+            let leased = KeyRoot::Leased { lease, object: Uuid::from_bytes(object) }.complete(&partial);
+            prop_assert!(BlobKey::parse_ids(&leased).is_err());
+            let is_leased = matches!(BlobKey::parse(&leased), Ok(ParsedBlobKey::Leased { .. }));
+            prop_assert!(is_leased);
+        });
     }
 }

@@ -48,6 +48,7 @@ use crate::internal::gc::GarbageCollector;
 use crate::internal::machine::Machine;
 use crate::internal::maintenance::RoutineMaintenance;
 use crate::internal::metrics::ShardMetrics;
+use crate::internal::paths::KeyRoot;
 use crate::internal::state::{HollowBatch, RunMeta, RunOrder, RunPart};
 use crate::internal::trace::{
     ActiveCompaction, ApplyMergeResult, CompactionInput, FueledMergeRes, IdHollowBatch, SpineId,
@@ -691,7 +692,7 @@ where
 
                 let batch = Self::compact_runs(
                     &run_cfg,
-                    &req.shard_id,
+                    &KeyRoot::Shard(req.shard_id),
                     &desc,
                     runs,
                     Arc::clone(&blob),
@@ -952,7 +953,7 @@ where
     /// Maximum possible memory usage is `(# runs + 2) * [crate::PersistConfig::blob_target_size]`
     pub(crate) async fn compact_runs(
         cfg: &CompactConfig,
-        shard_id: &ShardId,
+        root: &KeyRoot,
         desc: &Description<T>,
         runs: Vec<(&Description<T>, &RunMeta, &[RunPart<T>])>,
         blob: Arc<dyn Blob>,
@@ -985,7 +986,7 @@ where
             cfg.batch.preferred_order,
             Arc::clone(&metrics),
             Arc::clone(&shard_metrics),
-            *shard_id,
+            *root,
             Arc::clone(&blob),
             Arc::clone(&isolated_runtime),
             &metrics.compaction.batch,
@@ -996,19 +997,19 @@ where
             Arc::clone(&metrics),
             write_schemas.clone(),
             Arc::clone(&blob),
-            shard_id.clone(),
+            *root,
             cfg.version.clone(),
         );
 
         let mut consolidator = Consolidator::new(
             format!(
                 "{}[lower={:?},upper={:?}]",
-                shard_id,
+                root,
                 desc.lower().elements(),
                 desc.upper().elements()
             ),
             cfg.fetch_config.clone(),
-            *shard_id,
+            *root,
             StructuredSort::<K, V, T, D>::new(write_schemas.clone()),
             blob,
             Arc::clone(&metrics),
@@ -1070,7 +1071,7 @@ where
         // this breaks here and log and correct it if so.
         let has_inline_parts = batch.batch.parts.iter().any(|x| x.is_inline());
         if has_inline_parts {
-            error!(%shard_id, ?cfg, "compaction result unexpectedly had inline writes");
+            error!(%root, ?cfg, "compaction result unexpectedly had inline writes");
             let () = batch
                 .flush_to_blob(
                     &cfg.batch,

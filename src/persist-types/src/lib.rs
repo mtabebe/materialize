@@ -279,6 +279,69 @@ impl RustType<String> for ShardId {
     }
 }
 
+/// The id of a blob lease: the lifetime that owns everything under `leased/l<uuid>/`.
+#[derive(
+    Arbitrary,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct BlobLeaseId(pub [u8; 16]);
+
+impl std::fmt::Display for BlobLeaseId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "l{}", Uuid::from_bytes(self.0))
+    }
+}
+
+impl std::fmt::Debug for BlobLeaseId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BlobLeaseId({})", Uuid::from_bytes(self.0))
+    }
+}
+
+impl std::str::FromStr for BlobLeaseId {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uuid_encoded = s
+            .strip_prefix('l')
+            .ok_or_else(|| format!("invalid BlobLeaseId {}: incorrect prefix", s))?;
+        let uuid = Uuid::parse_str(uuid_encoded)
+            .map_err(|err| format!("invalid BlobLeaseId {}: {}", s, err))?;
+        Ok(BlobLeaseId(*uuid.as_bytes()))
+    }
+}
+
+impl From<BlobLeaseId> for String {
+    fn from(id: BlobLeaseId) -> Self {
+        id.to_string()
+    }
+}
+
+impl TryFrom<String> for BlobLeaseId {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl BlobLeaseId {
+    /// Returns a random [BlobLeaseId].
+    pub fn new() -> Self {
+        BlobLeaseId(*Uuid::new_v4().as_bytes())
+    }
+}
+
 /// Advance a timestamp by the least amount possible such that
 /// `ts.less_than(ts.step_forward())` is true.
 ///

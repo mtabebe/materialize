@@ -50,6 +50,7 @@ use crate::internal::machine::{
     CompareAndAppendRes, ExpireFn, Machine, next_listen_batch_retry_params,
 };
 use crate::internal::metrics::{BatchWriteMetrics, Metrics, ShardMetrics};
+use crate::internal::paths::KeyRoot;
 use crate::internal::state::{BatchPart, HandleDebugState, HollowBatch, RunOrder, RunPart};
 use crate::read::ReadHandle;
 use crate::schema::PartMigration;
@@ -842,6 +843,7 @@ where
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(&self.cfg),
             metrics: Arc::clone(&self.metrics),
             shard_metrics: Arc::clone(&self.machine.applier.shard_metrics),
+            root: KeyRoot::Shard(shard_id),
             version: Version::parse(&batch.version).expect("valid transmittable batch"),
             schemas: (batch.key_schema, batch.val_schema),
             batch: batch
@@ -876,7 +878,7 @@ where
             &self.metrics.user,
             Arc::clone(&self.isolated_runtime),
             Arc::clone(&self.blob),
-            self.shard_id(),
+            self.shard_id().into(),
             self.write_schemas.clone(),
             lower,
         )
@@ -896,7 +898,7 @@ where
             &self.metrics.user,
             Arc::clone(&self.isolated_runtime),
             Arc::clone(&self.blob),
-            self.shard_id(),
+            self.shard_id().into(),
             self.write_schemas.clone(),
             lower,
         )
@@ -912,7 +914,7 @@ where
         user_batch_metrics: &BatchWriteMetrics,
         isolated_runtime: Arc<IsolatedRuntime>,
         blob: Arc<dyn Blob>,
-        shard_id: ShardId,
+        root: KeyRoot,
         schemas: Schemas<K, V>,
         lower: Antichain<T>,
     ) -> BatchBuilder<K, V, T, D> {
@@ -927,7 +929,7 @@ where
                 max_runs,
                 Arc::clone(&metrics),
                 shard_metrics,
-                shard_id,
+                root,
                 Arc::clone(&blob),
                 isolated_runtime,
                 user_batch_metrics,
@@ -939,19 +941,19 @@ where
                 RunOrder::Unordered,
                 Arc::clone(&metrics),
                 shard_metrics,
-                shard_id,
+                root,
                 Arc::clone(&blob),
                 isolated_runtime,
                 user_batch_metrics,
             )
         };
         let builder = BatchBuilderInternal::new(
-            BatchBuilderConfig::new(persist_cfg, shard_id),
+            BatchBuilderConfig::new(persist_cfg, root.metrics_shard()),
             parts,
             metrics,
             schemas,
             blob,
-            shard_id,
+            root,
             persist_cfg.build_version.clone(),
         );
         BatchBuilder::new(

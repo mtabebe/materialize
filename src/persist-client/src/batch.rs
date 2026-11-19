@@ -58,7 +58,7 @@ use crate::internal::encoding::{
 use crate::internal::machine::retry_external;
 use crate::internal::merge::{MergeTree, Pending};
 use crate::internal::metrics::{BatchWriteMetrics, Metrics, RetryMetrics, ShardMetrics};
-use crate::internal::paths::{PartId, PartialBatchKey, WriterKey};
+use crate::internal::paths::{KeyRoot, PartId, PartialBatchKey, WriterKey};
 use crate::internal::state::{
     BatchPart, ENABLE_INCREMENTAL_COMPACTION, HollowBatch, HollowBatchPart, HollowRun,
     HollowRunRef, ProtoInlineBatchPart, RunId, RunMeta, RunOrder, RunPart,
@@ -78,6 +78,9 @@ pub struct Batch<K, V, T, D> {
     pub(crate) batch_delete_enabled: bool,
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) shard_metrics: Arc<ShardMetrics>,
+
+    /// Where this batch's blobs live.
+    pub(crate) root: KeyRoot,
 
     /// The version of Materialize which wrote this batch.
     pub(crate) version: Version,
@@ -124,6 +127,7 @@ where
         metrics: Arc<Metrics>,
         blob: Arc<dyn Blob>,
         shard_metrics: Arc<ShardMetrics>,
+        root: KeyRoot,
         version: Version,
         schemas: (Bytes, Bytes),
         batch: HollowBatch<T>,
@@ -132,6 +136,7 @@ where
             batch_delete_enabled,
             metrics,
             shard_metrics,
+            root,
             version,
             schemas,
             batch,
@@ -143,6 +148,11 @@ where
     /// The `shard_id` of this [Batch].
     pub fn shard_id(&self) -> ShardId {
         self.shard_metrics.shard_id
+    }
+
+    /// Where this batch's blobs live.
+    pub fn root(&self) -> KeyRoot {
+        self.root
     }
 
     /// The `upper` of this [Batch].
@@ -179,7 +189,7 @@ where
         let () = deletes
             .delete(
                 &*self.blob,
-                self.shard_id(),
+                self.root,
                 usize::MAX,
                 &*self.metrics,
                 &*self.metrics.retries.external.batch_delete,
@@ -262,6 +272,7 @@ where
                     || "batch::flush_to_blob",
                     BatchParts::write_hollow_part(
                         cfg.clone(),
+                        self.root,
                         Arc::clone(&self.blob),
                         Arc::clone(&self.metrics),
                         Arc::clone(&self.shard_metrics),
@@ -743,7 +754,7 @@ where
     V: Codec,
     T: Timestamp + Lattice + Codec64,
 {
-    shard_id: ShardId,
+    root: KeyRoot,
     version: Version,
     blob: Arc<dyn Blob>,
     metrics: Arc<Metrics>,
@@ -769,7 +780,7 @@ where
         metrics: Arc<Metrics>,
         write_schemas: Schemas<K, V>,
         blob: Arc<dyn Blob>,
-        shard_id: ShardId,
+        root: KeyRoot,
         version: Version,
     ) -> Self {
         Self {
@@ -777,7 +788,7 @@ where
             metrics,
             write_schemas,
             parts,
-            shard_id,
+            root,
             version,
             _phantom: PhantomData,
         }
@@ -787,7 +798,7 @@ where
     ///
     /// This fails if any of the updates in this batch are beyond the given
     /// `upper`.
-    #[instrument(level = "debug", name = "batch::finish", fields(shard = %self.shard_id))]
+    #[instrument(level = "debug", name = "batch::finish", fields(shard = %self.root))]
     pub async fn finish(
         self,
         registered_desc: Description<T>,
@@ -837,6 +848,7 @@ where
             Arc::clone(&self.metrics),
             self.blob,
             shard_metrics,
+            self.root,
             self.version,
             (
                 K::encode_schema(&*self.write_schemas.key),
@@ -908,7 +920,7 @@ pub(crate) struct BatchParts<T> {
     cfg: BatchBuilderConfig,
     metrics: Arc<Metrics>,
     shard_metrics: Arc<ShardMetrics>,
-    shard_id: ShardId,
+    root: KeyRoot,
     blob: Arc<dyn Blob>,
     isolated_runtime: Arc<IsolatedRuntime>,
     next_index: u64,
@@ -923,7 +935,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
         runs_per_compaction: usize,
         metrics: Arc<Metrics>,
         shard_metrics: Arc<ShardMetrics>,
-        shard_id: ShardId,
+        root: KeyRoot,
         blob: Arc<dyn Blob>,
         isolated_runtime: Arc<IsolatedRuntime>,
         batch_metrics: &BatchWriteMetrics,
@@ -990,7 +1002,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
 
                         let output_batch = Compactor::<K, V, T, D>::compact_runs(
                             &cfg,
-                            &shard_id,
+                            &root,
                             &compact_desc,
                             run_refs,
                             blob,
@@ -1021,7 +1033,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
             cfg: cfg.batch,
             metrics,
             shard_metrics,
-            shard_id,
+            root,
             blob,
             isolated_runtime,
             next_index: 0,
@@ -1035,7 +1047,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
         order: RunOrder,
         metrics: Arc<Metrics>,
         shard_metrics: Arc<ShardMetrics>,
-        shard_id: ShardId,
+        root: KeyRoot,
         blob: Arc<dyn Blob>,
         isolated_runtime: Arc<IsolatedRuntime>,
         batch_metrics: &BatchWriteMetrics,
@@ -1071,7 +1083,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
                         }
 
                         let run_ref = HollowRunRef::set::<D>(
-                            shard_id,
+                            root,
                             blob.as_ref(),
                             &writer_key,
                             HollowRun {
@@ -1093,7 +1105,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
             cfg,
             metrics,
             shard_metrics,
-            shard_id,
+            root,
             blob,
             isolated_runtime,
             next_index: 0,
@@ -1129,7 +1141,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
 
         let updates = BlobTraceUpdates::from_part(updates);
         let (name, write_future) = if updates.goodbytes() < inline_threshold {
-            let span = debug_span!("batch::inline_part", shard = %self.shard_id).or_current();
+            let span = debug_span!("batch::inline_part", shard = %self.root).or_current();
             (
                 "batch::inline_part",
                 async move {
@@ -1164,6 +1176,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
                 index,
             };
             let cfg = self.cfg.clone();
+            let root = self.root;
             let blob = Arc::clone(&self.blob);
             let metrics = Arc::clone(&self.metrics);
             let shard_metrics = Arc::clone(&self.shard_metrics);
@@ -1178,6 +1191,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
                 async move {
                     let part = BatchParts::write_hollow_part(
                         cfg,
+                        root,
                         blob,
                         metrics,
                         shard_metrics,
@@ -1247,6 +1261,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
 
     async fn write_hollow_part<K: Codec, V: Codec>(
         cfg: BatchBuilderConfig,
+        root: KeyRoot,
         blob: Arc<dyn Blob>,
         metrics: Arc<Metrics>,
         shard_metrics: Arc<ShardMetrics>,
@@ -1259,7 +1274,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
         write_schemas: Schemas<K, V>,
     ) -> BatchPart<T> {
         let partial_key = PartialBatchKey::new(&cfg.writer_key, &PartId::new());
-        let key = partial_key.complete(&shard_metrics.shard_id);
+        let key = root.complete(&partial_key);
         let goodbytes = updates.updates.goodbytes();
         let metrics_ = Arc::clone(&metrics);
         let schema_id = write_schemas.id;
@@ -1411,7 +1426,7 @@ impl<T: Timestamp + Codec64> BatchParts<T> {
         })
     }
 
-    #[instrument(level = "debug", name = "batch::finish_upload", fields(shard = %self.shard_id))]
+    #[instrument(level = "debug", name = "batch::finish_upload", fields(shard = %self.root))]
     pub(crate) async fn finish(self) -> Vec<(RunOrder, Vec<RunPart<T>>, usize)> {
         match self.writing_runs {
             WritingRuns::Ordered(RunOrder::Unordered, run) => {
@@ -1580,18 +1595,19 @@ impl<T: Timestamp> PartDeletes<T> {
     pub async fn delete(
         mut self,
         blob: &dyn Blob,
-        shard_id: ShardId,
+        root: impl Into<KeyRoot>,
         concurrency: usize,
         metrics: &Metrics,
         delete_metrics: &RetryMetrics,
     ) where
         T: Codec64,
     {
+        let root: KeyRoot = root.into();
         let mut run_keys = Vec::new();
         loop {
             let () = stream::iter(mem::take(&mut self.blob_keys))
                 .map(|key| {
-                    let key = key.complete(&shard_id);
+                    let key = root.complete(&key);
                     async move {
                         retry_external(delete_metrics, || blob.delete(&key)).await;
                     }
@@ -1607,7 +1623,7 @@ impl<T: Timestamp> PartDeletes<T> {
             // The run's own key goes to `run_keys`, not `blob_keys`. Deleting it
             // alongside its children would lose the only list of them if we
             // crashed before they were all gone.
-            match run_ref.get(shard_id, blob, metrics).await {
+            match run_ref.get(root, blob, metrics).await {
                 Some(run) => {
                     for part in &run.parts {
                         self.add(part);
@@ -1620,7 +1636,7 @@ impl<T: Timestamp> PartDeletes<T> {
                 // now unreachable, which is what the metric is for.
                 None => {
                     metrics.state.hollow_run_missing_on_delete.inc();
-                    debug!("hollow run {run_key} already deleted in shard {shard_id}");
+                    debug!("hollow run {run_key} already deleted under {root}");
                 }
             }
         }
@@ -1633,7 +1649,7 @@ impl<T: Timestamp> PartDeletes<T> {
         // A possible optimization: delete one nesting level at a time, deepest
         // first, running each level's deletes concurrently.
         for run_key in run_keys.into_iter().rev() {
-            let key = run_key.complete(&shard_id);
+            let key = root.complete(&run_key);
             retry_external(delete_metrics, || blob.delete(&key)).await;
         }
     }
@@ -2163,7 +2179,7 @@ mod tests {
         let writer = WriterKey::for_version(&client.cfg.build_version);
         let part_key = parts[0].expect_hollow_part().key.complete(&shard_id);
         let inner = HollowRunRef::set::<i64>(
-            shard_id,
+            shard_id.into(),
             &*client.blob,
             &writer,
             HollowRun { parts },
@@ -2172,7 +2188,7 @@ mod tests {
         .await;
         let inner_key = inner.key.complete(&shard_id);
         let top = HollowRunRef::set::<i64>(
-            shard_id,
+            shard_id.into(),
             &*client.blob,
             &writer,
             HollowRun {

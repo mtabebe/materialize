@@ -50,6 +50,7 @@ use crate::internal::compact::{CompactConfig, Compactor};
 use crate::internal::encoding::parse_id;
 use crate::internal::gc::GarbageCollector;
 use crate::internal::machine::{Machine, retry_external};
+use crate::internal::paths::KeyRoot;
 use crate::internal::state_versions::StateVersions;
 use crate::metrics::Metrics;
 use crate::read::{
@@ -144,7 +145,7 @@ mod internal {
 pub const BUILD_INFO: BuildInfo = build_info!();
 
 // Re-export for convenience.
-pub use mz_persist_types::{PersistLocation, ShardId};
+pub use mz_persist_types::{BlobLeaseId, PersistLocation, ShardId};
 
 pub use crate::internal::encoding::Schemas;
 
@@ -580,7 +581,7 @@ impl PersistClient {
             &self.metrics.user,
             Arc::clone(&self.isolated_runtime),
             Arc::clone(&self.blob),
-            shard_id,
+            shard_id.into(),
             write_schemas,
             lower,
         )
@@ -617,6 +618,7 @@ impl PersistClient {
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(&self.cfg),
             metrics: Arc::clone(&self.metrics),
             shard_metrics,
+            root: KeyRoot::Shard(batch_shard_id),
             version: Version::parse(&batch.version).expect("valid transmittable batch"),
             schemas: (batch.key_schema, batch.val_schema),
             batch: batch

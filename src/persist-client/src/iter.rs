@@ -38,10 +38,10 @@ use semver::Version;
 use timely::progress::Timestamp;
 use tracing::{Instrument, debug_span};
 
-use crate::ShardId;
 use crate::fetch::{EncodedPart, FetchBatchFilter, FetchConfig};
 use crate::internal::encoding::Schemas;
 use crate::internal::metrics::{ReadMetrics, ShardMetrics};
+use crate::internal::paths::KeyRoot;
 use crate::internal::state::{HollowRun, RunMeta, RunOrder, RunPart};
 use crate::metrics::Metrics;
 
@@ -210,7 +210,7 @@ impl<T: Codec64 + Timestamp + Lattice> FetchData<T> {
     async fn fetch(
         self,
         cfg: &FetchConfig,
-        shard_id: ShardId,
+        root: KeyRoot,
         blob: &dyn Blob,
         metrics: &Metrics,
         shard_metrics: &ShardMetrics,
@@ -220,7 +220,7 @@ impl<T: Codec64 + Timestamp + Lattice> FetchData<T> {
             RunPart::Single(part) => {
                 let part = EncodedPart::fetch(
                     cfg,
-                    &shard_id,
+                    root,
                     &*blob,
                     metrics,
                     shard_metrics,
@@ -234,7 +234,7 @@ impl<T: Codec64 + Timestamp + Lattice> FetchData<T> {
             }
             RunPart::Many(run_ref) => {
                 let runs = run_ref
-                    .get(shard_id, blob, metrics)
+                    .get(root, blob, metrics)
                     .await
                     .ok_or_else(|| anyhow!("missing run ref {}", run_ref.key))?;
                 Ok(Err(runs))
@@ -349,7 +349,7 @@ impl<T: Timestamp + Codec64 + Lattice, D: Codec64> ConsolidationPart<T, D> {
 pub(crate) struct Consolidator<T, D, Sort: RowSort<T, D>> {
     context: String,
     cfg: FetchConfig,
-    shard_id: ShardId,
+    root: KeyRoot,
     sort: Sort,
     blob: Arc<dyn Blob>,
     metrics: Arc<Metrics>,
@@ -400,7 +400,7 @@ where
     pub fn new(
         context: String,
         cfg: FetchConfig,
-        shard_id: ShardId,
+        root: impl Into<KeyRoot>,
         sort: Sort,
         blob: Arc<dyn Blob>,
         metrics: Arc<Metrics>,
@@ -414,7 +414,7 @@ where
             context,
             cfg,
             metrics,
-            shard_id,
+            root: root.into(),
             sort,
             blob,
             read_metrics: Arc::new(read_metrics),
@@ -602,7 +602,7 @@ where
                             data.clone()
                                 .fetch(
                                     &self.cfg,
-                                    self.shard_id,
+                                    self.root,
                                     &*self.blob,
                                     &*self.metrics,
                                     &*self.shard_metrics,
@@ -776,7 +776,7 @@ where
                     let span = debug_span!("compaction::prefetch");
                     let data = data.clone();
                     let handle = mz_ore::task::spawn(|| "persist::compaction::prefetch", {
-                        let shard_id = self.shard_id;
+                        let root = self.root;
                         let blob = Arc::clone(&self.blob);
                         let metrics = Arc::clone(&self.metrics);
                         let shard_metrics = Arc::clone(&self.shard_metrics);
@@ -785,7 +785,7 @@ where
                         async move {
                             data.fetch(
                                 &fetch_config,
-                                shard_id,
+                                root,
                                 &*blob,
                                 &*metrics,
                                 &*shard_metrics,
@@ -1126,7 +1126,7 @@ mod tests {
                 let mut consolidator = Consolidator {
                     cfg: fetch_cfg.clone(),
                     context: "test".to_string(),
-                    shard_id: ShardId::new(),
+                    root: ShardId::new().into(),
                     sort: sort.clone(),
                     blob: Arc::new(MemBlob::open(MemBlobConfig::default())),
                     metrics: Arc::clone(metrics),

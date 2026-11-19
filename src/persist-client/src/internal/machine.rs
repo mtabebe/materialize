@@ -1469,6 +1469,7 @@ pub mod datadriven {
                 Arc::clone(&self.client.metrics),
                 Arc::clone(&self.client.blob),
                 self.client.metrics.shards.shard(&self.shard_id, "test"),
+                self.shard_id.into(),
                 self.client.cfg.build_version.clone(),
                 (
                     <String>::encode_schema(&*SCHEMAS.key),
@@ -1773,7 +1774,7 @@ pub mod datadriven {
             run_order,
             Arc::clone(&datadriven.client.metrics),
             Arc::clone(&datadriven.machine.applier.shard_metrics),
-            datadriven.shard_id,
+            datadriven.shard_id.into(),
             Arc::clone(&datadriven.client.blob),
             Arc::clone(&datadriven.client.isolated_runtime),
             &datadriven.client.metrics.user,
@@ -1784,7 +1785,7 @@ pub mod datadriven {
             Arc::clone(&datadriven.client.metrics),
             SCHEMAS.clone(),
             Arc::clone(&datadriven.client.blob),
-            datadriven.shard_id.clone(),
+            datadriven.shard_id.into(),
             datadriven.client.cfg.build_version.clone(),
         );
         let mut builder = BatchBuilder::new(builder, Description::new(lower, upper.clone(), since));
