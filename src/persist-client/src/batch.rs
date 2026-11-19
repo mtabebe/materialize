@@ -2211,6 +2211,66 @@ mod tests {
         assert_eq!(all_blob_keys(&*client.blob).await, shard_keys);
     }
 
+    // Plan finding F13: the reaper deletes a leased prefix while a writer (clusterd) is still
+    // building a batch under it, and the builder's own run merge then reads a deleted part.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn leased_builder_merge_after_prefix_deleted() {
+        let cache = PersistClientCache::new_no_metrics();
+        cache.cfg.set_config(&BLOB_TARGET_SIZE, 0);
+        cache.cfg.set_config(&STRUCTURED_KEY_LOWER_LEN, 0);
+        cache.cfg.set_config(&INLINE_WRITES_SINGLE_MAX_BYTES, 0);
+        cache.cfg.set_config(&INLINE_WRITES_TOTAL_MAX_BYTES, 0);
+        let client = cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .expect("client construction failed");
+        let lease = BlobLeaseId::new();
+        let schemas = Schemas::<String, ()> {
+            id: None,
+            key: Arc::new(StringSchema),
+            val: Arc::new(UnitSchema),
+        };
+        let blob = Arc::clone(&client.blob);
+        let res = mz_ore::task::spawn(|| "f13", async move {
+            let mut b = client.leased_batch_builder::<String, (), u64, i64>(
+                lease,
+                uuid::Uuid::new_v4(),
+                "test",
+                schemas,
+                Antichain::from_elem(0),
+                Some(4),
+            );
+            for i in 0..3 {
+                b.add(&format!("{i:02}"), &(), &0, &1).await.unwrap();
+            }
+            // Let the three part uploads land, then delete everything under the lease.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            for k in all_blob_keys(&*blob).await {
+                blob.delete(&k).await.unwrap();
+            }
+            for i in 3..40 {
+                b.add(&format!("{i:02}"), &(), &0, &1).await.unwrap();
+            }
+            b.finish(Antichain::from_elem(1))
+                .await
+                .map(|b| b.into_transmittable_batch())
+        })
+        .into_tokio_handle()
+        .await;
+        match res {
+            Err(e) if e.is_panic() => {
+                let msg = e.into_panic();
+                let msg = msg
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| msg.downcast_ref::<&str>().map(|s| s.to_string()));
+                eprintln!("F13: builder panicked: {msg:?}");
+            }
+            other => panic!("expected the builder to panic, got {other:?}"),
+        }
+    }
+
     #[mz_ore::test]
     fn proto_batch_without_leased_is_shard() {
         let shard_id = ShardId::new();
