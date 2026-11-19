@@ -26,5 +26,15 @@ message ProtoBatch {
 
   mz_persist_client.internal.state.ProtoHollowBatch batch = 3;
 
+  // Set iff the batch's parts live under `leased/<lease>/<object>/`. Code that predates this field
+  // completes keys under `shard_id` and misses, so a leased batch must only reach readers that
+  // know it. Unset decodes as a shard batch.
+  optional ProtoLeasedRoot leased = 7;
+
   reserved 4;
+}
+
+message ProtoLeasedRoot {
+  string lease = 1;
+  string object = 2;
 }

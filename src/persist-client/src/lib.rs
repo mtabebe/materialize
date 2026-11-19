@@ -34,7 +34,7 @@ use mz_ore::instrument;
 use mz_persist::location::{Blob, Consensus, ExternalError};
 use mz_persist_types::schema::SchemaId;
 use mz_persist_types::{Codec, Codec64};
-use mz_proto::{IntoRustIfSome, ProtoType};
+use mz_proto::IntoRustIfSome;
 use semver::Version;
 use timely::order::TotalOrder;
 use timely::progress::{Antichain, Timestamp};
@@ -50,7 +50,6 @@ use crate::internal::compact::{CompactConfig, Compactor};
 use crate::internal::encoding::parse_id;
 use crate::internal::gc::GarbageCollector;
 use crate::internal::machine::{Machine, retry_external};
-use crate::internal::paths::KeyRoot;
 use crate::internal::state_versions::StateVersions;
 use crate::metrics::Metrics;
 use crate::read::{
@@ -148,6 +147,7 @@ pub const BUILD_INFO: BuildInfo = build_info!();
 pub use mz_persist_types::{BlobLeaseId, PersistLocation, ShardId};
 
 pub use crate::internal::encoding::Schemas;
+pub use crate::internal::paths::KeyRoot;
 
 /// Additional diagnostic information used within Persist
 /// e.g. for logging, metric labels, etc.
@@ -587,6 +587,46 @@ impl PersistClient {
         )
     }
 
+    /// Returns a [BatchBuilder] whose parts are written under `leased/<lease>/<object>/`.
+    ///
+    /// The resulting batch can be read with [PersistClient::read_batches_consolidated] and
+    /// deleted, but never appended to a shard. Its blobs are reclaimed with the lease, so the
+    /// caller must hold `lease` live for as long as anyone may read the batch.
+    pub fn leased_batch_builder<K, V, T, D>(
+        &self,
+        lease: BlobLeaseId,
+        object: uuid::Uuid,
+        name: &str,
+        write_schemas: Schemas<K, V>,
+        lower: Antichain<T>,
+        max_runs: Option<usize>,
+    ) -> BatchBuilder<K, V, T, D>
+    where
+        K: Debug + Codec,
+        V: Debug + Codec,
+        T: Timestamp + Lattice + Codec64 + TotalOrder + Sync,
+        D: Monoid + Ord + Codec64 + Send + Sync,
+    {
+        let root = KeyRoot::Leased { lease, object };
+        let metrics_shard = root.metrics_shard();
+        let mut compact_cfg = CompactConfig::new(&self.cfg, metrics_shard);
+        if let Some(max_runs) = max_runs {
+            compact_cfg.batch.max_runs = Some(max_runs);
+        }
+        WriteHandle::builder_inner(
+            &self.cfg,
+            compact_cfg,
+            Arc::clone(&self.metrics),
+            self.metrics.shards.shard(&metrics_shard, name),
+            &self.metrics.user,
+            Arc::clone(&self.isolated_runtime),
+            Arc::clone(&self.blob),
+            root,
+            write_schemas,
+            lower,
+        )
+    }
+
     /// Turns the given [`ProtoBatch`] back into a [`Batch`] which can be used
     /// to append it to the given shard or to read it via
     /// [PersistClient::read_batches_consolidated]
@@ -597,7 +637,7 @@ impl PersistClient {
     /// anymore.
     pub fn batch_from_transmittable_batch<K, V, T, D>(
         &self,
-        shard_id: &ShardId,
+        root: impl Into<KeyRoot>,
         batch: ProtoBatch,
     ) -> Batch<K, V, T, D>
     where
@@ -606,19 +646,16 @@ impl PersistClient {
         T: Timestamp + Lattice + Codec64 + Sync,
         D: Monoid + Ord + Codec64 + Send + Sync,
     {
-        let batch_shard_id: ShardId = batch
-            .shard_id
-            .into_rust()
-            .expect("valid transmittable batch");
-        assert_eq!(&batch_shard_id, shard_id);
+        let root = root.into();
+        assert_eq!(batch.root(), root);
 
-        let shard_metrics = self.metrics.shards.shard(shard_id, "peek_stash");
+        let shard_metrics = self.metrics.shards.shard(&root.metrics_shard(), "peek_stash");
 
         let ret = Batch {
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(&self.cfg),
             metrics: Arc::clone(&self.metrics),
             shard_metrics,
-            root: KeyRoot::Shard(batch_shard_id),
+            root,
             version: Version::parse(&batch.version).expect("valid transmittable batch"),
             schemas: (batch.key_schema, batch.val_schema),
             batch: batch
@@ -629,7 +666,6 @@ impl PersistClient {
             _phantom: std::marker::PhantomData,
         };
 
-        assert_eq!(&ret.shard_id(), shard_id);
         ret
     }
 
@@ -650,7 +686,7 @@ impl PersistClient {
     #[allow(clippy::unused_async)]
     pub async fn read_batches_consolidated<K, V, T, D>(
         &mut self,
-        shard_id: ShardId,
+        root: impl Into<KeyRoot>,
         as_of: Antichain<T>,
         read_schemas: Schemas<K, V>,
         batches: Vec<Batch<K, V, T, D>>,
@@ -663,7 +699,8 @@ impl PersistClient {
         T: Timestamp + Lattice + Codec64 + TotalOrder + Sync,
         D: Monoid + Ord + Codec64 + Send + Sync,
     {
-        let shard_metrics = self.metrics.shards.shard(&shard_id, "peek_stash");
+        let root = root.into();
+        let shard_metrics = self.metrics.shards.shard(&root.metrics_shard(), "peek_stash");
 
         let hollow_batches = batches.iter().map(|b| b.batch.clone()).collect_vec();
 
@@ -673,7 +710,7 @@ impl PersistClient {
             shard_metrics,
             self.metrics.read.snapshot.clone(),
             Arc::clone(&self.blob),
-            shard_id,
+            root,
             as_of,
             read_schemas,
             &hollow_batches,

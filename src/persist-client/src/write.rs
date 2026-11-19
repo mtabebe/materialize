@@ -835,15 +835,17 @@ where
     pub fn batch_from_transmittable_batch(&self, batch: ProtoBatch) -> Batch<K, V, T, D> {
         let shard_id: ShardId = batch
             .shard_id
+            .clone()
             .into_rust()
             .expect("valid transmittable batch");
         assert_eq!(shard_id, self.machine.shard_id());
+        let root = batch.root();
 
         let ret = Batch {
             batch_delete_enabled: BATCH_DELETE_ENABLED.get(&self.cfg),
             metrics: Arc::clone(&self.metrics),
             shard_metrics: Arc::clone(&self.machine.applier.shard_metrics),
-            root: KeyRoot::Shard(shard_id),
+            root,
             version: Version::parse(&batch.version).expect("valid transmittable batch"),
             schemas: (batch.key_schema, batch.val_schema),
             batch: batch

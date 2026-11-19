@@ -221,8 +221,16 @@ where
     /// responsible for turning this back into a [`Batch`] using
     /// [`WriteHandle::batch_from_transmittable_batch`](crate::write::WriteHandle::batch_from_transmittable_batch).
     pub fn into_transmittable_batch(mut self) -> ProtoBatch {
+        let leased = match self.root {
+            KeyRoot::Shard(_) => None,
+            KeyRoot::Leased { lease, object } => Some(ProtoLeasedRoot {
+                lease: lease.to_string(),
+                object: object.to_string(),
+            }),
+        };
         let ret = ProtoBatch {
             shard_id: self.shard_metrics.shard_id.into_proto(),
+            leased,
             version: self.version.to_string(),
             batch: Some(self.batch.into_proto()),
             key_schema: self.schemas.0.clone(),
@@ -1655,6 +1663,19 @@ impl<T: Timestamp> PartDeletes<T> {
     }
 }
 
+impl ProtoBatch {
+    /// The root this batch's parts live under.
+    pub fn root(&self) -> KeyRoot {
+        match &self.leased {
+            None => KeyRoot::Shard(self.shard_id.parse().expect("valid transmittable batch")),
+            Some(l) => KeyRoot::Leased {
+                lease: l.lease.parse().expect("valid transmittable batch"),
+                object: l.object.parse().expect("valid transmittable batch"),
+            },
+        }
+    }
+}
+
 /// Returns the total sum of diffs or None if there were no updates.
 fn diffs_sum<D: Monoid + Codec64>(updates: &Int64Array) -> D {
     let mut sum = D::zero();
@@ -1677,9 +1698,11 @@ mod tests {
     use crate::PersistLocation;
     use crate::cache::PersistClientCache;
     use crate::cfg::BATCH_BUILDER_MAX_OUTSTANDING_PARTS;
-    use crate::internal::paths::{BlobKey, PartialBlobKey};
+    use crate::BlobLeaseId;
+    use crate::internal::paths::{BlobKey, ParsedBlobKey, PartialBlobKey};
     use crate::tests::{all_ok, new_test_client};
-    use mz_persist_types::codec_impls::StringSchema;
+    use mz_persist_types::codec_impls::{StringSchema, UnitSchema};
+    use prost::Message;
 
     #[mz_ore::test(tokio::test)]
     #[cfg_attr(miri, ignore)] // unsupported operation: returning ready events from epoll_wait is not yet implemented
@@ -2011,6 +2034,121 @@ mod tests {
         let (actual, _) = read.expect_listen(0).await.read_until(&3).await;
         let expected = vec![((("foo".to_owned()), ()), 2, 1)];
         assert_eq!(actual, expected);
+    }
+
+    pub(crate) async fn all_blob_keys(blob: &dyn Blob) -> Vec<String> {
+        let mut keys = Vec::new();
+        blob.list_keys_and_metadata("", &mut |m| keys.push(m.key.to_owned()))
+            .await
+            .expect("listing a mem blob succeeds");
+        keys.sort();
+        keys
+    }
+
+    // One update per part, `max_runs` and a max run len of 2: the builder runs a builder run
+    // merge (`compact_runs`) and spills hollow runs, so every write path in the builder is used.
+    #[mz_ore::test(tokio::test)]
+    #[cfg_attr(miri, ignore)] // too slow
+    async fn leased_batch_keys_roundtrip_and_delete() {
+        let cache = PersistClientCache::new_no_metrics();
+        cache.cfg.set_config(&BLOB_TARGET_SIZE, 0);
+        cache.cfg.set_config(&MAX_RUN_LEN, 2);
+        cache.cfg.set_config(&STRUCTURED_KEY_LOWER_LEN, 0);
+        cache.cfg.set_config(&INLINE_WRITES_SINGLE_MAX_BYTES, 0);
+        cache.cfg.set_config(&INLINE_WRITES_TOTAL_MAX_BYTES, 0);
+        let mut client = cache
+            .open(PersistLocation::new_in_mem())
+            .await
+            .expect("client construction failed");
+        let (lease, object) = (BlobLeaseId::new(), uuid::Uuid::new_v4());
+        let root = KeyRoot::Leased { lease, object };
+        let schemas = Schemas::<String, ()> {
+            id: None,
+            key: Arc::new(StringSchema),
+            val: Arc::new(UnitSchema),
+        };
+        let mut builder = client.leased_batch_builder::<String, (), u64, i64>(
+            lease,
+            object,
+            "test",
+            schemas.clone(),
+            Antichain::from_elem(0),
+            Some(2),
+        );
+        let keys: Vec<String> = (0..20).map(|i| format!("{i:02}")).collect();
+        for k in &keys {
+            builder.add(k, &(), &0, &1).await.unwrap();
+        }
+        let batch = builder.finish(Antichain::from_elem(1)).await.unwrap();
+        assert_eq!(batch.root(), root);
+        let has_hollow_run = batch
+            .batch
+            .parts
+            .iter()
+            .any(|p| matches!(p, RunPart::Many(_)));
+        assert!(has_hollow_run, "{:?}", batch.batch.parts);
+
+        let written = all_blob_keys(&*client.blob).await;
+        assert!(written.len() > keys.len(), "{written:?}");
+        let prefix = format!("leased/{lease}/{object}/");
+        for key in &written {
+            assert!(key.starts_with(&prefix), "{key} not under {prefix}");
+            assert!(
+                matches!(BlobKey::parse(key), Ok(ParsedBlobKey::Leased { .. })),
+                "{key}"
+            );
+        }
+
+        // Through the wire format and back.
+        let proto = batch.into_transmittable_batch();
+        let proto = ProtoBatch::decode(&*proto.encode_to_vec()).unwrap();
+        assert_eq!(proto.root(), root);
+        let batch = client.batch_from_transmittable_batch::<String, (), u64, i64>(root, proto);
+        let mut cursor = client
+            .read_batches_consolidated(
+                root,
+                Antichain::from_elem(0),
+                schemas,
+                vec![batch],
+                |_| true,
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+        let mut read = Vec::new();
+        while let Some(updates) = cursor.next().await {
+            read.extend(updates.map(|((k, ()), _t, d)| (k, d)));
+        }
+        read.sort();
+        let expected: Vec<_> = keys.iter().map(|k| (k.clone(), 1)).collect();
+        assert_eq!(read, expected);
+
+        for batch in cursor.into_lease() {
+            batch.delete().await;
+        }
+        // NOTE: `delete` removes only what the final batch names. The inputs of the builder's
+        // run merges (`compact_runs` in `new_compacting`) are never deleted, so they stay under
+        // the lease until it expires.
+        let remaining = all_blob_keys(&*client.blob).await;
+        eprintln!(
+            "leased batch: wrote {} keys, {} left after delete",
+            written.len(),
+            remaining.len()
+        );
+        assert!(!remaining.is_empty());
+        assert!(remaining.iter().all(|k| k.starts_with(&prefix)));
+    }
+
+    #[mz_ore::test]
+    fn proto_batch_without_leased_is_shard() {
+        let shard_id = ShardId::new();
+        let proto = ProtoBatch {
+            shard_id: shard_id.to_string(),
+            leased: None,
+            ..Default::default()
+        };
+        let proto = ProtoBatch::decode(&*proto.encode_to_vec()).unwrap();
+        assert_eq!(proto.root(), KeyRoot::Shard(shard_id));
     }
 
     // One update per part and a max run len of 2 make in-builder compaction spill hollow runs.

@@ -45,6 +45,7 @@ use crate::fetch::FetchConfig;
 use crate::fetch::{FetchBatchFilter, FetchedPart, Lease, LeasedBatchPart, fetch_leased_part};
 use crate::internal::encoding::Schemas;
 use crate::internal::machine::{Machine, next_listen_batch_retry_params};
+use crate::internal::paths::KeyRoot;
 use crate::internal::metrics::{Metrics, ReadMetrics, ShardMetrics};
 use crate::internal::state::{HollowBatch, LeasedReaderState, SnapshotErr};
 use crate::internal::watch::{AwaitableState, StateWatch};
@@ -1215,7 +1216,7 @@ where
             Arc::clone(&self.machine.applier.shard_metrics),
             self.metrics.read.snapshot.clone(),
             Arc::clone(&self.blob),
-            self.shard_id(),
+            self.shard_id().into(),
             as_of,
             self.read_schemas.clone(),
             &batches,
@@ -1231,7 +1232,7 @@ where
         shard_metrics: Arc<ShardMetrics>,
         read_metrics: ReadMetrics,
         blob: Arc<dyn Blob>,
-        shard_id: ShardId,
+        root: KeyRoot,
         as_of: Antichain<T>,
         schemas: Schemas<K, V>,
         batches: &[HollowBatch<T>],
@@ -1239,7 +1240,7 @@ where
         should_fetch_part: impl for<'a> Fn(Option<&'a LazyPartStats>) -> bool,
         memory_budget_bytes: usize,
     ) -> Result<Cursor<K, V, T, D, L>, Since<T>> {
-        let context = format!("{}[as_of={:?}]", shard_id, as_of.elements());
+        let context = format!("{}[as_of={:?}]", root, as_of.elements());
         let filter = FetchBatchFilter::Snapshot {
             as_of: as_of.clone(),
         };
@@ -1247,7 +1248,7 @@ where
         let mut consolidator = Consolidator::new(
             context,
             FetchConfig::from_persist_config(persist_cfg),
-            shard_id,
+            root,
             StructuredSort::new(schemas.clone()),
             blob,
             metrics,
