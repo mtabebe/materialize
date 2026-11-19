@@ -75,6 +75,7 @@ pub mod error;
 pub mod fetch;
 pub mod internals_bench;
 pub mod iter;
+pub mod lease;
 pub mod metrics {
     //! Utilities related to metrics.
     pub use crate::internal::metrics::{
