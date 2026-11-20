@@ -299,6 +299,31 @@ pub struct Stats {
     /// hydration.
     pub control_at: Option<u64>,
     pub control_time: u64,
+    /// Commit RPCs from receipt to reply, queueing in the inbox included.
+    pub commit_latency: LatencyHist,
+    /// Manifest shard writes (single or multi-key CaS), successful ones only.
+    pub write_latency: LatencyHist,
+    pub watch_requests: u64,
+    pub fetch_requests: u64,
+}
+
+/// A latency histogram in power-of-two microsecond buckets, bounded in size so
+/// a long-running resolver can keep one.
+#[derive(Clone, Debug, Default)]
+pub struct LatencyHist {
+    /// `counts[0]` holds 0 us; `counts[i]` holds `[2^(i-1), 2^i)` us, and the
+    /// last bucket everything above.
+    pub counts: [u64; 32],
+    pub sum_micros: u64,
+}
+
+impl LatencyHist {
+    pub fn observe(&mut self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        let bucket = usize::try_from(u64::BITS - micros.leading_zeros()).expect("fits");
+        self.counts[bucket.min(self.counts.len() - 1)] += 1;
+        self.sum_micros = self.sum_micros.saturating_add(micros);
+    }
 }
 
 impl Resolver {
@@ -443,15 +468,25 @@ impl Resolver {
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Request>) {
         while let Some(first) = rx.recv().await {
             let mut commits = Vec::new();
+            let (mut fetches, mut watches) = (0, 0);
             let mut next = Some(first);
             while let Some(req) = next.take().or_else(|| rx.try_recv().ok()) {
                 match req {
                     Request::Fetch(shard, tx) => {
+                        fetches += 1;
                         let _ = tx.send(self.view.shard_view(&shard));
                     }
                     Request::Commit(ops, tx) => commits.push((ops, tx)),
-                    Request::Watch(shard, known, tx) => self.watch(shard, known, tx),
+                    Request::Watch(shard, known, tx) => {
+                        watches += 1;
+                        self.watch(shard, known, tx)
+                    }
                 }
+            }
+            {
+                let mut stats = self.stats.lock().expect("lock");
+                stats.fetch_requests += fetches;
+                stats.watch_requests += watches;
             }
             if commits.is_empty() {
                 continue;
@@ -659,6 +694,7 @@ impl Resolver {
         stats
             .write_micros
             .push(u64::try_from(elapsed.as_micros()).expect("fits"));
+        stats.write_latency.observe(elapsed);
     }
 }
 
@@ -666,6 +702,7 @@ impl Resolver {
 #[derive(Clone, Debug)]
 pub struct Service {
     pub tx: mpsc::UnboundedSender<Request>,
+    pub stats: Arc<std::sync::Mutex<Stats>>,
 }
 
 #[tonic::async_trait]
@@ -674,6 +711,7 @@ impl ProtoPersistResolver for Service {
         &self,
         request: tonic::Request<ProtoCommitRequest>,
     ) -> Result<tonic::Response<ProtoCommitResponse>, tonic::Status> {
+        let start = Instant::now();
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Request::Commit(request.into_inner().ops, tx))
@@ -681,6 +719,11 @@ impl ProtoPersistResolver for Service {
         let resp = rx
             .await
             .map_err(|_| tonic::Status::unavailable("resolver stopped"))?;
+        self.stats
+            .lock()
+            .expect("lock")
+            .commit_latency
+            .observe(start.elapsed());
         Ok(tonic::Response::new(resp))
     }
 
@@ -763,7 +806,10 @@ pub async fn start_and_serve(
     let stats = Arc::clone(&resolver.stats);
     let partition_shard = resolver.partition_shard;
     let (tx, rx) = mpsc::unbounded_channel();
-    let service = Service { tx: tx.clone() };
+    let service = Service {
+        tx: tx.clone(),
+        stats: Arc::clone(&stats),
+    };
     let serve =
         mz_ore::task::spawn(|| "persist-resolver-serve", serve(service, listener)).abort_on_drop();
     let cycle = mz_ore::task::spawn(|| "persist-resolver-cycle", resolver.run(rx)).abort_on_drop();

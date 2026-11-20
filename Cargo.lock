@@ -8103,6 +8103,7 @@ dependencies = [
  "mz-persist",
  "mz-persist-client",
  "mz-persist-types",
+ "prometheus",
  "tempfile",
  "timely",
  "tokio",
