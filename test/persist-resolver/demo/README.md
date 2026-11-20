@@ -198,7 +198,69 @@ advances on its own schedule. `seqno` (the resolver's view seqno, one per
 resolver write) moves by about 2 per tick, see the numbers below. `Ctrl-C` to
 stop.
 
-### 7. Teardown
+### 7. Snapshot the user shards before writing (pane 4)
+
+<!-- run: snapshot-before -->
+```sh
+curl -s 127.0.0.1:6891/views | jq -r --slurpfile n scratch/persist-resolver-demo/names.json '
+  (.upper_groups[] | "group \(.group): upper \(.upper[0]), \(.members | length) members"),
+  (.data_shards | map([$n[0][.shard], (.upper_group // "own"), .upper[0], (.batches | length),
+    ([.batches[].updates] | add // 0)]) | sort[] | @tsv)' | tee /tmp/before.txt
+```
+
+The group's one upper, then a line per user shard: name, upper group (`own`
+for its own `Upper` row), upper, batches, and updates across its batches. The
+20 MVs and `balances` are in the group at its upper. `accounts` is on its own
+row, behind: txn-wal advances a table's data shard upper only when it applies
+a write to it.
+
+### 8. Write to the table (pane 3)
+
+<!-- run: mz-writes -->
+```sql
+INSERT INTO accounts VALUES (5, 'dave', 40);
+UPDATE accounts SET balance = balance + 10 WHERE owner = 'bob';
+DELETE FROM accounts WHERE owner = 'carol';
+SELECT * FROM balances ORDER BY owner;
+SELECT * FROM mv_20 ORDER BY owner;
+```
+
+Three writes, and both MVs show them: dave added, bob up by 10 (by 200 in
+`mv_20`, which multiplies by 20), carol gone.
+
+### 9. The same snapshot after the writes (pane 4)
+
+<!-- run: snapshot-after -->
+```sh
+curl -s 127.0.0.1:6891/views | jq -r --slurpfile n scratch/persist-resolver-demo/names.json '
+  (.upper_groups[] | "group \(.group): upper \(.upper[0]), \(.members | length) members"),
+  (.data_shards | map([$n[0][.shard], (.upper_group // "own"), .upper[0], (.batches | length),
+    ([.batches[].updates] | add // 0)]) | sort[] | @tsv)' | tee /tmp/after.txt
+```
+
+<!-- run: batch-diff -->
+```sh
+paste /tmp/before.txt /tmp/after.txt | awk -F '\t' 'NF == 10 {
+  printf "%-9s group %s -> %-4s batches %2s -> %-3s updates %3s -> %s\n", $1, $2, $7, $4, $9, $5, $10 }'
+```
+
+Each write is appended to the table and, at the same tick, to every MV it
+changed: batch and update counts go up on all 22 shards. Compaction merges a
+shard's batches now and then, so a count can also go down, with the updates
+merged into fewer batches. The MVs stay in the group: an append that carries
+data moves a member's upper by the same tick as an empty one, so it lands in
+the group's ordinary advance. The group's single upper kept ticking (compare
+the `group` lines). The table stays `own`, its upper now at its last write. If
+its upper equals the group's at a tick, it joins the group and leaves at the
+next tick (seen with the 1 s watch from step 6 as 22 members, then 21).
+
+### 10. Consensus after the writes (pane 4)
+
+Rerun the step 5 `crdb-kinds` query in `psql postgres://...`: `user` still has
+0 consensus rows. The writes went to batches in blob and rows in the
+partition manifest shard only.
+
+### 11. Teardown
 
 `Ctrl-C` in panes 1 and 2, then in pane 4:
 
@@ -239,7 +301,16 @@ The same steps without the resolver:
    `mv_01` to `mv_20`: every MV writes its own consensus row each tick. (In the
    resolver run this query prints an empty list.) `Ctrl-C` to stop.
 
-6. Teardown: `Ctrl-C` in pane 2, then the `down` block.
+6. No resolver view: steps 6, 7 and 9 have no classic counterpart.
+7. Before writing, rerun the `crdb-user-shards` query (pane 4, in
+   `psql postgres://...`) for each shard's consensus rows and seqno.
+8. The same writes in pane 3 (the `mz-writes` block), with the same results.
+9. Rerun `crdb-user-shards`: every user shard has more consensus rows and a
+   higher seqno. Each of the writes was a compare-and-set on the table's and
+   on each changed MV's own row. Most of the growth, though, is the once a
+   second upper advance every shard does on its own row (the `\watch` in
+   step 5), which in the resolver run is one group row.
+10. Teardown: `Ctrl-C` in pane 2, then the `down` block.
 
 ## Numbers to have in hand
 

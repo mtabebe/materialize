@@ -128,9 +128,19 @@ rehearse() {
         run views-groups sh_block views-groups
         run views-watch true
         timeout -k 5 -s INT 6 bash -c "$(block views-watch)" || [ $? = 124 ]
+        run snapshot-before sh_block snapshot-before
+        run mz-writes sql_block psql mz-writes
+        # Let the writes' ticks land in every MV.
+        sleep 2
+        run snapshot-after sh_block snapshot-after
+        run batch-diff sh_block batch-diff
+        run crdb-kinds sql_block crdb crdb-kinds
     else
         run crdb-watch true
         timeout -k 5 -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || [ $? = 124 ]
+        run mz-writes sql_block psql mz-writes
+        sleep 2
+        run crdb-user-shards sql_block crdb crdb-user-shards
     fi
     for p in "$out/resolver.out" "$state/environmentd.log"; do
         [ "$mode" = resolver ] || [ "$p" != "$out/resolver.out" ] || continue
@@ -153,7 +163,9 @@ for mode in "${modes[@]}"; do
     # Not `rehearse ... || ...`: that would turn off errexit inside it.
     PGOPTIONS='--welcome_message=off' rehearse "$mode" >"$t" 2>&1
     transcript=''
-    expect "$t" $'\tcarol\t75\t1$' 'labels: [0-9]+ builtin, 1 catalog, [0-9]+ other' ' mv_20 '
+    expect "$t" $'\tcarol\t75\t1$' 'labels: [0-9]+ builtin, 1 catalog, [0-9]+ other' ' mv_20 ' \
+        '^ dave +\| +40 +\| +1$' '^ bob +\| +60 +\| +1$' '^ dave +\| +800$' '^ bob +\| +1200$'
+    if grep -qE '^ carol +\|' "$t"; then echo "FAIL: carol is still in an MV after the DELETE"; exit 1; fi
     if [ "$mode" = resolver ]; then
         expect "$t" 'claimed partition p0' \
             '^ user +\| +22 \| +0 \| +0$' \
@@ -162,6 +174,16 @@ for mode in "${modes[@]}"; do
             '^ mv_20 +\| +0 \| *$' \
             '"members": \[' \
             '^\{"seqno":[0-9]+,"groups":\[\{"group":[0-9]+,"upper":[0-9]+,"members":21\}\],"own_upper_rows":1\}$'
+        # After the writes, the MVs are in the group they were in before, and
+        # every user shard's batches or updates changed.
+        diff_lines=$(grep -E '^[a-z_0-9]+ +group [^ ]+ -> ' "$t")
+        [ "$(grep -cE '^(balances|mv_[0-9]+) +group ([0-9]+) -> \2 ' <<<"$diff_lines")" = 21 ] ||
+            { echo "FAIL: an MV changed group across the writes"; exit 1; }
+        expect "$t" '^accounts +group own -> own '
+        changed=$(awk '{ if ($7 != $9 || $11 != $13) n++ } END { print n + 0 }' <<<"$diff_lines")
+        [ "$changed" = 22 ] || { echo "FAIL: only $changed of 22 user shards changed batches or updates"; exit 1; }
+        [ "$(grep -cE '^ user +\| +22 \| +0 \| +0$' "$t")" = 2 ] ||
+            { echo "FAIL: user shards in consensus after the writes"; exit 1; }
         # The one group's upper moved: at least 3 distinct uppers over the watch.
         local_uppers=$(grep -E '"members":21' "$t" | grep -oE '"upper":[0-9]+' | sort -u | wc -l)
         [ "$local_uppers" -ge 3 ] || { echo "FAIL: the group's upper took $local_uppers values"; exit 1; }
@@ -169,6 +191,12 @@ for mode in "${modes[@]}"; do
         expect "$t" '^ user +\| +22 \| +22 \| +[0-9]+$' \
             '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' \
             '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$'
+        # Each MV's own consensus seqno grew across the writes.
+        seqnos=$(grep -E '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' "$t" | awk -F '|' '{ print $3 + 0 }')
+        if [ "$(wc -l <<<"$seqnos")" != 2 ] || [ "$(tail -1 <<<"$seqnos")" -le "$(head -1 <<<"$seqnos")" ]; then
+            echo "FAIL: mv_20's seqno didn't grow across the writes: $seqnos"
+            exit 1
+        fi
         # The seqnos climbed during the watch.
         lines=$(grep -E '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$' "$t" | cut -d'|' -f2 | sort -u | wc -l)
         [ "$lines" -ge 2 ] || { echo "FAIL: user shard seqnos didn't move during the watch"; exit 1; }

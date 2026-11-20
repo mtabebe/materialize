@@ -14,7 +14,8 @@
 #
 #   demo.sh reset                stop everything, wipe mzdata/ and the CRDB schemas
 #   demo.sh environmentd [ARG..] run environmentd in the foreground, logging to a file
-#   demo.sh labels               load each shard's kind and name into CRDB, as demo.shard_labels
+#   demo.sh labels               load each shard's kind and name into CRDB (demo.shard_labels),
+#                                and user shards' names into scratch/persist-resolver-demo/names.json
 #   demo.sh down                 stop everything
 
 set -euo pipefail
@@ -102,7 +103,8 @@ environmentd() {
 
 # Writes demo.shard_labels (shard, kind, name) to CRDB: every shard Materialize
 # lists by name, the resolver's manifest shards if it's up, and every other
-# shard with a consensus row as kind 'other'.
+# shard with a consensus row as kind 'other'. Also writes names.json, a map from
+# user shard to collection name, for jq.
 labels() {
     # mz_storage_shards can trail DDL that just returned by a moment.
     local missing
@@ -132,6 +134,8 @@ labels() {
         echo ";"
         echo "INSERT INTO demo.shard_labels SELECT DISTINCT shard, 'other', '' FROM consensus.consensus WHERE shard NOT IN (SELECT shard FROM demo.shard_labels);"
     } | psql "$crdb" -q -v ON_ERROR_STOP=1 >/dev/null
+    awk -F '\t' '$2 == "user" { print $1 "\t" $3 }' <<<"$rows" |
+        jq -R -n '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries' >"$state/names.json"
     psql "$crdb" -At -F ' ' -c "SELECT kind, count(*) FROM demo.shard_labels GROUP BY kind ORDER BY kind" |
         awk '{ printf "%s%s %s", (NR > 1 ? ", " : "labels: "), $2, $1 } END { print "" }'
 }
