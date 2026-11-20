@@ -18,9 +18,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use mz_persist_client::ShardId;
-use mz_persist_client::v2::{
-    ManifestKey, ProtoFrontier, ProtoHollowBatch, ProtoU64Antichain, frontier,
-};
+use mz_persist_client::v2::{ManifestKey, ProtoHollowBatch, ProtoU64Antichain, frontier};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -60,7 +58,7 @@ pub fn shard_json(view: &View, shard: &ShardId) -> Option<Value> {
         .map(|(reader, i)| {
             json!({
                 "reader": reader,
-                "frontier": elements(&i.frontier),
+                "frontier": frontier(&i.frontier).elements(),
                 "opaque": i.opaque,
             })
         })
@@ -91,10 +89,6 @@ fn batch_json(b: &ProtoHollowBatch) -> Value {
     })
 }
 
-fn elements(f: &Option<ProtoFrontier>) -> Vec<u64> {
-    frontier(f).elements().to_vec()
-}
-
 fn u64s(f: &Option<ProtoU64Antichain>) -> Vec<u64> {
     f.as_ref()
         .map(|f| f.elements.iter().map(|x| x.cast_unsigned()).collect())
@@ -107,16 +101,14 @@ async fn inspect(tx: &mpsc::UnboundedSender<Request>, shard: Option<ShardId>) ->
         return (StatusCode::SERVICE_UNAVAILABLE, "resolver stopped").into_response();
     }
     match rx.await {
-        Ok(Some(v)) => pretty(v),
+        Ok(Some(v)) => {
+            let mut body = serde_json::to_string_pretty(&v).expect("json values serialize");
+            body.push('\n');
+            ([("content-type", "application/json")], body).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, "not a data shard\n").into_response(),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "resolver stopped").into_response(),
     }
-}
-
-fn pretty(v: Value) -> Response {
-    let mut body = serde_json::to_string_pretty(&v).expect("json values serialize");
-    body.push('\n');
-    ([("content-type", "application/json")], body).into_response()
 }
 
 /// Serves the debug endpoint on `listener` until the task is dropped.
@@ -146,7 +138,8 @@ pub async fn serve_http(
 #[cfg(test)]
 mod tests {
     use mz_persist_client::v2::{
-        OpKind, ProtoAppend, ProtoCodecs, ProtoOp, ProtoRegister, ProtoU64Description,
+        OpKind, ProtoAppend, ProtoCodecs, ProtoFrontier, ProtoOp, ProtoRegister,
+        ProtoU64Description,
     };
 
     use super::*;
