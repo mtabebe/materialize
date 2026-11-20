@@ -42,8 +42,13 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# The body of the README block marked `<!-- run: $1 -->`, unindented.
+# The body of the README block marked `<!-- run: $1 -->`, unindented. In
+# classic mode a `classic-$1` block, if there is one, comes first.
+prefix=''
 block() {
+    if [ -n "$prefix" ] && grep -q -- "<!-- run: $prefix$1 -->" "$readme"; then
+        set -- "$prefix$1"
+    fi
     local body
     body=$(awk -v name="$1" '
         { line = $0; sub(/^[ \t]+/, "", line) }
@@ -62,8 +67,8 @@ run() {
     printf '\n$ # %s\n%s\n' "$name" "$(block "$name")"
     "$@"
 }
-sh_block() { bash -c "$(block "$1")"; }
-shard_block() { bash -c "$(block shard-id) >/dev/null; $(block "$1")"; }
+sh_block() { bash -o pipefail -c "$(block "$1")"; }
+shard_block() { bash -e -o pipefail -c "$(block shard-id) >/dev/null; [ -n \"\$S\" ]; $(block "$1")"; }
 # Runs SQL block $2 through the client the shell block $1 starts.
 sql_block() { bash -c "$(block "$1") -v ON_ERROR_STOP=1 -f -" <<<"$(block "$2")"; }
 
@@ -97,6 +102,8 @@ expect() {
 
 rehearse() {
     local mode=$1
+    prefix=''
+    [ "$mode" = resolver ] || prefix=classic-
     run reset sh_block reset
     if [ "$mode" = resolver ]; then
         run resolver true
@@ -136,21 +143,22 @@ rehearse() {
         run shard-rows shard_block shard-rows
         run mz-insert sql_block psql mz-insert
         sleep 2
-        run shard-logical shard_block shard-logical
-        run shard-rows shard_block shard-rows
+        run shard-logical-again shard_block shard-logical-again
+        run shard-rows-again shard_block shard-rows-again
         run mz-writes sql_block psql mz-writes
         # Let the writes' ticks land in every MV.
         sleep 2
         run snapshot-after sh_block snapshot-after
         run batch-diff sh_block batch-diff
-        run crdb-kinds sql_block crdb crdb-kinds
+        run crdb-again true
+        run crdb-kinds-again sql_block crdb-again crdb-kinds-again
     else
         run crdb-watch true
         timeout -k 5 -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || [ $? = 124 ]
         run mz-insert sql_block psql mz-insert
         run mz-writes sql_block psql mz-writes
         sleep 2
-        run crdb-user-shards sql_block crdb crdb-user-shards
+        run crdb-user-shards-again sql_block crdb crdb-user-shards-again
     fi
     for p in "$out/resolver.out" "$state/environmentd.log"; do
         [ "$mode" = resolver ] || [ "$p" != "$out/resolver.out" ] || continue
@@ -163,6 +171,7 @@ rehearse() {
     [ "$mode" = classic ] || expected=2
     [ "$(jobs -rp | wc -l)" -eq "$expected" ] || { echo "FAIL: a process exited early"; jobs -l; exit 1; }
     run down sh_block down
+    prefix=''
 }
 
 for mode in "${modes[@]}"; do
@@ -196,11 +205,12 @@ for mode in "${modes[@]}"; do
             { echo "FAIL: user shards in consensus after the writes"; exit 1; }
         # mv_01 up close: a member of a group before and after the INSERT, with
         # one more Batch row after, and its logical view one more batch.
-        rows=$(awk '/^\$ # shard-rows$/ { n++ } n && /^\{"manifest"/ { print n, $0 }' "$t")
+        rows=$(awk '/^\$ # (classic-)?shard-rows(-again)?$/ { n++ } n && /^\{"manifest"/ { print n, $0 }' "$t")
         before=$(grep -c '^1 .*"key":"Batch"' <<<"$rows")
         after=$(grep -c '^2 .*"key":"Batch"' <<<"$rows")
         [ "$after" = $((before + 1)) ] || { echo "FAIL: mv_01 Batch rows $before -> $after"; exit 1; }
         [ "$(grep -c '"key":"Member","val":[0-9]' <<<"$rows")" = 2 ] || { echo "FAIL: mv_01 not a member before and after"; exit 1; }
+        [ "$(grep -c '"key":"Group([0-9]*)","val":\[[0-9]' <<<"$rows")" = 2 ] || { echo "FAIL: mv_01's group row missing"; exit 1; }
         if grep -q '"key":"Upper"' <<<"$rows"; then echo "FAIL: mv_01 has its own Upper row"; exit 1; fi
         expect "$t" '"upper_group": [0-9]+' '"lower": [0-9]+'
         # The one group's upper moved: at least 3 distinct uppers over the watch.
@@ -210,12 +220,12 @@ for mode in "${modes[@]}"; do
         expect "$t" '^ user +\| +22 \| +22 \| +[0-9]+$' \
             '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' \
             '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$'
-        # Each MV's own consensus seqno grew across the writes.
-        seqnos=$(grep -E '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' "$t" | awk -F '|' '{ print $3 + 0 }')
-        if [ "$(wc -l <<<"$seqnos")" != 2 ] || [ "$(tail -1 <<<"$seqnos")" -le "$(head -1 <<<"$seqnos")" ]; then
-            echo "FAIL: mv_20's seqno didn't grow across the writes: $seqnos"
-            exit 1
-        fi
+        # Every user shard has its own consensus seqno, and each one grew between
+        # the two crdb-user-shards outputs (writes and ticks both count).
+        grew=$(awk -F '|' '/^ (accounts|balances|mv_[0-9]+) +\| +[0-9]+ \| +[0-9]+$/ {
+                n = $1; gsub(/ /, "", n); if (n in s && $3 + 0 > s[n]) g++; s[n] = $3 + 0 }
+            END { print g + 0 }' "$t")
+        [ "$grew" = 22 ] || { echo "FAIL: only $grew of 22 user shards' seqnos grew across the writes"; exit 1; }
         # The seqnos climbed during the watch.
         lines=$(grep -E '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$' "$t" | cut -d'|' -f2 | sort -u | wc -l)
         [ "$lines" -ge 2 ] || { echo "FAIL: user shard seqnos didn't move during the watch"; exit 1; }
