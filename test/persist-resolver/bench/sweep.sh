@@ -9,10 +9,10 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 #
-# PROTOTYPE: runs bench.py over a list of points, one at a time, alternating
-# arms at each point so drift on the box lands on both.
+# PROTOTYPE: runs bench.py over a list of points, one at a time, cycling
+# through the arms at each point so drift on the box lands on all of them.
 #
-# Usage: sweep.sh TICK_MS VIEWS... [-- extra bench.py args]
+# Usage: [ARMS="classic resolver resolver-grouped"] sweep.sh TICK_MS VIEWS... [-- extra bench.py args]
 #   e.g. sweep.sh 100 50 100 200 400 -- --duration 600
 
 set -uo pipefail
@@ -25,7 +25,7 @@ while [ $# -gt 0 ] && [ "$1" != "--" ]; do views+=("$1"); shift; done
 [ "${1:-}" = "--" ] && shift
 
 for v in "${views[@]}"; do
-    for arm in classic resolver; do
+    for arm in ${ARMS:-classic resolver resolver-grouped}; do
         ./bench.py --arm "$arm" --views "$v" --tick-ms "$tick" "$@" ||
             echo "bench.py failed: $arm $v $tick"
     done

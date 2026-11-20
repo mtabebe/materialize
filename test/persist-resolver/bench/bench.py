@@ -14,12 +14,16 @@
 Brings up a fresh CockroachDB container, a file blob, (for the resolver arm) a
 persist resolver, and `environmentd` with process-orchestrated `clusterd`s;
 creates the cloud MV freshness workload (a COUNTER load generator and N
-materialized views that each turn a tick into 10 rows); waits for hydration and
+materialized views that each turn a tick into `--rows-per-tick` rows, 10 in
+the report); waits for hydration and
 a warmup; measures for `--duration`; tears everything down; and writes one
 results directory.
 
 The arms differ only in `MZ_PERSIST_RESOLVER_URL` and
-`persist_v2_register_user_shards`. CockroachDB is pinned to its own cores
+`persist_v2_register_user_shards`, and the two resolver arms only in the
+resolver's `--upper-groups`: `resolver` keeps every data shard's upper on its
+own row, `resolver-grouped` shares one row among shards whose uppers move
+together. CockroachDB is pinned to its own cores
 (`--crdb-cpus`) and every Materialize process (resolver included) to the rest,
 so CockroachDB's CPU is measured apart from the load it serves.
 
@@ -56,12 +60,12 @@ CRDB_SQL_PORT = 26300
 CRDB_HTTP_PORT = 26301
 RESOLVER_PORT = 6890
 RESOLVER_METRICS_PORT = 6891
+RESOLVER_HTTP_PORT = 6892
+ARMS = ["classic", "resolver", "resolver-grouped"]
 MZ_SQL = "postgres://materialize@localhost:6875/materialize"
 MZ_SYSTEM = "postgres://mz_system@localhost:6877/materialize"
 MZ_INTERNAL_HTTP = "http://localhost:6878"
 
-# Each view turns one tick into this many rows, as in the cloud report.
-ROWS_PER_TICK = 10
 
 # Prometheus series kept from each Materialize process's `/metrics`.
 KEEP_MZ = re.compile(
@@ -182,6 +186,7 @@ class Bench:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.arm = args.arm
+        self.resolver_arm = args.arm != "classic"
         name = args.name or (
             f"{args.arm}-v{args.views}-t{args.tick_ms}-{time.strftime('%Y%m%dT%H%M%S')}"
         )
@@ -246,6 +251,8 @@ class Bench:
                 f"--consensus-url={crdb_url('consensus')}",
                 f"--listen-addr=127.0.0.1:{RESOLVER_PORT}",
                 f"--metrics-listen-addr=127.0.0.1:{RESOLVER_METRICS_PORT}",
+                f"--http-listen-addr=127.0.0.1:{RESOLVER_HTTP_PORT}",
+                f"--upper-groups={str(self.arm == 'resolver-grouped').lower()}",
             ],
             {"RUST_LOG": "info"},
         )
@@ -268,7 +275,7 @@ class Bench:
             "scale=1,workers=1": size(1),
             "bench": size(self.args.workers),
         }
-        resolver = self.arm == "resolver"
+        resolver = self.resolver_arm
         params = {
             "persist_v2_register_user_shards": str(resolver).lower(),
             "enable_load_generator_counter": "true",
@@ -340,9 +347,9 @@ class Bench:
     # Workload.
 
     def create_workload(self) -> None:
-        """The cloud report's shape: a COUNTER load generator on its own
-        cluster, and views that each turn a tick into 10 rows, spread over
-        `--clusters` clusters."""
+        """A COUNTER load generator on its own cluster, and views that each
+        turn a tick into `--rows-per-tick` rows (10 in the cloud report),
+        spread over `--clusters` clusters."""
         a = self.args
         tick = f"{a.tick_ms}ms"
         stmts = [
@@ -353,10 +360,22 @@ class Bench:
         ]
         for c in range(a.clusters):
             stmts.append(f"CREATE CLUSTER c{c} SIZE 'bench'")
+        r = a.rows_per_tick
         for i in range(a.views):
+            if r == int(r):
+                rows = str(int(r))
+            else:
+                # The spec sheet's `persist_mvs` formula: `r` rows per tick on
+                # average, staggered by view so the ticks a view skips (writing
+                # no data, only advancing its upper) differ from view to view.
+                phase = f"{i}::numeric / {a.views}"
+                rows = (
+                    f"(floor((counter + 1) * {r} + {phase}) "
+                    f"- floor(counter * {r} + {phase}))::int"
+                )
             stmts.append(
                 f"CREATE MATERIALIZED VIEW mv_{i} IN CLUSTER c{i % a.clusters} AS "
-                f"SELECT counter, g FROM ticks, generate_series(1, {ROWS_PER_TICK}) AS g"
+                f"SELECT counter, g FROM ticks, generate_series(1, {rows}) AS g"
             )
         sql = self.out / "workload.sql"
         sql.write_text(";\n".join(stmts) + ";\n")
@@ -405,7 +424,7 @@ class Bench:
     def scrape_targets(self) -> dict[str, str]:
         """Every Materialize process's metrics URL, by name."""
         targets = {"environmentd": f"{MZ_INTERNAL_HTTP}/metrics"}
-        if self.arm == "resolver":
+        if self.resolver_arm:
             targets["resolver"] = f"http://127.0.0.1:{RESOLVER_METRICS_PORT}/metrics"
         for f in (self.mzdata / "prometheus").glob("*.json"):
             for entry in json.loads(f.read_text()):
@@ -441,12 +460,29 @@ class Bench:
             f"FROM mz_internal.mz_wallclock_global_lag_histogram WHERE {self.mv_filter()} "
             f"GROUP BY 1, 2 ORDER BY 1, 2",
         )
+        if self.resolver_arm:
+            snap["groups"] = self.group_stats()
         [[snap["ticks_rows"]]] = psql(MZ_SQL, "SELECT count(*) FROM ticks")
         [[snap["mv0_rows"]]] = psql(MZ_SQL, "SELECT count(*) FROM mv_0") if self.args.views else [["0"]]
         # Everything `summarize` reads, so a results dir can be summarized again.
         with gzip.open(self.out / f"snapshot-{tag}.json.gz", "wt") as f:
             json.dump(snap, f)
         return snap
+
+    def group_stats(self) -> dict | None:
+        """Upper groups as the resolver's debug endpoint lists them."""
+        try:
+            view = json.loads(http_get(f"http://127.0.0.1:{RESOLVER_HTTP_PORT}/views", timeout=60))
+        except Exception as e:  # noqa: BLE001 - a missing stat is not a failed run
+            log(f"WARNING: group stats: {e}")
+            return None
+        sizes = sorted((len(g["members"]) for g in view.get("upper_groups", [])), reverse=True)
+        return {
+            "data_shards": len(view.get("data_shards", [])),
+            "groups": len(sizes),
+            "grouped_members": sum(sizes),
+            "largest_groups": sizes[:5],
+        }
 
     def cpu_snapshot(self) -> dict:
         roles = {
@@ -591,7 +627,7 @@ class Bench:
         try:
             log(f"{self.out.name}: cockroach")
             self.start_crdb()
-            if self.arm == "resolver":
+            if self.resolver_arm:
                 log("resolver")
                 self.start_resolver()
             log("environmentd")
@@ -679,6 +715,7 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
     ticks = rate(int(start["ticks_rows"]), int(end["ticks_rows"]))
     s["ticks_per_s"] = round(ticks, 2)
     s["mv0_rows_per_s"] = round(rate(int(start["mv0_rows"]), int(end["mv0_rows"])), 2)
+    s["rows_per_tick"] = getattr(a, "rows_per_tick", 10)
     s["view_writes_per_s"] = round(ticks * a.views, 1)
 
     # Freshness: the histogram's samples recorded in the window.
@@ -758,7 +795,7 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
         s[f"{role}_rss_mb_peak"] = round(max(peaks)) if peaks else None
 
     # Resolver.
-    if a.arm == "resolver":
+    if a.arm != "classic":
         r = lambda n: rate(counter(sm, f"mz_persist_resolver_{n}_total"), counter(em, f"mz_persist_resolver_{n}_total"))  # noqa: E731
         cycles = r("cycles")
         s["resolver_cycles_per_s"] = round(cycles, 1)
@@ -769,6 +806,8 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
         s["resolver_bytes_per_write"] = round(r("encoded_bytes_written") / r("manifest_writes")) if r("manifest_writes") else None
         s["resolver_watch_requests_per_s"] = round(r("watch_requests"), 1)
         s["resolver_fetch_requests_per_s"] = round(r("fetch_requests"), 1)
+        s["resolver_groups_start"] = start.get("groups")
+        s["resolver_groups_end"] = end.get("groups")
         for name in ["commit", "manifest_write"]:
             hs = histogram(sm, f"mz_persist_resolver_{name}_seconds")
             he = histogram(em, f"mz_persist_resolver_{name}_seconds")
@@ -808,9 +847,15 @@ def main() -> None:
             resummarize(Path(d))
         return
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--arm", choices=["classic", "resolver"], required=True)
+    p.add_argument("--arm", choices=ARMS, required=True)
     p.add_argument("--views", type=int, required=True)
     p.add_argument("--tick-ms", type=int, required=True)
+    p.add_argument(
+        "--rows-per-tick",
+        type=float,
+        default=10,
+        help="rows each view writes per tick, on average; 10 is the cloud report's shape",
+    )
     p.add_argument("--duration", type=int, default=600, help="seconds, rounded to whole minutes")
     p.add_argument("--warmup", type=int, default=60)
     p.add_argument("--clusters", type=int, default=4)
