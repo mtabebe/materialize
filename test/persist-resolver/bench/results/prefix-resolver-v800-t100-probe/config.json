@@ -21,5 +21,7 @@
   "git_head": "c58cbce334b55d9d60ccf855070898d9681b2bb3",
   "git_dirty": false,
   "started": "2026-11-20T14:44:22+0000",
-  "exclude": "pre-fix probe: compaction id-range bug (clusterd crash loop), 2 min window; evidence only"
+  "exclude": "pre-fix probe: compaction id-range bug (clusterd crash loop), 2 min window; evidence only",
+  "sweep": "1",
+  "sweep_note": "binaries built from c58cbce334 plus the compaction fix later committed as bb28a841bb (identical modulo whitespace); before upper groups existed"
 }

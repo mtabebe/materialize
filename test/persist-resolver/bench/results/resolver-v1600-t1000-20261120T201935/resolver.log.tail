@@ -1,0 +1,3 @@
+[2m2026-11-20T20:19:40.149062Z[0m [32m INFO[0m [2mpersist_resolver[0m[2m:[0m persist resolver serving at http://127.0.0.1:6890
+[2m2026-11-20T20:19:40.230266Z[0m [32m INFO[0m [2mmz_persist_resolver[0m[2m:[0m resolver resolver-c22119ce-5f22-4e1c-a98f-4b0a34ba6838 claimed partition p0 with token 1
+[2m2026-11-20T20:19:40.241871Z[0m [32m INFO[0m [2mpersist_resolver[0m[2m:[0m persist resolver metrics at http://127.0.0.1:6891/metrics
