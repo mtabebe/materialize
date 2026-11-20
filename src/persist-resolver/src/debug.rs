@@ -10,20 +10,46 @@
 //! PROTOTYPE: a read-only HTTP view of the resolver's in-memory manifests, as
 //! JSON, for demos and debugging.
 //!
-//! `GET /views` is the whole partition, `GET /views/{shard}` one data shard.
+//! `GET /views` is the whole partition, `GET /views/{shard}` one data shard as
+//! a client sees it, and `GET /views/{shard}?rows` the manifest rows that shard
+//! is made of.
 //! Requests go through the cycle like a `Fetch`, so a payload is a view the
 //! resolver had between cycles.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use mz_persist_client::ShardId;
-use mz_persist_client::v2::{ManifestKey, ProtoHollowBatch, ProtoU64Antichain, frontier};
+use mz_persist_client::v2::{
+    Manifest, ManifestKey, ProtoHollowBatch, ProtoU64Antichain, ValKind, frontier,
+};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Request;
 use crate::view::View;
+
+/// What an inspect request asks for.
+#[derive(Debug)]
+pub enum Inspect {
+    Partition,
+    Shard(ShardId),
+    Rows(ShardId),
+}
+
+/// Answers `what` from `view`, or None for a shard that isn't registered.
+pub fn inspect_json(
+    view: &View,
+    what: Inspect,
+    control_shard: &ShardId,
+    partition_shard: &ShardId,
+) -> Option<Value> {
+    match what {
+        Inspect::Partition => Some(partition_json(view, control_shard, partition_shard)),
+        Inspect::Shard(shard) => shard_json(view, &shard),
+        Inspect::Rows(shard) => rows_json(view, &shard),
+    }
+}
 
 /// The partition's view: its manifest shards and times, its claim, its upper
 /// groups, and every data shard assigned to it.
@@ -92,6 +118,51 @@ pub fn shard_json(view: &View, shard: &ShardId) -> Option<Value> {
     }))
 }
 
+/// The live manifest rows a data shard is made of: its rows in both manifests,
+/// and its upper group's row if it's a member.
+pub fn rows_json(view: &View, shard: &ShardId) -> Option<Value> {
+    view.shard_meta(shard)?;
+    let group = view.group_of(shard).map(ManifestKey::Group);
+    let rows: Vec<Value> = view
+        .rows
+        .iter()
+        .filter(|(k, _)| k.shard() == Some(*shard) || Some(*k) == group.as_ref())
+        .map(|(k, v)| row_json(k, v))
+        .collect();
+    Some(json!({"shard": shard.to_string(), "rows": rows}))
+}
+
+fn row_json(key: &ManifestKey, val: &ValKind) -> Value {
+    let manifest = match key.manifest() {
+        Manifest::Control => "control",
+        Manifest::Partition => "partition",
+    };
+    let name = match key {
+        ManifestKey::Schema(_, id) => format!("Schema({})", id.0),
+        ManifestKey::Group(g) => format!("Group({g})"),
+        ManifestKey::Batch(..) => "Batch".to_owned(),
+        ManifestKey::Intent(_, r) => format!("Intent({r})"),
+        k => {
+            let debug = format!("{k:?}");
+            debug.split('(').next().unwrap_or_default().to_owned()
+        }
+    };
+    let val = match val {
+        ValKind::Shard(m) => json!({"finalized": m.finalized}),
+        ValKind::Assign(p) => json!(p),
+        ValKind::Upper(f) | ValKind::Group(f) => json!(f.elements),
+        ValKind::Member(g) => json!(g),
+        ValKind::Batch(b) => batch_json(b),
+        ValKind::Intent(i) => {
+            json!({"frontier": frontier(&i.frontier).elements(), "opaque": i.opaque})
+        }
+        ValKind::Schema(_) | ValKind::Partition(_) | ValKind::Claim(_) | ValKind::ControlAt(_) => {
+            json!("...")
+        }
+    };
+    json!({"manifest": manifest, "key": name, "val": val})
+}
+
 fn batch_json(b: &ProtoHollowBatch) -> Value {
     let desc = b.desc.clone().unwrap_or_default();
     json!({
@@ -109,9 +180,9 @@ fn u64s(f: &Option<ProtoU64Antichain>) -> Vec<u64> {
         .unwrap_or_default()
 }
 
-async fn inspect(tx: &mpsc::UnboundedSender<Request>, shard: Option<ShardId>) -> Response {
+async fn inspect(tx: &mpsc::UnboundedSender<Request>, what: Inspect) -> Response {
     let (reply, rx) = oneshot::channel();
-    if tx.send(Request::Inspect(shard, reply)).is_err() {
+    if tx.send(Request::Inspect(what, reply)).is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "resolver stopped").into_response();
     }
     match rx.await {
@@ -133,16 +204,26 @@ pub async fn serve_http(
     let app = axum::Router::new()
         .route(
             "/views",
-            axum::routing::get(async |State(tx)| inspect(&tx, None).await),
+            axum::routing::get(async |State(tx)| inspect(&tx, Inspect::Partition).await),
         )
         .route(
             "/views/{shard}",
-            axum::routing::get(async |State(tx), Path(shard): Path<String>| {
-                match shard.parse::<ShardId>() {
-                    Ok(shard) => inspect(&tx, Some(shard)).await,
-                    Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
-                }
-            }),
+            axum::routing::get(
+                async |State(tx), Path(shard): Path<String>, RawQuery(query): RawQuery| {
+                    let shard = match shard.parse::<ShardId>() {
+                        Ok(shard) => shard,
+                        Err(e) => {
+                            return (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response();
+                        }
+                    };
+                    match query.as_deref() {
+                        None => inspect(&tx, Inspect::Shard(shard)).await,
+                        Some("rows") => inspect(&tx, Inspect::Rows(shard)).await,
+                        Some(q) => (StatusCode::BAD_REQUEST, format!("unknown query {q:?}\n"))
+                            .into_response(),
+                    }
+                },
+            ),
         )
         .with_state(tx);
     axum::serve(listener, app).await?;
@@ -200,5 +281,18 @@ mod tests {
         );
         assert_eq!(s["intents"][0]["reader"], "sentinel");
         assert_eq!(shard_json(&view, &ShardId::new()), None);
+
+        let rows = rows_json(&view, &shard).expect("registered");
+        let keys: Vec<_> = rows["rows"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|r| r["key"].as_str().expect("key").to_owned())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["Shard", "Assign", "Upper", "Batch", "Intent(sentinel)"]
+        );
+        assert_eq!(rows["rows"][2]["val"], json!([5]));
     }
 }

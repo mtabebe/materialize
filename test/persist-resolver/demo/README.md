@@ -214,21 +214,74 @@ for its own `Upper` row), upper, batches, and updates across its batches. The
 row, behind: txn-wal advances a table's data shard upper only when it applies
 a write to it.
 
-### 8. Write to the table (pane 3)
+### 8. One shard up close, before a write (pane 4)
+
+<!-- run: shard-id -->
+```sh
+S=$(psql -h localhost -p 6875 -U materialize -At -c "SELECT s.shard_id FROM mz_internal.mz_storage_shards s JOIN mz_materialized_views m ON s.object_id = m.id WHERE m.name = 'mv_01'"); echo "$S"
+```
+
+`mv_01`'s data shard id, kept in `$S`.
+
+<!-- run: shard-logical -->
+```sh
+curl -s 127.0.0.1:6891/views/$S | jq '{shard, upper, upper_group, since,
+  intents: [.intents[] | {reader, frontier}],
+  batches: [.batches[] | {lower: .lower[0], upper: .upper[0], since: .since[0], updates}]}'
+```
+
+The shard as clients get it from the resolver, the data persist's client
+builds today's shard state from: one `upper` (its group's), a `since` (the
+earliest read intent), the readers' intents, and its batches with their time
+ranges and update counts. The batches leave gaps in time: a tick with no data
+advances the upper but writes no batch (next-steps doc, open question 3).
+
+<!-- run: shard-rows -->
+```sh
+curl -s "127.0.0.1:6891/views/$S?rows" | jq -c '.rows[]'
+```
+
+The rows that shard is made of. In control: `Shard`, `Schema`, `Assign` (its
+partition). In the partition manifest: `Member` (it's in group 0, so it has no
+`Upper` row of its own), the group's `Group(0)` row holding the upper, one
+`Batch` row per batch, and one `Intent` row per reader.
+
+### 9. One INSERT (pane 3)
+
+<!-- run: mz-insert -->
+```sql
+INSERT INTO accounts VALUES (5, 'dave', 40);
+```
+
+### 10. The same shard after the INSERT (pane 4)
+
+Rerun the `shard-logical` and `shard-rows` commands from step 8.
+
+The logical view has one more batch, ending at the write's time, with the
+MV's changed rows as its updates, and `upper` moved past it. In the rows,
+there is one new `Batch` row and `Group(0)` has a new upper. `Member` is
+unchanged: the MV's append landed in the same resolver write as the group's
+advance, so its move out of the group and back in cancel before anything is
+written (in one run, polling these rows every 20 ms across an INSERT never
+showed `Member` missing). A member is only stored outside its group when its append
+lands in a different resolver write from the rest of the group: the 1-2
+early appenders each tick, which shows as `own_upper_rows` above 1 in step 6's
+watch.
+
+### 11. More writes (pane 3)
 
 <!-- run: mz-writes -->
 ```sql
-INSERT INTO accounts VALUES (5, 'dave', 40);
 UPDATE accounts SET balance = balance + 10 WHERE owner = 'bob';
 DELETE FROM accounts WHERE owner = 'carol';
 SELECT * FROM balances ORDER BY owner;
 SELECT * FROM mv_20 ORDER BY owner;
 ```
 
-Three writes, and both MVs show them: dave added, bob up by 10 (by 200 in
-`mv_20`, which multiplies by 20), carol gone.
+Both MVs show all three writes: dave added, bob up by 10 (by 200 in `mv_20`,
+which multiplies by 20), carol gone.
 
-### 9. The same snapshot after the writes (pane 4)
+### 12. Every user shard after the writes (pane 4)
 
 <!-- run: snapshot-after -->
 ```sh
@@ -254,13 +307,13 @@ the `group` lines). The table stays `own`, its upper now at its last write. If
 its upper equals the group's at a tick, it joins the group and leaves at the
 next tick (seen with the 1 s watch from step 6 as 22 members, then 21).
 
-### 10. Consensus after the writes (pane 4)
+### 13. Consensus after the writes (pane 4)
 
 Rerun the step 5 `crdb-kinds` query in `psql postgres://...`: `user` still has
 0 consensus rows. The writes went to batches in blob and rows in the
 partition manifest shard only.
 
-### 11. Teardown
+### 14. Teardown
 
 `Ctrl-C` in panes 1 and 2, then in pane 4:
 
@@ -301,10 +354,11 @@ The same steps without the resolver:
    `mv_01` to `mv_20`: every MV writes its own consensus row each tick. (In the
    resolver run this query prints an empty list.) `Ctrl-C` to stop.
 
-6. No resolver view: steps 6, 7 and 9 have no classic counterpart.
+6. No resolver view: steps 6 to 10 and 12 have no classic counterpart.
 7. Before writing, rerun the `crdb-user-shards` query (pane 4, in
    `psql postgres://...`) for each shard's consensus rows and seqno.
-8. The same writes in pane 3 (the `mz-writes` block), with the same results.
+8. The same writes in pane 3 (the `mz-insert` and `mz-writes` blocks), with
+   the same results.
 9. Rerun `crdb-user-shards`: every user shard has more consensus rows and a
    higher seqno. Each of the writes was a compare-and-set on the table's and
    on each changed MV's own row. Most of the growth, though, is the once a
@@ -356,7 +410,7 @@ target/debug/persist-resolver \
     --listen-addr 127.0.0.1:6890 \
     --http-listen-addr 127.0.0.1:6891
 grep: scratch/persist-resolver-demo/rehearsal-2/resolver.out: No such file or directory
-2026-11-20T18:00:48.095021Z  INFO mz_persist_resolver: resolver resolver-6833d0bb-d0ee-41c0-b90a-2a182a0ecd4e claimed partition p0 with token 1
+2026-11-20T18:22:23.084858Z  INFO mz_persist_resolver: resolver resolver-145f4f29-8052-4028-9c34-9bb0d061578b claimed partition p0 with token 1
 
 $ # environmentd-resolver
 MZ_PERSIST_RESOLVER_URL=http://127.0.0.1:6890 \
@@ -388,9 +442,9 @@ COPY (SUBSCRIBE balances) TO STDOUT;
 $ # insert-carol
 psql -h localhost -p 6875 -U materialize -c "INSERT INTO accounts VALUES (4, 'carol', 75)"
 INSERT 0 1
-1795197677844	1	bob	50	1
-1795197677844	1	alice	125	2
-1795197680521	1	carol	75	1
+1795198972049	1	bob	50	1
+1795198972049	1	alice	125	2
+1795198974450	1	carol	75	1
 
 $ # mz-fanout
 SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
@@ -433,10 +487,10 @@ FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
 GROUP BY l.kind ORDER BY l.kind;
        kind        | shards | shards_in_consensus | consensus_rows
 -------------------+--------+---------------------+----------------
- builtin           |     97 |                  97 |           3781
- catalog           |      1 |                   1 |            198
- other             |      4 |                   4 |            165
- resolver-manifest |      2 |                   2 |            185
+ builtin           |     97 |                  97 |           3849
+ catalog           |      1 |                   1 |            204
+ other             |      4 |                   4 |            170
+ resolver-manifest |      2 |                   2 |            182
  user              |     22 |                   0 |              0
 (5 rows)
 
@@ -450,7 +504,7 @@ GROUP BY l.name ORDER BY l.name;
 -----------+----------------+-------
  accounts  |              0 |
  balances  |              0 |
- control   |             58 |    57
+ control   |             57 |    56
  mv_01     |              0 |
  mv_02     |              0 |
  mv_03     |              0 |
@@ -471,7 +525,7 @@ GROUP BY l.name ORDER BY l.name;
  mv_18     |              0 |
  mv_19     |              0 |
  mv_20     |              0 |
- partition |            127 |   255
+ partition |            125 |   253
 (24 rows)
 
 
@@ -481,30 +535,30 @@ curl -s 127.0.0.1:6891/views | jq '.upper_groups'
   {
     "group": 0,
     "upper": [
-      1795197690312
+      1795198984865
     ],
     "members": [
-      "s25dcb71f-21ce-41b8-8cc2-7c72098e6bb7",
-      "s2a0a0530-a93a-44f5-b38d-f85c664b2f6a",
-      "s3afd30d6-f606-408f-acc5-1d0cd9ea252a",
-      "s3c5144b2-40b9-4348-b0ef-f22aec7565d4",
-      "s3c66a2ab-63d3-48fa-8868-7cc54fb8a68c",
-      "s4031ce18-7765-4a56-b333-f522c5f9789a",
-      "s4691baa3-b5fe-4f7d-9c1e-02c5856f91d4",
-      "s67b4bf97-d23f-46d5-9af7-457c2566eb00",
-      "s6dd2c152-9488-401f-8fa3-73ec45bca4c2",
-      "s71de9458-e28e-48c5-b489-bfcd6df1be0c",
-      "s82567f39-772b-4e74-a716-7a089a4660f5",
-      "s839d2b0b-38c9-4d20-8466-1e55cb931da3",
-      "sb21ba472-54fc-4a6b-abf0-d98ff05e9105",
-      "scef09ad4-ff08-439a-8b76-65213a62e60d",
-      "scfaa93ff-b40d-4224-b305-353a71c3b629",
-      "sd3bf4854-01df-4ecb-bf84-775a2b39331e",
-      "sd98127ae-69f3-46c1-80d6-b83106153498",
-      "se876a7d8-5a37-499b-9798-d1f6b25fec53",
-      "se878c147-9c00-4300-a8a1-236980e2060d",
-      "sf7b289e9-6d08-4001-9707-5aa6251c7eb1",
-      "sfae3b391-ce0d-4047-be8b-f4604d1203e8"
+      "s0fb3f8b6-bff4-45de-84ec-255ceb065572",
+      "s10c769af-5c1d-4c7c-86a4-41ece3359884",
+      "s2afe27d4-e8b0-49cd-9de0-a7bdf19eea8a",
+      "s2e4850b8-e107-4c0f-9c22-befe7985d0bf",
+      "s593e09d4-2fd8-4828-834f-ad720b60026a",
+      "s6ac9151c-a009-4038-9aad-c0eabc353905",
+      "s6cc966d1-d9cb-4c3f-9dad-611f0b9ca453",
+      "s73ec1b99-6fac-44ff-bb4f-97284ef99169",
+      "s78d150e0-d3f7-4fbb-8b35-4e5648c006ec",
+      "s8a80f52b-0af5-497a-889a-fc1a3f6bf139",
+      "s8af02543-b730-4a77-b92f-0f403a0f2b74",
+      "s927e58d5-6774-43ae-91c5-d8ba7d7c46ed",
+      "sa0ffa0a0-766d-49bc-9a6e-7fa5b51b84c1",
+      "safee8aa2-ec2c-4a75-a745-4d2ebaa61944",
+      "sb92587d8-9b5d-4fbc-985a-bcfd6183dc2e",
+      "scef3a53f-8fe3-4ce5-a0cf-88101dcc16d8",
+      "sd700496f-6151-4d81-b4c1-9bb06eea7b45",
+      "se2a6308e-5106-4d88-9e11-72e1a145f62e",
+      "sef32a78c-20a5-4a7d-bed4-a588d32e292c",
+      "sf41fc44c-130e-45ec-b84b-a9c83fa3a91c",
+      "sf859d568-e96d-4d95-9f97-0e1656f6776f"
     ]
   }
 ]
@@ -513,11 +567,245 @@ $ # views-watch
 while sleep 1; do
   curl -s 127.0.0.1:6891/views | jq -c '{seqno, groups: [.upper_groups[] | {group, upper: .upper[0], members: (.members | length)}], own_upper_rows: (.data_shards | map(select(.upper_group == null)) | length)}'
 done
-{"seqno":268,"groups":[{"group":0,"upper":1795197691314,"members":21}],"own_upper_rows":1}
-{"seqno":270,"groups":[{"group":0,"upper":1795197692314,"members":21}],"own_upper_rows":1}
-{"seqno":272,"groups":[{"group":0,"upper":1795197693314,"members":21}],"own_upper_rows":1}
-{"seqno":274,"groups":[{"group":0,"upper":1795197694314,"members":21}],"own_upper_rows":1}
-{"seqno":276,"groups":[{"group":0,"upper":1795197695314,"members":21}],"own_upper_rows":1}
+{"seqno":267,"groups":[{"group":0,"upper":1795198985866,"members":21}],"own_upper_rows":1}
+{"seqno":269,"groups":[{"group":0,"upper":1795198986868,"members":21}],"own_upper_rows":1}
+{"seqno":272,"groups":[{"group":0,"upper":1795198987865,"members":21}],"own_upper_rows":1}
+{"seqno":274,"groups":[{"group":0,"upper":1795198988866,"members":21}],"own_upper_rows":1}
+{"seqno":276,"groups":[{"group":0,"upper":1795198989867,"members":21}],"own_upper_rows":1}
+
+$ # snapshot-before
+curl -s 127.0.0.1:6891/views | jq -r --slurpfile n scratch/persist-resolver-demo/names.json '
+  (.upper_groups[] | "group \(.group): upper \(.upper[0]), \(.members | length) members"),
+  (.data_shards | map([$n[0][.shard], (.upper_group // "own"), .upper[0], (.batches | length),
+    ([.batches[].updates] | add // 0)]) | sort[] | @tsv)' | tee /tmp/before.txt
+group 0: upper 1795198990866, 21 members
+accounts	own	1795198977001	2	4
+balances	0	1795198990866	2	3
+mv_01	0	1795198990866	1	3
+mv_02	0	1795198990866	1	3
+mv_03	0	1795198990866	1	3
+mv_04	0	1795198990866	1	3
+mv_05	0	1795198990866	1	3
+mv_06	0	1795198990866	1	3
+mv_07	0	1795198990866	1	3
+mv_08	0	1795198990866	1	3
+mv_09	0	1795198990866	1	3
+mv_10	0	1795198990866	1	3
+mv_11	0	1795198990866	1	3
+mv_12	0	1795198990866	1	3
+mv_13	0	1795198990866	1	3
+mv_14	0	1795198990866	1	3
+mv_15	0	1795198990866	1	3
+mv_16	0	1795198990866	1	3
+mv_17	0	1795198990866	1	3
+mv_18	0	1795198990866	1	3
+mv_19	0	1795198990866	1	3
+mv_20	0	1795198990866	1	3
+
+$ # shard-id
+S=$(psql -h localhost -p 6875 -U materialize -At -c "SELECT s.shard_id FROM mz_internal.mz_storage_shards s JOIN mz_materialized_views m ON s.object_id = m.id WHERE m.name = 'mv_01'"); echo "$S"
+s6cc966d1-d9cb-4c3f-9dad-611f0b9ca453
+
+$ # shard-logical
+curl -s 127.0.0.1:6891/views/$S | jq '{shard, upper, upper_group, since,
+  intents: [.intents[] | {reader, frontier}],
+  batches: [.batches[] | {lower: .lower[0], upper: .upper[0], since: .since[0], updates}]}'
+{
+  "shard": "s6cc966d1-d9cb-4c3f-9dad-611f0b9ca453",
+  "upper": [
+    1795198990866
+  ],
+  "upper_group": 0,
+  "since": [
+    1795198977000
+  ],
+  "intents": [
+    {
+      "reader": "c00000000-1111-2222-3333-444444444444",
+      "frontier": [
+        1795198977000
+      ]
+    },
+    {
+      "reader": "r653be9d4-6cf7-4124-ba23-747c7ec207a4",
+      "frontier": [
+        1795198977000
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "lower": 1795198977000,
+      "upper": 1795198978757,
+      "since": 0,
+      "updates": 3
+    }
+  ]
+}
+
+$ # shard-rows
+curl -s "127.0.0.1:6891/views/$S?rows" | jq -c '.rows[]'
+{"manifest":"control","key":"Shard","val":{"finalized":false}}
+{"manifest":"control","key":"Schema(0)","val":"..."}
+{"manifest":"control","key":"Assign","val":"p0"}
+{"manifest":"partition","key":"Group(0)","val":[1795198991866]}
+{"manifest":"partition","key":"Member","val":0}
+{"manifest":"partition","key":"Batch","val":{"lower":[1795198977000],"upper":[1795198978757],"since":[0],"updates":3,"parts":1}}
+{"manifest":"partition","key":"Intent(c00000000-1111-2222-3333-444444444444)","val":{"frontier":[1795198977000],"opaque":2}}
+{"manifest":"partition","key":"Intent(r653be9d4-6cf7-4124-ba23-747c7ec207a4)","val":{"frontier":[1795198977000],"opaque":null}}
+
+$ # mz-insert
+INSERT INTO accounts VALUES (5, 'dave', 40);
+INSERT 0 1
+
+$ # shard-logical
+curl -s 127.0.0.1:6891/views/$S | jq '{shard, upper, upper_group, since,
+  intents: [.intents[] | {reader, frontier}],
+  batches: [.batches[] | {lower: .lower[0], upper: .upper[0], since: .since[0], updates}]}'
+{
+  "shard": "s6cc966d1-d9cb-4c3f-9dad-611f0b9ca453",
+  "upper": [
+    1795198994036
+  ],
+  "upper_group": 0,
+  "since": [
+    1795198977000
+  ],
+  "intents": [
+    {
+      "reader": "c00000000-1111-2222-3333-444444444444",
+      "frontier": [
+        1795198977000
+      ]
+    },
+    {
+      "reader": "r653be9d4-6cf7-4124-ba23-747c7ec207a4",
+      "frontier": [
+        1795198977000
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "lower": 1795198977000,
+      "upper": 1795198978757,
+      "since": 0,
+      "updates": 3
+    },
+    {
+      "lower": 1795198991866,
+      "upper": 1795198992035,
+      "since": 0,
+      "updates": 1
+    }
+  ]
+}
+
+$ # shard-rows
+curl -s "127.0.0.1:6891/views/$S?rows" | jq -c '.rows[]'
+{"manifest":"control","key":"Shard","val":{"finalized":false}}
+{"manifest":"control","key":"Schema(0)","val":"..."}
+{"manifest":"control","key":"Assign","val":"p0"}
+{"manifest":"partition","key":"Group(0)","val":[1795198994036]}
+{"manifest":"partition","key":"Member","val":0}
+{"manifest":"partition","key":"Batch","val":{"lower":[1795198977000],"upper":[1795198978757],"since":[0],"updates":3,"parts":1}}
+{"manifest":"partition","key":"Batch","val":{"lower":[1795198991866],"upper":[1795198992035],"since":[0],"updates":1,"parts":1}}
+{"manifest":"partition","key":"Intent(c00000000-1111-2222-3333-444444444444)","val":{"frontier":[1795198977000],"opaque":2}}
+{"manifest":"partition","key":"Intent(r653be9d4-6cf7-4124-ba23-747c7ec207a4)","val":{"frontier":[1795198977000],"opaque":null}}
+
+$ # mz-writes
+UPDATE accounts SET balance = balance + 10 WHERE owner = 'bob';
+DELETE FROM accounts WHERE owner = 'carol';
+SELECT * FROM balances ORDER BY owner;
+SELECT * FROM mv_20 ORDER BY owner;
+UPDATE 1
+DELETE 1
+ owner | total | n
+-------+-------+---
+ alice |   125 | 2
+ bob   |    60 | 1
+ dave  |    40 | 1
+(3 rows)
+
+ owner | total
+-------+-------
+ alice |  2500
+ bob   |  1200
+ dave  |   800
+(3 rows)
+
+
+$ # snapshot-after
+curl -s 127.0.0.1:6891/views | jq -r --slurpfile n scratch/persist-resolver-demo/names.json '
+  (.upper_groups[] | "group \(.group): upper \(.upper[0]), \(.members | length) members"),
+  (.data_shards | map([$n[0][.shard], (.upper_group // "own"), .upper[0], (.batches | length),
+    ([.batches[].updates] | add // 0)]) | sort[] | @tsv)' | tee /tmp/after.txt
+group 0: upper 1795198997036, 21 members
+accounts	own	1795198995038	5	8
+balances	0	1795198997036	5	7
+mv_01	0	1795198997036	4	7
+mv_02	0	1795198997036	4	7
+mv_03	0	1795198997036	4	7
+mv_04	0	1795198997036	4	7
+mv_05	0	1795198997036	4	7
+mv_06	0	1795198997036	4	7
+mv_07	0	1795198997036	4	7
+mv_08	0	1795198997036	4	7
+mv_09	0	1795198997036	4	7
+mv_10	0	1795198997036	4	7
+mv_11	0	1795198997036	4	7
+mv_12	0	1795198997036	4	7
+mv_13	0	1795198997036	4	7
+mv_14	0	1795198997036	4	7
+mv_15	0	1795198997036	4	7
+mv_16	0	1795198997036	4	7
+mv_17	0	1795198997036	4	7
+mv_18	0	1795198997036	4	7
+mv_19	0	1795198997036	4	7
+mv_20	0	1795198997036	4	7
+
+$ # batch-diff
+paste /tmp/before.txt /tmp/after.txt | awk -F '\t' 'NF == 10 {
+  printf "%-9s group %s -> %-4s batches %2s -> %-3s updates %3s -> %s\n", $1, $2, $7, $4, $9, $5, $10 }'
+accounts  group own -> own  batches  2 -> 5   updates   4 -> 8
+balances  group 0 -> 0    batches  2 -> 5   updates   3 -> 7
+mv_01     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_02     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_03     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_04     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_05     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_06     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_07     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_08     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_09     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_10     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_11     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_12     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_13     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_14     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_15     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_16     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_17     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_18     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_19     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+mv_20     group 0 -> 0    batches  1 -> 4   updates   3 -> 7
+
+$ # crdb-kinds
+SELECT l.kind,
+       count(DISTINCT l.shard) AS shards,
+       count(DISTINCT c.shard) AS shards_in_consensus,
+       count(c.shard) AS consensus_rows
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+GROUP BY l.kind ORDER BY l.kind;
+       kind        | shards | shards_in_consensus | consensus_rows
+-------------------+--------+---------------------+----------------
+ builtin           |     97 |                  97 |           5030
+ catalog           |      1 |                   1 |            221
+ other             |      4 |                   4 |            202
+ resolver-manifest |      2 |                   2 |            113
+ user              |     22 |                   0 |              0
+(5 rows)
+
 
 $ # down
 test/persist-resolver/demo/demo.sh down
@@ -562,9 +850,9 @@ COPY (SUBSCRIBE balances) TO STDOUT;
 $ # insert-carol
 psql -h localhost -p 6875 -U materialize -c "INSERT INTO accounts VALUES (4, 'carol', 75)"
 INSERT 0 1
-1795197726473	1	bob	50	1
-1795197726473	1	alice	125	2
-1795197728624	1	carol	75	1
+1795199026791	1	bob	50	1
+1795199026791	1	alice	125	2
+1795199028952	1	carol	75	1
 
 $ # mz-fanout
 SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
@@ -607,10 +895,10 @@ FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
 GROUP BY l.kind ORDER BY l.kind;
   kind   | shards | shards_in_consensus | consensus_rows
 ---------+--------+---------------------+----------------
- builtin |     97 |                  97 |           3124
- catalog |      1 |                   1 |            201
- other   |      4 |                   4 |            169
- user    |     22 |                  22 |            551
+ builtin |     97 |                  97 |           3259
+ catalog |      1 |                   1 |            199
+ other   |      4 |                   4 |            175
+ user    |     22 |                  22 |            555
 (4 rows)
 
 
@@ -622,18 +910,18 @@ GROUP BY l.name ORDER BY l.name;
    name   | consensus_rows | seqno
 ----------+----------------+-------
  accounts |             75 |    74
- balances |             46 |    45
+ balances |             48 |    47
  mv_01    |             31 |    30
  mv_02    |             30 |    29
  mv_03    |             29 |    28
- mv_04    |             28 |    27
+ mv_04    |             29 |    28
  mv_05    |             27 |    26
  mv_06    |             26 |    25
  mv_07    |             25 |    24
  mv_08    |             24 |    23
  mv_09    |             23 |    22
  mv_10    |             22 |    21
- mv_11    |             21 |    20
+ mv_11    |             22 |    21
  mv_12    |             20 |    19
  mv_13    |             19 |    18
  mv_14    |             18 |    17
@@ -652,34 +940,92 @@ SELECT now()::TIME(0) AS t,
 FROM (SELECT l.name, max(c.sequence_number) AS seqno
       FROM demo.shard_labels l JOIN consensus.consensus c USING (shard)
       WHERE l.kind = 'user' GROUP BY l.name) AS s \watch 1
-                     Fri Nov 20 18:02:15 2026 (every 1s)
+                     Fri Nov 20 18:23:55 2026 (every 1s)
 
     t     |                     seqno_of_each_user_shard
 ----------+-------------------------------------------------------------------
- 18:02:16 | 74 45 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11
+ 18:23:56 | 74 47 30 29 28 28 26 25 24 23 22 21 21 19 18 17 16 15 14 13 12 11
 (1 row)
 
-                     Fri Nov 20 18:02:16 2026 (every 1s)
+                     Fri Nov 20 18:23:56 2026 (every 1s)
 
     t     |                     seqno_of_each_user_shard
 ----------+-------------------------------------------------------------------
- 18:02:17 | 74 46 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12
+ 18:23:57 | 74 48 31 30 29 29 27 26 25 24 23 22 22 20 19 18 17 16 15 14 13 12
 (1 row)
 
-                     Fri Nov 20 18:02:17 2026 (every 1s)
+                     Fri Nov 20 18:23:57 2026 (every 1s)
 
     t     |                     seqno_of_each_user_shard
 ----------+-------------------------------------------------------------------
- 18:02:18 | 74 47 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13
+ 18:23:58 | 74 49 32 31 30 30 28 27 26 25 24 23 23 21 20 19 18 17 16 15 14 13
 (1 row)
 
-                     Fri Nov 20 18:02:18 2026 (every 1s)
+                     Fri Nov 20 18:23:58 2026 (every 1s)
 
     t     |                     seqno_of_each_user_shard
 ----------+-------------------------------------------------------------------
- 18:02:19 | 74 48 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14
+ 18:23:59 | 74 50 33 32 31 31 29 28 27 26 25 24 24 22 21 20 19 18 17 16 15 14
 (1 row)
 
+
+
+$ # mz-insert
+INSERT INTO accounts VALUES (5, 'dave', 40);
+INSERT 0 1
+
+$ # mz-writes
+UPDATE accounts SET balance = balance + 10 WHERE owner = 'bob';
+DELETE FROM accounts WHERE owner = 'carol';
+SELECT * FROM balances ORDER BY owner;
+SELECT * FROM mv_20 ORDER BY owner;
+UPDATE 1
+DELETE 1
+ owner | total | n
+-------+-------+---
+ alice |   125 | 2
+ bob   |    60 | 1
+ dave  |    40 | 1
+(3 rows)
+
+ owner | total
+-------+-------
+ alice |  2500
+ bob   |  1200
+ dave  |   800
+(3 rows)
+
+
+$ # crdb-user-shards
+SELECT l.name, count(c.shard) AS consensus_rows, max(c.sequence_number) AS seqno
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+WHERE l.kind IN ('user', 'resolver-manifest')
+GROUP BY l.name ORDER BY l.name;
+   name   | consensus_rows | seqno
+----------+----------------+-------
+ accounts |             86 |    85
+ balances |             60 |    59
+ mv_01    |             40 |    39
+ mv_02    |             39 |    38
+ mv_03    |             38 |    37
+ mv_04    |             38 |    37
+ mv_05    |             36 |    35
+ mv_06    |             35 |    34
+ mv_07    |             34 |    33
+ mv_08    |             33 |    32
+ mv_09    |             32 |    31
+ mv_10    |             31 |    30
+ mv_11    |             31 |    30
+ mv_12    |             29 |    28
+ mv_13    |             28 |    27
+ mv_14    |             27 |    26
+ mv_15    |             26 |    25
+ mv_16    |             25 |    24
+ mv_17    |             24 |    23
+ mv_18    |             23 |    22
+ mv_19    |             22 |    21
+ mv_20    |             24 |    23
+(22 rows)
 
 
 $ # down

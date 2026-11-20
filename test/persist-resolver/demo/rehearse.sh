@@ -63,6 +63,7 @@ run() {
     "$@"
 }
 sh_block() { bash -c "$(block "$1")"; }
+shard_block() { bash -c "$(block shard-id) >/dev/null; $(block "$1")"; }
 # Runs SQL block $2 through the client the shell block $1 starts.
 sql_block() { bash -c "$(block "$1") -v ON_ERROR_STOP=1 -f -" <<<"$(block "$2")"; }
 
@@ -129,6 +130,14 @@ rehearse() {
         run views-watch true
         timeout -k 5 -s INT 6 bash -c "$(block views-watch)" || [ $? = 124 ]
         run snapshot-before sh_block snapshot-before
+        run shard-id sh_block shard-id
+        # `$S` from shard-id doesn't outlive its shell, so it runs again first.
+        run shard-logical shard_block shard-logical
+        run shard-rows shard_block shard-rows
+        run mz-insert sql_block psql mz-insert
+        sleep 2
+        run shard-logical shard_block shard-logical
+        run shard-rows shard_block shard-rows
         run mz-writes sql_block psql mz-writes
         # Let the writes' ticks land in every MV.
         sleep 2
@@ -138,6 +147,7 @@ rehearse() {
     else
         run crdb-watch true
         timeout -k 5 -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || [ $? = 124 ]
+        run mz-insert sql_block psql mz-insert
         run mz-writes sql_block psql mz-writes
         sleep 2
         run crdb-user-shards sql_block crdb crdb-user-shards
@@ -184,6 +194,15 @@ for mode in "${modes[@]}"; do
         [ "$changed" = 22 ] || { echo "FAIL: only $changed of 22 user shards changed batches or updates"; exit 1; }
         [ "$(grep -cE '^ user +\| +22 \| +0 \| +0$' "$t")" = 2 ] ||
             { echo "FAIL: user shards in consensus after the writes"; exit 1; }
+        # mv_01 up close: a member of a group before and after the INSERT, with
+        # one more Batch row after, and its logical view one more batch.
+        rows=$(awk '/^\$ # shard-rows$/ { n++ } n && /^\{"manifest"/ { print n, $0 }' "$t")
+        before=$(grep -c '^1 .*"key":"Batch"' <<<"$rows")
+        after=$(grep -c '^2 .*"key":"Batch"' <<<"$rows")
+        [ "$after" = $((before + 1)) ] || { echo "FAIL: mv_01 Batch rows $before -> $after"; exit 1; }
+        [ "$(grep -c '"key":"Member","val":[0-9]' <<<"$rows")" = 2 ] || { echo "FAIL: mv_01 not a member before and after"; exit 1; }
+        if grep -q '"key":"Upper"' <<<"$rows"; then echo "FAIL: mv_01 has its own Upper row"; exit 1; fi
+        expect "$t" '"upper_group": [0-9]+' '"lower": [0-9]+'
         # The one group's upper moved: at least 3 distinct uppers over the watch.
         local_uppers=$(grep -E '"members":21' "$t" | grep -oE '"upper":[0-9]+' | sort -u | wc -l)
         [ "$local_uppers" -ge 3 ] || { echo "FAIL: the group's upper took $local_uppers values"; exit 1; }
