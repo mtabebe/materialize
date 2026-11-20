@@ -8095,6 +8095,7 @@ name = "mz-persist-resolver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "futures",
  "itertools 0.15.0",
@@ -8103,6 +8104,7 @@ dependencies = [
  "mz-persist",
  "mz-persist-client",
  "mz-persist-types",
+ "serde_json",
  "tempfile",
  "timely",
  "tokio",

@@ -19,12 +19,14 @@ bench = false
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 itertools.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 mz-ore = { path = "../ore", features = ["async", "tracing"] }
 mz-persist = { path = "../persist" }
 mz-persist-client = { path = "../persist-client" }
 mz-persist-types = { path = "../persist-types" }
+serde_json.workspace = true
 timely.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 tokio-stream = { workspace = true, features = ["net"] }

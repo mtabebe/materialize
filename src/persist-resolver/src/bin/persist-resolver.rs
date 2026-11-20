@@ -36,6 +36,9 @@ struct Args {
     /// Where to serve the resolver's gRPC API.
     #[clap(long, default_value = "127.0.0.1:6890")]
     listen_addr: SocketAddr,
+    /// Where to serve the read-only JSON debug endpoint (`/views`), if anywhere.
+    #[clap(long)]
+    http_listen_addr: Option<SocketAddr>,
     #[clap(long, default_value = DEFAULT_CONTROL_SHARD)]
     control_shard: ShardId,
     #[clap(long, default_value = "p0")]
@@ -85,6 +88,15 @@ async fn main() -> anyhow::Result<()> {
         listener.local_addr()?
     );
     let running = mz_persist_resolver::start_and_serve(&client, cfg, listener).await?;
+    let _http = match args.http_listen_addr {
+        Some(addr) => {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            info!("debug view at http://{}/views", listener.local_addr()?);
+            let serve = mz_persist_resolver::debug::serve_http(running.tx.clone(), listener);
+            Some(mz_ore::task::spawn(|| "persist-resolver-http", serve).abort_on_drop())
+        }
+        None => None,
+    };
     running.cycle.await;
     anyhow::bail!("resolver stopped: its claim was taken")
 }

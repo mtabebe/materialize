@@ -52,6 +52,7 @@ use tracing::{debug, info, warn};
 
 use crate::view::{CommitError, RowDiff, View};
 
+pub mod debug;
 pub mod view;
 
 /// How a resolver identifies itself and what it serves.
@@ -86,6 +87,8 @@ pub enum Request {
     /// Answered once the shard's rows change past the given view seqno.
     Watch(ShardId, u64, oneshot::Sender<Option<ProtoShardView>>),
     Commit(Vec<ProtoOp>, oneshot::Sender<ProtoCommitResponse>),
+    /// The partition's view as JSON, or one data shard's ([debug]).
+    Inspect(Option<ShardId>, oneshot::Sender<Option<serde_json::Value>>),
 }
 
 type ManifestUpdate = ((Vec<u8>, Vec<u8>), u64, i64);
@@ -451,6 +454,17 @@ impl Resolver {
                     }
                     Request::Commit(ops, tx) => commits.push((ops, tx)),
                     Request::Watch(shard, known, tx) => self.watch(shard, known, tx),
+                    Request::Inspect(shard, tx) => {
+                        let json = match shard {
+                            Some(shard) => debug::shard_json(&self.view, &shard),
+                            None => Some(debug::partition_json(
+                                &self.view,
+                                &self.cfg.control_shard,
+                                &self.partition_shard,
+                            )),
+                        };
+                        let _ = tx.send(json);
+                    }
                 }
             }
             if commits.is_empty() {
