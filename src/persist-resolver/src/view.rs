@@ -163,6 +163,7 @@ impl View {
         for (k, v) in self.rows.range((start, Bound::Unbounded)) {
             match (k, v) {
                 (ManifestKey::Member(s), ValKind::Member(g)) => out.entry(*g).or_default().push(*s),
+                (ManifestKey::Member(_), _) => {}
                 _ => break,
             }
         }
@@ -654,6 +655,9 @@ impl View {
                     }
                 }
                 (ManifestKey::Member(s), ValKind::Member(g)) => {
+                    if self.shard_meta(s).is_none() {
+                        out.push(format!("upper group {g} member {s} isn't registered"));
+                    }
                     if self.rows.contains_key(&ManifestKey::Upper(*s)) {
                         out.push(format!("{s} has both an upper and upper group {g}"));
                     }
@@ -962,6 +966,7 @@ mod tests {
     /// Runs `commits` as one resolver cycle: each commit, then the regroup, then
     /// the diffs as the cycle writes them.
     fn cycle(view: &mut View, commits: &[Vec<ProtoOp>], grouping: bool) -> Vec<RowDiff> {
+        let before = view.clone();
         let mut diffs = Vec::new();
         for ops in commits {
             diffs.extend(view.commit(ops).expect("commit"));
@@ -970,6 +975,16 @@ mod tests {
         diffs.extend(regrouped);
         let diffs = consolidate(diffs);
         assert_eq!(view.invariant_violations(), Vec::<String>::new());
+        // What the cycle writes, applied to the view it started from, is the
+        // view it ended with. Retractions first: a reader sums a write's rows.
+        let mut replay = before;
+        for (k, v, d) in diffs.iter().filter(|(_, _, d)| *d < 0) {
+            replay.apply(k.clone(), v.clone(), *d);
+        }
+        for (k, v, d) in diffs.iter().filter(|(_, _, d)| *d > 0) {
+            replay.apply(k.clone(), v.clone(), *d);
+        }
+        assert_eq!(replay.rows, view.rows);
         diffs
     }
 
