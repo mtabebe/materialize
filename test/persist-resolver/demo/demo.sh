@@ -63,11 +63,22 @@ down() {
         # Each process was started in its own process group, so this also stops
         # the clusterd processes environmentd spawned.
         kill -- -"$(cat "$f")" 2>/dev/null || true
-        rm -f "$f"
     done
-    for _ in $(seq 50); do
-        pgrep -f "$target/(environmentd|clusterd|persist-resolver)" >/dev/null || break
+    for f in "$state"/*.pid; do
+        [ -e "$f" ] || continue
+        local pgid
+        pgid=$(cat "$f")
+        for _ in $(seq 50); do
+            kill -0 -- -"$pgid" 2>/dev/null || break
+            sleep 0.2
+        done
+        kill -KILL -- -"$pgid" 2>/dev/null || true
         sleep 0.2
+        if kill -0 -- -"$pgid" 2>/dev/null; then
+            echo "process group $pgid ($(basename "$f" .pid)) survived SIGKILL" >&2
+            exit 1
+        fi
+        rm -f "$f"
     done
     rm -f "$state/mode"
 }
@@ -99,10 +110,12 @@ up() {
         start resolver "$target/persist-resolver" \
             --blob-url "$blob" --consensus-url "$consensus" \
             --listen-addr 127.0.0.1:6890 --http-listen-addr "$resolver_http"
-        until grep -q "claimed partition" "$state/resolver.log"; do
+        for _ in $(seq 300); do
+            grep -q "claimed partition" "$state/resolver.log" && break
             kill -0 "$(cat "$state/resolver.pid")" || { tail -20 "$state/resolver.log"; exit 1; }
             sleep 0.2
         done
+        grep -q "claimed partition" "$state/resolver.log" || { echo "resolver didn't claim its partition"; exit 1; }
         env=(MZ_PERSIST_RESOLVER_URL=http://127.0.0.1:6890)
         params=("--system-parameter-default=persist_v2_register_user_shards=true")
     fi
@@ -127,15 +140,17 @@ up() {
         --cluster-replica-sizes="$sizes" \
         --bootstrap-default-cluster-replica-size=bootstrap \
         "${params[@]}"
+    # SQL, then the default cluster's replica, which comes up after the SQL port.
+    local ready=0
     for _ in $(seq 300); do
-        mz_quiet "SELECT 1" >/dev/null 2>&1 && break
         kill -0 "$(cat "$state/environmentd.pid")" || { echo "environmentd exited"; tail -20 "$state/environmentd.log"; exit 1; }
+        if [ "$(PGCONNECT_TIMEOUT=5 mz_quiet "SELECT count(*) FROM mz_internal.mz_cluster_replica_statuses s JOIN mz_cluster_replicas r ON s.replica_id = r.id JOIN mz_clusters c ON r.cluster_id = c.id WHERE c.name = 'quickstart' AND s.status = 'online'" 2>/dev/null)" = 1 ]; then
+            ready=1
+            break
+        fi
         sleep 1
     done
-    # The default cluster's replica comes up after the SQL port does.
-    until [ "$(mz_quiet "SELECT count(*) FROM mz_internal.mz_cluster_replica_statuses s JOIN mz_cluster_replicas r ON s.replica_id = r.id JOIN mz_clusters c ON r.cluster_id = c.id WHERE c.name = 'quickstart' AND s.status = 'online'" 2>/dev/null)" = 1 ]; do
-        sleep 0.5
-    done
+    [ "$ready" = 1 ] || { echo "environmentd not ready after 300 s"; tail -20 "$state/environmentd.log"; exit 1; }
     echo "$mode" >"$state/mode"
     echo "up: $mode. Logs in $state."
 }
@@ -151,7 +166,7 @@ labels() {
         FROM mz_internal.mz_storage_shards s JOIN mz_objects o ON s.object_id = o.id"
     if [ "$(mode)" = resolver ]; then
         echo "$control_shard manifest: control"
-        curl -s "$resolver_http/views" | jq -r '"\(.partition_manifest.shard) manifest: partition \(.partition)"'
+        curl -sf "$resolver_http/views" | jq -r '"\(.partition_manifest.shard) manifest: partition \(.partition)"'
     fi
 }
 
@@ -187,7 +202,7 @@ step2() {
     # that FETCH overflowed environmentd's 3 MiB tokio worker stack and aborted
     # it (see README.md). psql cancels the COPY on SIGINT.
     printf '%smaterialize=> %s%s\n' "$cyan" "COPY (SUBSCRIBE balances) TO STDOUT" "$reset"
-    timeout -s INT "$secs" bash -c "$(declare -f mzpsql); mzpsql -c 'COPY (SUBSCRIBE balances) TO STDOUT'" \
+    timeout -k 5 -s INT "$secs" bash -c "$(declare -f mzpsql); mzpsql -c 'COPY (SUBSCRIBE balances) TO STDOUT'" \
         2> >(grep -v -e '^Cancel request sent' -e 'canceling statement due to user request' >&2) || true
     wait
 }
@@ -222,11 +237,11 @@ step4() {
         return
     fi
     banner "4. Ask the resolver for the partition's view ($(mode))"
-    show "curl -s $resolver_http/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'"
+    show "curl -sf $resolver_http/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'"
     local shard
     shard=$(user_shards | awk '$2 == "accounts" { print $1 }')
     say "The 'accounts' table is data shard $shard:"
-    show "curl -s $resolver_http/views/$shard"
+    show "curl -sf $resolver_http/views/$shard"
 }
 
 step5() {
@@ -236,7 +251,7 @@ step5() {
     shard=$(user_shards | awk '$2 == "accounts" { print $1 }')
     local partition_shard=''
     if [ "$(mode)" = resolver ]; then
-        partition_shard=$(curl -s "$resolver_http/views" | jq -r .partition_manifest.shard)
+        partition_shard=$(curl -sf "$resolver_http/views" | jq -r .partition_manifest.shard)
         printf '  %-4s %-28s %-28s %-28s\n' tick "consensus: accounts" "consensus: partition manifest" "resolver: accounts"
     else
         printf '  %-4s %-28s\n' tick "consensus: accounts"
@@ -249,7 +264,7 @@ step5() {
         if [ "$(mode)" = resolver ]; then
             part=$(crdb_quiet "SELECT count(*), max(sequence_number) FROM consensus.consensus WHERE shard = '$partition_shard'" |
                 awk '{ print "rows=" $1 " seqno=" $2 }')
-            view=$(curl -s "$resolver_http/views/$shard" "$resolver_http/views" | jq -rs '"view_seqno=\(.[1].seqno) upper=\(.[0].upper[0])"')
+            view=$(curl -sf "$resolver_http/views" | jq -r --arg s "$shard" '"view_seqno=\(.seqno) upper=\(.data_shards[] | select(.shard == $s) | .upper[0])"')
             printf '  %-4s %-28s %-28s %-28s\n' "$i" "$acct" "$part" "$view"
         else
             printf '  %-4s %-28s\n' "$i" "$acct"

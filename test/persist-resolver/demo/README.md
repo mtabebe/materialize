@@ -54,7 +54,9 @@ test/persist-resolver/demo/demo.sh down
 ```
 
 `demo.sh all` runs steps 1-5 in a row. `rehearse.sh` runs `up` and `all` for both
-modes and fails if a process died or logged a panic. Rerun it before recording.
+modes and fails if a process died, a log has a panic, or the transcript lacks
+what the demo shows (carol's row in the SUBSCRIBE, the user shards' consensus
+rows or their absence, the resolver's JSON). Rerun it before recording.
 
 Knobs: `TICKS` (step 5's inserts, default 10), `SUBSCRIBE_SECS` (step 2, default 6).
 
@@ -127,15 +129,15 @@ materialize=> SELECT * FROM balances ORDER BY owner
 
 # SUBSCRIBE for 6s in one session; another session inserts a row two seconds in.
 materialize=> COPY (SUBSCRIBE balances) TO STDOUT
-1795185664334	1	bob	50	1
-1795185664334	1	alice	125	2
-1795185666632	1	carol	75	1
+1795186886859	1	bob	50	1
+1795186886859	1	alice	125	2
+1795186889198	1	carol	75	1
 
 == 3. What's in consensus (resolver)
 consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consensus.consensus
  shards | rows 
 --------+------
-    104 | 2727
+    104 | 2713
 (1 row)
 
 # Every shard with a consensus row, by kind:
@@ -144,55 +146,55 @@ consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consen
   other     4
 # ('other': shards Materialize doesn't list by name, such as the catalog and txns shards.)
 # The user collections, and the resolver's manifest shards:
-  user: accounts             s907db5fa-1e77-4aab-a881-05145cb85e3c    (no consensus row)
-  user: balances             s704fcfbc-dddd-4b08-9c4a-db52b22ee196    (no consensus row)
+  user: accounts             sdab04b58-1b91-4af5-9f04-efd8008dac02    (no consensus row)
+  user: balances             sc249e290-86c1-48bc-9e3b-f7509b57f6bd    (no consensus row)
   manifest: control          s00000000-0000-0000-0000-00000000c0de    rows=14  seqno=13
-  manifest: partition p0     sb137d313-c160-4ecf-b260-441432094ddd    rows=35  seqno=34
+  manifest: partition p0     s39a28e62-bcbd-4f9b-a213-670dcbd84f39    rows=34  seqno=33
 # User collections have no consensus row: their state is rows in the manifest shards.
 
 == 4. Ask the resolver for the partition's view (resolver)
-$ curl -s 127.0.0.1:6891/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'
+$ curl -sf 127.0.0.1:6891/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'
 {
   "partition": "p0",
-  "seqno": 33,
+  "seqno": 32,
   "control_manifest": {
     "shard": "s00000000-0000-0000-0000-00000000c0de",
     "time": 5
   },
   "partition_manifest": {
-    "shard": "sb137d313-c160-4ecf-b260-441432094ddd",
-    "time": 28
+    "shard": "s39a28e62-bcbd-4f9b-a213-670dcbd84f39",
+    "time": 27
   },
   "claim": {
-    "resolver": "resolver-9018e99d-20c0-4a8a-8d0b-32cefd030f97",
+    "resolver": "resolver-4eb78e8a-9051-4d93-9e44-5af59ca7bfd2",
     "token": 1,
     "addr": "http://127.0.0.1:6890"
   },
   "data_shards": 2
 }
-# The 'accounts' table is data shard s907db5fa-1e77-4aab-a881-05145cb85e3c:
-$ curl -s 127.0.0.1:6891/views/s907db5fa-1e77-4aab-a881-05145cb85e3c
+# The 'accounts' table is data shard sdab04b58-1b91-4af5-9f04-efd8008dac02:
+$ curl -sf 127.0.0.1:6891/views/sdab04b58-1b91-4af5-9f04-efd8008dac02
 {
-  "shard": "s907db5fa-1e77-4aab-a881-05145cb85e3c",
+  "shard": "sdab04b58-1b91-4af5-9f04-efd8008dac02",
   "finalized": false,
   "upper": [
-    1795185666633
+    1795186889199
   ],
   "since": [
-    1795185663507
+    1795186886162
   ],
   "intents": [
     {
       "reader": "c00000000-1111-2222-3333-444444444444",
       "frontier": [
-        1795185663507
+        1795186886162
       ],
       "opaque": 2
     },
     {
-      "reader": "r403be966-6447-4b9a-8b39-52619f3c8960",
+      "reader": "ra47712bf-13e7-4bf9-805d-f4b45032f281",
       "frontier": [
-        1795185663507
+        1795186886162
       ],
       "opaque": null
     }
@@ -200,10 +202,10 @@ $ curl -s 127.0.0.1:6891/views/s907db5fa-1e77-4aab-a881-05145cb85e3c
   "batches": [
     {
       "lower": [
-        1795185663757
+        1795186886450
       ],
       "upper": [
-        1795185664335
+        1795186886860
       ],
       "since": [
         0
@@ -213,10 +215,10 @@ $ curl -s 127.0.0.1:6891/views/s907db5fa-1e77-4aab-a881-05145cb85e3c
     },
     {
       "lower": [
-        1795185664335
+        1795186886860
       ],
       "upper": [
-        1795185666633
+        1795186889199
       ],
       "since": [
         0
@@ -229,16 +231,16 @@ $ curl -s 127.0.0.1:6891/views/s907db5fa-1e77-4aab-a881-05145cb85e3c
 
 == 5. Watch consensus while writing, 10 inserts one second apart (resolver)
   tick consensus: accounts          consensus: partition manifest resolver: accounts          
-  1    absent                       rows=38 seqno=37             view_seqno=35 upper=1795185671232
-  2    absent                       rows=41 seqno=40             view_seqno=38 upper=1795185672403
-  3    absent                       rows=45 seqno=44             view_seqno=41 upper=1795185673574
-  4    absent                       rows=49 seqno=48             view_seqno=45 upper=1795185674743
-  5    absent                       rows=52 seqno=51             view_seqno=48 upper=1795185675913
-  6    absent                       rows=56 seqno=55             view_seqno=51 upper=1795185677086
-  7    absent                       rows=59 seqno=58             view_seqno=54 upper=1795185678256
-  8    absent                       rows=64 seqno=63             view_seqno=58 upper=1795185679429
-  9    absent                       rows=68 seqno=67             view_seqno=62 upper=1795185680599
-  10   absent                       rows=73 seqno=72             view_seqno=66 upper=1795185681770
+  1    absent                       rows=37 seqno=36             view_seqno=34 upper=1795186893915
+  2    absent                       rows=40 seqno=39             view_seqno=37 upper=1795186895084
+  3    absent                       rows=44 seqno=43             view_seqno=40 upper=1795186896254
+  4    absent                       rows=48 seqno=47             view_seqno=44 upper=1795186897424
+  5    absent                       rows=51 seqno=50             view_seqno=47 upper=1795186898593
+  6    absent                       rows=55 seqno=54             view_seqno=50 upper=1795186899766
+  7    absent                       rows=58 seqno=57             view_seqno=53 upper=1795186900939
+  8    absent                       rows=62 seqno=61             view_seqno=56 upper=1795186902107
+  9    absent                       rows=65 seqno=64             view_seqno=59 upper=1795186903277
+  10   absent                       rows=70 seqno=69             view_seqno=63 upper=1795186904446
 ```
 
 </details>
@@ -262,15 +264,15 @@ materialize=> SELECT * FROM balances ORDER BY owner
 
 # SUBSCRIBE for 6s in one session; another session inserts a row two seconds in.
 materialize=> COPY (SUBSCRIBE balances) TO STDOUT
-1795185710676	1	bob	50	1
-1795185710676	1	alice	125	2
-1795185712782	1	carol	75	1
+1795186935052	1	bob	50	1
+1795186935052	1	alice	125	2
+1795186937187	1	carol	75	1
 
 == 3. What's in consensus (classic)
 consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consensus.consensus
  shards | rows 
 --------+------
-    104 | 2552
+    104 | 2721
 (1 row)
 
 # Every shard with a consensus row, by kind:
@@ -279,18 +281,18 @@ consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consen
   user      2
 # ('other': shards Materialize doesn't list by name, such as the catalog and txns shards.)
 # The user collections, and the resolver's manifest shards:
-  user: accounts             sf39a6572-c630-4338-bdb6-a88f73eddb68    rows=14  seqno=13
-  user: balances             s43388daa-4ce5-48a2-bf35-686d33513912    rows=26  seqno=25
+  user: accounts             s98668b4e-5322-451a-9fbe-5ed8d16b0ace    rows=14  seqno=13
+  user: balances             s59262881-3260-4b1d-8502-76a5beddeaf5    rows=26  seqno=25
 # Each user collection is a persist shard: its own consensus row, its own seqno.
 
 == 4. Where a user collection's state lives (classic)
 # Classic persist has no resolver. A shard's state is a versioned blob in consensus:
-consensus=> SELECT shard, sequence_number, length(data) AS state_bytes FROM consensus.consensus WHERE shard = 'sf39a6572-c630-4338-bdb6-a88f73eddb68' ORDER BY sequence_number DESC LIMIT 3
+consensus=> SELECT shard, sequence_number, length(data) AS state_bytes FROM consensus.consensus WHERE shard = 's98668b4e-5322-451a-9fbe-5ed8d16b0ace' ORDER BY sequence_number DESC LIMIT 3
                  shard                 | sequence_number | state_bytes 
 ---------------------------------------+-----------------+-------------
- sf39a6572-c630-4338-bdb6-a88f73eddb68 |              13 |         943
- sf39a6572-c630-4338-bdb6-a88f73eddb68 |              12 |         869
- sf39a6572-c630-4338-bdb6-a88f73eddb68 |              11 |         235
+ s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              13 |         943
+ s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              12 |         869
+ s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              11 |         235
 (3 rows)
 
 
@@ -304,8 +306,8 @@ consensus=> SELECT shard, sequence_number, length(data) AS state_bytes FROM cons
   6    rows=20 seqno=19            
   7    rows=21 seqno=20            
   8    rows=22 seqno=21            
-  9    rows=23 seqno=22            
-  10   rows=24 seqno=23            
+  9    rows=24 seqno=23            
+  10   rows=25 seqno=24            
 ```
 
 </details>
