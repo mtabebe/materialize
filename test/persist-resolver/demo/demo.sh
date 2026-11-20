@@ -27,8 +27,8 @@ state=$root/scratch/persist-resolver-demo
 resolver_http=127.0.0.1:6891
 control_shard=s00000000-0000-0000-0000-00000000c0de
 
-bold=$'\e[1m' dim=$'\e[2m' cyan=$'\e[36m' green=$'\e[32m' reset=$'\e[0m'
-[ -t 1 ] || bold='' dim='' cyan='' green='' reset=''
+bold=$'\e[1m' dim=$'\e[2m' cyan=$'\e[36m' reset=$'\e[0m'
+[ -t 1 ] || bold='' dim='' cyan='' reset=''
 
 mode() { cat "$state/mode" 2>/dev/null || echo none; }
 
@@ -51,10 +51,10 @@ crdb() {
 }
 crdb_quiet() { psql "$crdb" -At -F ' ' -c "$1"; }
 
-# Runs a shell command, printing it first.
+# Runs a shell command line, printing it first.
 show() {
-    printf '%s$ %s%s\n' "$cyan" "$*" "$reset"
-    eval "$@"
+    printf '%s$ %s%s\n' "$cyan" "$1" "$reset"
+    eval "$1"
 }
 
 down() {
