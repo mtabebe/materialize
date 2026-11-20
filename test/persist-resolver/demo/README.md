@@ -269,3 +269,351 @@ The same steps without the resolver:
 
 From `rehearse.sh` on a dev build, which runs the blocks above in order. Shard
 ids, timestamps and seqnos differ per run.
+
+<details><summary>resolver run</summary>
+
+```
+
+$ # reset
+test/persist-resolver/demo/demo.sh reset
+reset: mzdata/ and the consensus, tsoracle and storage schemas are empty.
+
+$ # resolver
+target/debug/persist-resolver \
+    --blob-url "file://$PWD/mzdata/persist/blob" \
+    --consensus-url 'postgres://root@localhost:26257/materialize?options=--search_path=consensus' \
+    --listen-addr 127.0.0.1:6890 \
+    --http-listen-addr 127.0.0.1:6891
+grep: scratch/persist-resolver-demo/rehearsal-2/resolver.out: No such file or directory
+2026-11-20T18:00:48.095021Z  INFO mz_persist_resolver: resolver resolver-6833d0bb-d0ee-41c0-b90a-2a182a0ecd4e claimed partition p0 with token 1
+
+$ # environmentd-resolver
+MZ_PERSIST_RESOLVER_URL=http://127.0.0.1:6890 \
+test/persist-resolver/demo/demo.sh environmentd \
+    --system-parameter-default=persist_v2_register_user_shards=true
+
+$ # psql
+psql -h localhost -p 6875 -U materialize
+
+$ # mz-create
+CREATE TABLE accounts (id int, owner text, balance int);
+INSERT INTO accounts VALUES (1, 'alice', 100), (2, 'bob', 50), (3, 'alice', 25);
+CREATE MATERIALIZED VIEW balances AS
+    SELECT owner, sum(balance) AS total, count(*) AS n FROM accounts GROUP BY owner;
+SELECT * FROM balances ORDER BY owner;
+CREATE TABLE
+INSERT 0 3
+CREATE MATERIALIZED VIEW
+ owner | total | n
+-------+-------+---
+ alice |   125 | 2
+ bob   |    50 | 1
+(2 rows)
+
+
+$ # mz-subscribe
+COPY (SUBSCRIBE balances) TO STDOUT;
+
+$ # insert-carol
+psql -h localhost -p 6875 -U materialize -c "INSERT INTO accounts VALUES (4, 'carol', 75)"
+INSERT 0 1
+1795197677844	1	bob	50	1
+1795197677844	1	alice	125	2
+1795197680521	1	carol	75	1
+
+$ # mz-fanout
+SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
+       ' AS SELECT owner, sum(balance) * ' || i || ' AS total FROM accounts GROUP BY owner'
+FROM generate_series(1, 20) AS i \gexec
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+
+$ # labels
+test/persist-resolver/demo/demo.sh labels
+labels: 97 builtin, 1 catalog, 4 other, 2 resolver-manifest, 22 user
+
+$ # crdb
+psql postgres://root@localhost:26257/materialize
+
+$ # crdb-kinds
+SELECT l.kind,
+       count(DISTINCT l.shard) AS shards,
+       count(DISTINCT c.shard) AS shards_in_consensus,
+       count(c.shard) AS consensus_rows
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+GROUP BY l.kind ORDER BY l.kind;
+       kind        | shards | shards_in_consensus | consensus_rows
+-------------------+--------+---------------------+----------------
+ builtin           |     97 |                  97 |           3781
+ catalog           |      1 |                   1 |            198
+ other             |      4 |                   4 |            165
+ resolver-manifest |      2 |                   2 |            185
+ user              |     22 |                   0 |              0
+(5 rows)
+
+
+$ # crdb-user-shards
+SELECT l.name, count(c.shard) AS consensus_rows, max(c.sequence_number) AS seqno
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+WHERE l.kind IN ('user', 'resolver-manifest')
+GROUP BY l.name ORDER BY l.name;
+   name    | consensus_rows | seqno
+-----------+----------------+-------
+ accounts  |              0 |
+ balances  |              0 |
+ control   |             58 |    57
+ mv_01     |              0 |
+ mv_02     |              0 |
+ mv_03     |              0 |
+ mv_04     |              0 |
+ mv_05     |              0 |
+ mv_06     |              0 |
+ mv_07     |              0 |
+ mv_08     |              0 |
+ mv_09     |              0 |
+ mv_10     |              0 |
+ mv_11     |              0 |
+ mv_12     |              0 |
+ mv_13     |              0 |
+ mv_14     |              0 |
+ mv_15     |              0 |
+ mv_16     |              0 |
+ mv_17     |              0 |
+ mv_18     |              0 |
+ mv_19     |              0 |
+ mv_20     |              0 |
+ partition |            127 |   255
+(24 rows)
+
+
+$ # views-groups
+curl -s 127.0.0.1:6891/views | jq '.upper_groups'
+[
+  {
+    "group": 0,
+    "upper": [
+      1795197690312
+    ],
+    "members": [
+      "s25dcb71f-21ce-41b8-8cc2-7c72098e6bb7",
+      "s2a0a0530-a93a-44f5-b38d-f85c664b2f6a",
+      "s3afd30d6-f606-408f-acc5-1d0cd9ea252a",
+      "s3c5144b2-40b9-4348-b0ef-f22aec7565d4",
+      "s3c66a2ab-63d3-48fa-8868-7cc54fb8a68c",
+      "s4031ce18-7765-4a56-b333-f522c5f9789a",
+      "s4691baa3-b5fe-4f7d-9c1e-02c5856f91d4",
+      "s67b4bf97-d23f-46d5-9af7-457c2566eb00",
+      "s6dd2c152-9488-401f-8fa3-73ec45bca4c2",
+      "s71de9458-e28e-48c5-b489-bfcd6df1be0c",
+      "s82567f39-772b-4e74-a716-7a089a4660f5",
+      "s839d2b0b-38c9-4d20-8466-1e55cb931da3",
+      "sb21ba472-54fc-4a6b-abf0-d98ff05e9105",
+      "scef09ad4-ff08-439a-8b76-65213a62e60d",
+      "scfaa93ff-b40d-4224-b305-353a71c3b629",
+      "sd3bf4854-01df-4ecb-bf84-775a2b39331e",
+      "sd98127ae-69f3-46c1-80d6-b83106153498",
+      "se876a7d8-5a37-499b-9798-d1f6b25fec53",
+      "se878c147-9c00-4300-a8a1-236980e2060d",
+      "sf7b289e9-6d08-4001-9707-5aa6251c7eb1",
+      "sfae3b391-ce0d-4047-be8b-f4604d1203e8"
+    ]
+  }
+]
+
+$ # views-watch
+while sleep 1; do
+  curl -s 127.0.0.1:6891/views | jq -c '{seqno, groups: [.upper_groups[] | {group, upper: .upper[0], members: (.members | length)}], own_upper_rows: (.data_shards | map(select(.upper_group == null)) | length)}'
+done
+{"seqno":268,"groups":[{"group":0,"upper":1795197691314,"members":21}],"own_upper_rows":1}
+{"seqno":270,"groups":[{"group":0,"upper":1795197692314,"members":21}],"own_upper_rows":1}
+{"seqno":272,"groups":[{"group":0,"upper":1795197693314,"members":21}],"own_upper_rows":1}
+{"seqno":274,"groups":[{"group":0,"upper":1795197694314,"members":21}],"own_upper_rows":1}
+{"seqno":276,"groups":[{"group":0,"upper":1795197695314,"members":21}],"own_upper_rows":1}
+
+$ # down
+test/persist-resolver/demo/demo.sh down
+down.
+```
+
+</details>
+
+<details><summary>classic run</summary>
+
+```
+
+$ # reset
+test/persist-resolver/demo/demo.sh reset
+reset: mzdata/ and the consensus, tsoracle and storage schemas are empty.
+
+$ # environmentd-classic
+test/persist-resolver/demo/demo.sh environmentd
+
+$ # psql
+psql -h localhost -p 6875 -U materialize
+
+$ # mz-create
+CREATE TABLE accounts (id int, owner text, balance int);
+INSERT INTO accounts VALUES (1, 'alice', 100), (2, 'bob', 50), (3, 'alice', 25);
+CREATE MATERIALIZED VIEW balances AS
+    SELECT owner, sum(balance) AS total, count(*) AS n FROM accounts GROUP BY owner;
+SELECT * FROM balances ORDER BY owner;
+CREATE TABLE
+INSERT 0 3
+CREATE MATERIALIZED VIEW
+ owner | total | n
+-------+-------+---
+ alice |   125 | 2
+ bob   |    50 | 1
+(2 rows)
+
+
+$ # mz-subscribe
+COPY (SUBSCRIBE balances) TO STDOUT;
+
+$ # insert-carol
+psql -h localhost -p 6875 -U materialize -c "INSERT INTO accounts VALUES (4, 'carol', 75)"
+INSERT 0 1
+1795197726473	1	bob	50	1
+1795197726473	1	alice	125	2
+1795197728624	1	carol	75	1
+
+$ # mz-fanout
+SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
+       ' AS SELECT owner, sum(balance) * ' || i || ' AS total FROM accounts GROUP BY owner'
+FROM generate_series(1, 20) AS i \gexec
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+
+$ # labels
+test/persist-resolver/demo/demo.sh labels
+labels: 97 builtin, 1 catalog, 4 other, 22 user
+
+$ # crdb
+psql postgres://root@localhost:26257/materialize
+
+$ # crdb-kinds
+SELECT l.kind,
+       count(DISTINCT l.shard) AS shards,
+       count(DISTINCT c.shard) AS shards_in_consensus,
+       count(c.shard) AS consensus_rows
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+GROUP BY l.kind ORDER BY l.kind;
+  kind   | shards | shards_in_consensus | consensus_rows
+---------+--------+---------------------+----------------
+ builtin |     97 |                  97 |           3124
+ catalog |      1 |                   1 |            201
+ other   |      4 |                   4 |            169
+ user    |     22 |                  22 |            551
+(4 rows)
+
+
+$ # crdb-user-shards
+SELECT l.name, count(c.shard) AS consensus_rows, max(c.sequence_number) AS seqno
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+WHERE l.kind IN ('user', 'resolver-manifest')
+GROUP BY l.name ORDER BY l.name;
+   name   | consensus_rows | seqno
+----------+----------------+-------
+ accounts |             75 |    74
+ balances |             46 |    45
+ mv_01    |             31 |    30
+ mv_02    |             30 |    29
+ mv_03    |             29 |    28
+ mv_04    |             28 |    27
+ mv_05    |             27 |    26
+ mv_06    |             26 |    25
+ mv_07    |             25 |    24
+ mv_08    |             24 |    23
+ mv_09    |             23 |    22
+ mv_10    |             22 |    21
+ mv_11    |             21 |    20
+ mv_12    |             20 |    19
+ mv_13    |             19 |    18
+ mv_14    |             18 |    17
+ mv_15    |             17 |    16
+ mv_16    |             16 |    15
+ mv_17    |             15 |    14
+ mv_18    |             14 |    13
+ mv_19    |             13 |    12
+ mv_20    |             12 |    11
+(22 rows)
+
+
+$ # crdb-watch
+SELECT now()::TIME(0) AS t,
+       string_agg(s.seqno::STRING, ' ' ORDER BY s.name) AS seqno_of_each_user_shard
+FROM (SELECT l.name, max(c.sequence_number) AS seqno
+      FROM demo.shard_labels l JOIN consensus.consensus c USING (shard)
+      WHERE l.kind = 'user' GROUP BY l.name) AS s \watch 1
+                     Fri Nov 20 18:02:15 2026 (every 1s)
+
+    t     |                     seqno_of_each_user_shard
+----------+-------------------------------------------------------------------
+ 18:02:16 | 74 45 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11
+(1 row)
+
+                     Fri Nov 20 18:02:16 2026 (every 1s)
+
+    t     |                     seqno_of_each_user_shard
+----------+-------------------------------------------------------------------
+ 18:02:17 | 74 46 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12
+(1 row)
+
+                     Fri Nov 20 18:02:17 2026 (every 1s)
+
+    t     |                     seqno_of_each_user_shard
+----------+-------------------------------------------------------------------
+ 18:02:18 | 74 47 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13
+(1 row)
+
+                     Fri Nov 20 18:02:18 2026 (every 1s)
+
+    t     |                     seqno_of_each_user_shard
+----------+-------------------------------------------------------------------
+ 18:02:19 | 74 48 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14
+(1 row)
+
+
+
+$ # down
+test/persist-resolver/demo/demo.sh down
+down.
+```
+
+</details>

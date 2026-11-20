@@ -104,6 +104,16 @@ environmentd() {
 # lists by name, the resolver's manifest shards if it's up, and every other
 # shard with a consensus row as kind 'other'.
 labels() {
+    # mz_storage_shards can trail DDL that just returned by a moment.
+    local missing
+    for _ in $(seq 50); do
+        missing=$(mz_quiet "SELECT count(*) FROM mz_objects o
+            WHERE o.id LIKE 'u%' AND o.type IN ('table', 'materialized-view')
+            AND o.id NOT IN (SELECT object_id FROM mz_internal.mz_storage_shards)")
+        [ "$missing" = 0 ] && break
+        sleep 0.2
+    done
+    [ "$missing" = 0 ] || die "$missing user collections still have no shard in mz_storage_shards"
     local rows
     rows=$(mz_quiet "SELECT s.shard_id,
             CASE WHEN s.object_id LIKE 'u%' THEN 'user' WHEN o.name = 'mz_catalog_raw' THEN 'catalog' ELSE 'builtin' END,
