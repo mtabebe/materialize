@@ -115,20 +115,20 @@ labels() {
     done
     [ "$missing" = 0 ] || die "$missing user collections still have no shard in mz_storage_shards"
     local rows
-    rows=$(mz_quiet "SELECT s.shard_id,
+    rows=$(PGOPTIONS='--welcome_message=off' psql -h localhost -p 6875 -U materialize -At -F $'\t' -c "SELECT s.shard_id,
             CASE WHEN s.object_id LIKE 'u%' THEN 'user' WHEN o.name = 'mz_catalog_raw' THEN 'catalog' ELSE 'builtin' END,
             o.name
         FROM mz_internal.mz_storage_shards s JOIN mz_objects o ON s.object_id = o.id")
     local partition_shard
     if partition_shard=$(curl -sf "$resolver_http/views" | jq -r .partition_manifest.shard); then
-        rows+=$'\n'"$control_shard resolver-manifest control"$'\n'"$partition_shard resolver-manifest partition"
+        rows+=$'\n'"$control_shard"$'\t'resolver-manifest$'\t'control$'\n'"$partition_shard"$'\t'resolver-manifest$'\t'partition
     fi
     {
         echo "CREATE SCHEMA IF NOT EXISTS demo;"
         echo "DROP TABLE IF EXISTS demo.shard_labels;"
         echo "CREATE TABLE demo.shard_labels (shard STRING PRIMARY KEY, kind STRING NOT NULL, name STRING NOT NULL);"
         echo "INSERT INTO demo.shard_labels VALUES"
-        awk 'NF { printf "%s('\''%s'\'', '\''%s'\'', '\''%s'\'')\n", (n++ ? "," : ""), $1, $2, $3 }' <<<"$rows"
+        awk -F '\t' 'NF { gsub(/'\''/, "'\'''\''"); printf "%s('\''%s'\'', '\''%s'\'', '\''%s'\'')\n", (n++ ? "," : ""), $1, $2, $3 }' <<<"$rows"
         echo ";"
         echo "INSERT INTO demo.shard_labels SELECT DISTINCT shard, 'other', '' FROM consensus.consensus WHERE shard NOT IN (SELECT shard FROM demo.shard_labels);"
     } | psql "$crdb" -q -v ON_ERROR_STOP=1 >/dev/null

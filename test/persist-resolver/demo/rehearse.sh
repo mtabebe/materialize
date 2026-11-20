@@ -25,13 +25,22 @@ readme=$dir/README.md
 state=scratch/persist-resolver-demo
 out=${OUT:-$state/rehearsal}
 mkdir -p "$out"
-modes=("$@")
-[ ${#modes[@]} -gt 0 ] || modes=(resolver classic)
+if [ $# -gt 0 ]; then modes=("$@"); else modes=(resolver classic); fi
+command -v timeout >/dev/null || { echo "needs timeout (macOS: brew install coreutils)"; exit 1; }
 target=${CARGO_TARGET_DIR:-$PWD/target}/${PROFILE:-debug}
 for bin in environmentd clusterd persist-resolver; do
     [ -x "$target/$bin" ] || { echo "$target/$bin isn't built: cargo build --bin $bin"; exit 1; }
 done
-trap '$dir/demo.sh down >/dev/null' EXIT
+transcript=''
+on_exit() {
+    local rc=$?
+    if [ "$rc" != 0 ] && [ -n "$transcript" ]; then
+        echo "FAIL: exit $rc, end of $transcript:"
+        tail -30 "$transcript"
+    fi
+    "$dir/demo.sh" down >/dev/null
+}
+trap on_exit EXIT
 
 # The body of the README block marked `<!-- run: $1 -->`, unindented.
 block() {
@@ -57,11 +66,14 @@ sh_block() { bash -c "$(block "$1")"; }
 # Runs SQL block $2 through the client the shell block $1 starts.
 sql_block() { bash -c "$(block "$1") -v ON_ERROR_STOP=1 -f -" <<<"$(block "$2")"; }
 
+# Waits until `$@` succeeds while background job `$pid` lives.
 wait_for() {
-    local what=$1 secs=$2
-    shift 2
-    for _ in $(seq "$secs"); do
+    local what=$1 secs=$2 pid=$3
+    shift 3
+    local deadline=$((SECONDS + secs))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         "$@" && return 0
+        kill -0 "$pid" 2>/dev/null || { echo "FAIL: $what exited"; tail -20 "$state"/*.log "$out"/*.out 2>/dev/null || true; exit 1; }
         sleep 1
     done
     echo "FAIL: $what not ready after ${secs}s"
@@ -88,15 +100,17 @@ rehearse() {
     if [ "$mode" = resolver ]; then
         run resolver true
         bash -c "$(block resolver)" >"$out/resolver.out" 2>&1 &
-        wait_for "resolver claim" 60 claimed
+        wait_for "resolver claim" 60 $! claimed
         grep -a "claimed partition" "$out/resolver.out"
         run environmentd-resolver true
         bash -c "$(block environmentd-resolver)" >"$out/environmentd.out" 2>&1 &
+        env_pid=$!
     else
         run environmentd-classic true
         bash -c "$(block environmentd-classic)" >"$out/environmentd.out" 2>&1 &
+        env_pid=$!
     fi
-    wait_for environmentd 300 mz_ready
+    wait_for environmentd 300 "$env_pid" mz_ready
     run psql true
     run mz-create sql_block psql mz-create
     run mz-subscribe true
@@ -113,10 +127,10 @@ rehearse() {
     if [ "$mode" = resolver ]; then
         run views-groups sh_block views-groups
         run views-watch true
-        timeout -s INT 6 bash -c "$(block views-watch)" || true
+        timeout -k 5 -s INT 6 bash -c "$(block views-watch)" || [ $? = 124 ]
     else
         run crdb-watch true
-        timeout -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || true
+        timeout -k 5 -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || [ $? = 124 ]
     fi
     for p in "$out/resolver.out" "$state/environmentd.log"; do
         [ "$mode" = resolver ] || [ "$p" != "$out/resolver.out" ] || continue
@@ -134,21 +148,30 @@ rehearse() {
 for mode in "${modes[@]}"; do
     echo "== $mode"
     start=$(date +%s)
-    PGOPTIONS='--welcome_message=off' rehearse "$mode" >"$out/$mode.txt" 2>&1 || { tail -30 "$out/$mode.txt"; exit 1; }
     t=$out/$mode.txt
+    transcript=$t
+    # Not `rehearse ... || ...`: that would turn off errexit inside it.
+    PGOPTIONS='--welcome_message=off' rehearse "$mode" >"$t" 2>&1
+    transcript=''
     expect "$t" $'\tcarol\t75\t1$' 'labels: [0-9]+ builtin, 1 catalog, [0-9]+ other' ' mv_20 '
     if [ "$mode" = resolver ]; then
         expect "$t" 'claimed partition p0' \
             '^ user +\| +22 \| +0 \| +0$' \
-            '^ builtin +\| +([0-9]+) \| +[0-9]+ \| +[0-9]+$' \
+            '^ builtin +\| +([0-9]+) \| +\1 \| +[0-9]+$' \
             '^ resolver-manifest +\| +2 \| +2 \|' \
             '^ mv_20 +\| +0 \| *$' \
             '"members": \[' \
             '^\{"seqno":[0-9]+,"groups":\[\{"group":[0-9]+,"upper":[0-9]+,"members":21\}\],"own_upper_rows":1\}$'
+        # The one group's upper moved: at least 3 distinct uppers over the watch.
+        local_uppers=$(grep -E '"members":21' "$t" | grep -oE '"upper":[0-9]+' | sort -u | wc -l)
+        [ "$local_uppers" -ge 3 ] || { echo "FAIL: the group's upper took $local_uppers values"; exit 1; }
     else
         expect "$t" '^ user +\| +22 \| +22 \| +[0-9]+$' \
             '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' \
             '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$'
+        # The seqnos climbed during the watch.
+        lines=$(grep -E '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$' "$t" | cut -d'|' -f2 | sort -u | wc -l)
+        [ "$lines" -ge 2 ] || { echo "FAIL: user shard seqnos didn't move during the watch"; exit 1; }
         if grep "^labels:" "$t" | grep -q resolver-manifest; then echo "FAIL: classic run has resolver manifests"; exit 1; fi
     fi
     echo "== $mode: OK in $(($(date +%s) - start))s, transcript $t"
