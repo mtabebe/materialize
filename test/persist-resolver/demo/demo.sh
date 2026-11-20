@@ -13,7 +13,7 @@
 # persist. See README.md in this directory for the runbook.
 #
 #   demo.sh up resolver|classic   wipe everything and start fresh
-#   demo.sh step N                run step N (1-5) against what's up
+#   demo.sh step N                run step N (1-6) against what's up
 #   demo.sh all                   run every step in order
 #   demo.sh down                  stop everything
 
@@ -23,7 +23,8 @@ cd "$(dirname "$0")/../../.."
 root=$PWD
 target=${CARGO_TARGET_DIR:-$root/target}/${PROFILE:-debug}
 crdb=postgres://root@localhost:26257/materialize
-state=$root/scratch/persist-resolver-demo
+rel_state=scratch/persist-resolver-demo
+state=$root/$rel_state
 resolver_http=127.0.0.1:6891
 control_shard=s00000000-0000-0000-0000-00000000c0de
 
@@ -159,19 +160,22 @@ need_up() {
     [ "$(mode)" != none ] || { echo "nothing is up: run demo.sh up resolver|classic" >&2; exit 1; }
 }
 
-# `shard label` lines for every shard Materialize knows a name for, plus the
-# resolver's manifest shards.
+# `shard kind name` lines for every shard Materialize knows a name for, plus the
+# resolver's manifest shards. Kinds: user, catalog, builtin, manifest.
 labels() {
-    mz_quiet "SELECT s.shard_id, CASE WHEN s.object_id LIKE 'u%' THEN 'user: ' ELSE 'builtin: ' END || o.name
+    mz_quiet "SELECT s.shard_id,
+            CASE WHEN s.object_id LIKE 'u%' THEN 'user' WHEN o.name = 'mz_catalog_raw' THEN 'catalog' ELSE 'builtin' END,
+            o.name
         FROM mz_internal.mz_storage_shards s JOIN mz_objects o ON s.object_id = o.id"
     if [ "$(mode)" = resolver ]; then
-        echo "$control_shard manifest: control"
-        curl -sf "$resolver_http/views" | jq -r '"\(.partition_manifest.shard) manifest: partition \(.partition)"'
+        echo "$control_shard manifest control"
+        curl -sf "$resolver_http/views" | jq -r '"\(.partition_manifest.shard) manifest partition \(.partition)"'
     fi
 }
 
+# `shard name type` lines for the user collections, by name.
 user_shards() {
-    mz_quiet "SELECT s.shard_id, o.name FROM mz_internal.mz_storage_shards s JOIN mz_objects o ON s.object_id = o.id WHERE s.object_id LIKE 'u%' ORDER BY o.name"
+    mz_quiet "SELECT s.shard_id, o.name, o.type FROM mz_internal.mz_storage_shards s JOIN mz_objects o ON s.object_id = o.id WHERE s.object_id LIKE 'u%' ORDER BY o.name"
 }
 
 # Consensus rows and the max seqno of each shard in `$1` (`shard label` lines).
@@ -183,6 +187,11 @@ consensus_by_shard() {
         { shard = $1; $1 = ""; label = substr($0, 2);
           if (shard in c) printf "  %-26s %-40s rows=%-3s seqno=%s\n", label, shard, c[shard], s[shard];
           else printf "  %-26s %-40s (no consensus row)\n", label, shard }' <<<"$1"
+}
+
+# A short column name for each user collection, in `user_shards` order.
+short_names() {
+    user_shards | awk '{ n = $2; sub(/^mv_/, "", n); if (n == $2) n = substr(n, 1, 3); print n }'
 }
 
 step1() {
@@ -208,18 +217,66 @@ step2() {
 }
 
 step3() {
-    banner "3. What's in consensus ($(mode))"
-    crdb "SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consensus.consensus"
-    say "Every shard with a consensus row, by kind:"
-    local labels
+    local n=${VIEWS:-20}
+    banner "3. Fan out: $n more materialized views over the table ($(mode))"
+    create_mv() { printf "CREATE MATERIALIZED VIEW mv_%02d AS SELECT owner, sum(balance) * %d AS total FROM accounts GROUP BY owner" "$1" "$1"; }
+    mz "$(create_mv 1)"
+    if [ "$n" -gt 1 ]; then
+        say "mv_02 to mv_$(printf %02d "$n") the same, each with its own multiplier."
+        for i in $(seq 2 "$n"); do echo "$(create_mv "$i");"; done | mzpsql -q
+    fi
+    if [ "$(mode)" = resolver ]; then
+        say "Every user collection is a data shard in the resolver's partition:"
+        printf '%s$ %s%s\n' "$cyan" "curl -sf $resolver_http/views | jq -r '.data_shards[] | \"\\(.shard) \\(.upper[0]) \\(.batches | length)\"'" "$reset"
+        local views
+        views=$(curl -sf "$resolver_http/views" | jq -r '.data_shards[] | "\(.shard) \(.upper[0]) \(.batches | length)"')
+        user_shards | awk -v views="$views" '
+            BEGIN { n = split(views, v, "\n"); for (i = 1; i <= n; i++) { split(v[i], f, " "); u[f[1]] = f[2]; b[f[1]] = f[3] } }
+            { if ($1 in u) printf "  %-9s %-40s upper=%s batches=%s\n", $2, $1, u[$1], b[$1];
+              else printf "  %-9s %-40s (not on the resolver)\n", $2, $1 }'
+    else
+        say "Each one is its own persist shard, with its own consensus row and seqno:"
+        consensus_by_shard "$(user_shards | awk '{ print $1, "user: " $2 }')"
+    fi
+}
+
+step4() {
+    banner "4. Which shards go through the resolver ($(mode))"
+    say "The opt-in, part one: environmentd (and the clusterd processes it starts) get the resolver's address."
+    show "tr '\\0' '\\n' </proc/$(cat "$state/environmentd.pid")/environ | grep '^MZ_PERSIST_RESOLVER_URL=' || echo '(not set)'"
+    say "Part two: a system parameter turns on registration."
+    printf '%smz_system=> %s%s\n' "$cyan" "SHOW persist_v2_register_user_shards" "$reset"
+    PGOPTIONS='--welcome_message=off' psql -h localhost -p 6877 -U mz_system -d materialize -q -P pager=off -c "SHOW persist_v2_register_user_shards"
+    say "It is per collection kind: the storage controller registers a new collection on the resolver"
+    say "only if it has a user id. Catalog, builtin and txns shards open as ordinary persist shards."
+    show "grep -ac 'is v2: true' $rel_state/environmentd.log || true"
+    show "grep -aoE -m3 'u[0-9]+ shard s[0-9a-f-]+ is v2: [a-z]+' $rel_state/environmentd.log || echo '(none)'"
+
+    say "Every shard, by kind, and where its state lives:"
+    local labels consensus on_resolver=''
     labels=$(labels)
-    crdb_quiet "SELECT DISTINCT shard FROM consensus.consensus" | awk -v labels="$labels" '
-        BEGIN { n = split(labels, l, "\n"); for (i = 1; i <= n; i++) { split(l[i], f, " "); k[f[1]] = f[2] } }
-        { kind = ($1 in k) ? k[$1] : "other:"; sub(":", "", kind); count[kind]++ }
-        END { for (kind in count) printf "  %-9s %d\n", kind, count[kind] }' | sort
-    say "('other': shards Materialize doesn't list by name, such as the catalog and txns shards.)"
-    say "The user collections, and the resolver's manifest shards:"
-    consensus_by_shard "$( (user_shards | sed 's/ / user: /'; labels | grep ' manifest:') )"
+    consensus=$(crdb_quiet "SELECT DISTINCT shard FROM consensus.consensus")
+    [ "$(mode)" != resolver ] || on_resolver=$(curl -sf "$resolver_http/views" | jq -r '.data_shards[].shard')
+    awk -v labels="$labels" -v consensus="$consensus" -v on_resolver="$on_resolver" '
+        function load(str, arr,   n, i, parts) { n = split(str, parts, "\n"); for (i = 1; i <= n; i++) if (parts[i] != "") arr[parts[i]] = 1 }
+        BEGIN {
+            n = split(labels, l, "\n"); for (i = 1; i <= n; i++) { split(l[i], f, " "); kind[f[1]] = f[2] }
+            load(consensus, cons); load(on_resolver, res)
+            for (s in cons) if (!(s in kind)) kind[s] = "other"
+            for (s in kind) { k = kind[s]; total[k]++; if (s in cons) c[k]++; if (s in res) r[k]++ }
+            printf "  %-9s %6s  %-12s %-12s %s\n", "kind", "shards", "in consensus", "on resolver", "served by"
+            split("user catalog builtin other manifest", order, " ")
+            for (i = 1; i <= 5; i++) {
+                k = order[i]; if (!total[k]) continue
+                by = (r[k] == total[k]) ? "resolver" : (c[k] == total[k]) ? "consensus" : "mixed"
+                if (k == "manifest" && by == "consensus") by = "consensus (the resolver'"'"'s own state)"
+                printf "  %-9s %6d  %-12d %-12d %s\n", k, total[k], c[k], r[k], by
+            }
+        }'
+    say "(catalog: mz_catalog_raw. other: shards Materialize doesn't list by name, such as txns and the expression cache.)"
+    say "The two user collections from step 1, and the resolver's manifest shards:"
+    consensus_by_shard "$( (user_shards | awk '$2 == "accounts" || $2 == "balances" { print $1, "user: " $2 }'
+        labels | awk '$2 == "manifest" { $2 = "manifest:"; print }') )"
     if [ "$(mode)" = resolver ]; then
         say "User collections have no consensus row: their state is rows in the manifest shards."
     else
@@ -227,16 +284,16 @@ step3() {
     fi
 }
 
-step4() {
+step5() {
     if [ "$(mode)" != resolver ]; then
-        banner "4. Where a user collection's state lives ($(mode))"
+        banner "5. Where a user collection's state lives ($(mode))"
         say "Classic persist has no resolver. A shard's state is a versioned blob in consensus:"
         local shard
         shard=$(user_shards | awk '$2 == "accounts" { print $1 }')
         crdb "SELECT shard, sequence_number, length(data) AS state_bytes FROM consensus.consensus WHERE shard = '$shard' ORDER BY sequence_number DESC LIMIT 3"
         return
     fi
-    banner "4. Ask the resolver for the partition's view ($(mode))"
+    banner "5. Ask the resolver for the partition's view ($(mode))"
     show "curl -sf $resolver_http/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'"
     local shard
     shard=$(user_shards | awk '$2 == "accounts" { print $1 }')
@@ -244,33 +301,63 @@ step4() {
     show "curl -sf $resolver_http/views/$shard"
 }
 
-step5() {
+# Prints the column header for a per-shard grid, one 4-wide column per user
+# collection.
+grid_header() {
+    printf '  %-20s' "$1"
+    short_names | awk '{ printf "%4s", $1 } END { printf "  %s\n", "'"$2"'" }'
+}
+
+step6() {
     local n=${TICKS:-10}
-    banner "5. Watch consensus while writing, $n inserts one second apart ($(mode))"
+    banner "6. Watch the uppers while writing, $n inserts one second apart ($(mode))"
+    local order
+    order=$(user_shards | awk '{ print $1 }' | paste -sd, -)
+    (for i in $(seq "$n"); do mzpsql -q -c "INSERT INTO accounts VALUES ($((100 + i)), 'dave', $i)"; sleep 1; done) &
+    if [ "$(mode)" = resolver ]; then
+        say "One line per resolver write (view seqno). '+': that shard's upper moved in this write."
+        grid_header "view_seqno  upper" "moved, at max upper"
+        local end=$((SECONDS + n))
+        while [ "$SECONDS" -lt "$end" ]; do
+            curl -sf "$resolver_http/views" | jq -r --arg order "$order" '
+                (.data_shards | map({key: .shard, value: (.upper[0] // -1 | tostring)}) | from_entries) as $u
+                | "\(.seqno) " + ([$order | split(",")[] | $u[.] // "-"] | join(" "))'
+            sleep 0.05
+        done | awk '
+            $1 == seqno { next }
+            {
+                max = 0; for (i = 2; i <= NF; i++) if ($i + 0 > max) max = $i + 0
+                line = ""; moved = 0; at = 0
+                for (i = 2; i <= NF; i++) {
+                    m = (seqno == "") ? "" : ($i != prev[i]) ? "+" : "."
+                    moved += (m == "+"); at += ($i + 0 == max); line = line sprintf("%4s", m); prev[i] = $i
+                }
+                d = (seqno == "") ? "" : sprintf("(+%d)", $1 - seqno)
+                printf "  %-5s %-5s %-13s%s  %2d, %d/%d\n", $1, d, max, line, moved, at, NF - 1; fflush()
+                seqno = $1
+            }'
+    else
+        say "Once a second, each user shard's seqno in consensus:"
+        grid_header "tick" "moved"
+        local shards prev=''
+        shards=$(user_shards | awk '{ printf "%s'"'"'%s'"'"'", (NR > 1 ? "," : ""), $1 }')
+        for i in $(seq "$n"); do
+            local seqnos
+            seqnos=$(crdb_quiet "SELECT shard, max(sequence_number) FROM consensus.consensus WHERE shard IN ($shards) GROUP BY shard" |
+                awk -v order="$order" 'BEGIN { split(order, o, ",") } { s[$1] = $2 } END { for (i = 1; i in o; i++) printf "%s ", (o[i] in s) ? s[o[i]] : "-" }')
+            awk -v tick="$i" -v cur="$seqnos" -v prev="$prev" 'BEGIN {
+                n = split(cur, c, " "); split(prev, p, " "); moved = 0; line = ""
+                for (i = 1; i <= n; i++) { line = line sprintf("%4s", c[i]); moved += (prev != "" && c[i] != p[i]) }
+                printf "  %-20s%s  %s\n", tick, line, (prev == "" ? "" : moved)
+            }'
+            prev=$seqnos
+            sleep 1
+        done
+    fi
+    wait
     local shard
     shard=$(user_shards | awk '$2 == "accounts" { print $1 }')
-    local partition_shard=''
-    if [ "$(mode)" = resolver ]; then
-        partition_shard=$(curl -sf "$resolver_http/views" | jq -r .partition_manifest.shard)
-        printf '  %-4s %-28s %-28s %-28s\n' tick "consensus: accounts" "consensus: partition manifest" "resolver: accounts"
-    else
-        printf '  %-4s %-28s\n' tick "consensus: accounts"
-    fi
-    for i in $(seq "$n"); do
-        mzpsql -q -c "INSERT INTO accounts VALUES ($((100 + i)), 'dave', $i)"
-        local acct part view
-        acct=$(crdb_quiet "SELECT count(*), coalesce(max(sequence_number)::text, '-') FROM consensus.consensus WHERE shard = '$shard'" |
-            awk '$1 == 0 { print "absent"; next } { print "rows=" $1 " seqno=" $2 }')
-        if [ "$(mode)" = resolver ]; then
-            part=$(crdb_quiet "SELECT count(*), max(sequence_number) FROM consensus.consensus WHERE shard = '$partition_shard'" |
-                awk '{ print "rows=" $1 " seqno=" $2 }')
-            view=$(curl -sf "$resolver_http/views" | jq -r --arg s "$shard" '"view_seqno=\(.seqno) upper=\(.data_shards[] | select(.shard == $s) | .upper[0])"')
-            printf '  %-4s %-28s %-28s %-28s\n' "$i" "$acct" "$part" "$view"
-        else
-            printf '  %-4s %-28s\n' "$i" "$acct"
-        fi
-        sleep 1
-    done
+    consensus_by_shard "$shard user: accounts"
 }
 
 case "${1:-}" in
@@ -278,8 +365,8 @@ up) up "${2:-}" ;;
 down) down; echo "down." ;;
 step)
     need_up
-    case "${2:-}" in 1 | 2 | 3 | 4 | 5) "step$2" ;; *) echo "usage: demo.sh step 1-5" >&2; exit 2 ;; esac
+    case "${2:-}" in 1 | 2 | 3 | 4 | 5 | 6) "step$2" ;; *) echo "usage: demo.sh step 1-6" >&2; exit 2 ;; esac
     ;;
-all) need_up; for i in 1 2 3 4 5; do "step$i"; done ;;
+all) need_up; for i in 1 2 3 4 5 6; do "step$i"; done ;;
 *) sed -n '/^#   demo.sh/s/^# *//p' "$0" >&2; exit 2 ;;
 esac
