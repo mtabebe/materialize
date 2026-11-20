@@ -1,7 +1,27 @@
 # Persist resolver demo
 
 PROTOTYPE. A hand-run demo of the persist resolver (`src/persist-resolver`),
-then the same SQL on classic persist for contrast. What it shows:
+then the same SQL on classic persist for contrast.
+
+## Why
+
+Persist's cost grows with what it writes down. Every persist shard has its own
+consensus key, and every tick of every shard is a compare-and-set on it, so
+consensus load grows with objects x replicas x tick rate. Load tests with
+thousands of materialized views show the consensus database saturating first:
+CaS latency climbs, and freshness falls off with it.
+
+The idea: write down less. A resolver takes over the computation and ordering
+for many shards. It settles their races in memory and decides each cycle's
+outcome, and many per-shard writes become one batched write. That write goes
+to existing persist: a manifest shard is an ordinary persist shard whose rows
+are the state changes of many data shards (uppers, batches, read intents).
+Persist stays the durable layer it is today, so correctness still comes from
+its compare-and-set, and the data shards Materialize reads and writes are views
+the resolver builds from those rows. Shards that tick together can even share
+one upper row.
+
+## What it shows
 
 1. Materialize works as usual on top of the resolver: tables, materialized
    views, `SELECT`, `SUBSCRIBE`.
@@ -247,6 +267,18 @@ only counted). In control: `Shard`, `Schema`, `Assign` (its
 partition). In the partition manifest: `Member` (it's in group 0, so it has no
 `Upper` row of its own), the group's `Group(0)` row holding the upper, one
 `Batch` row per batch, and one `Intent` row per reader.
+
+<!-- run: shard-crdb -->
+```sh
+psql postgres://root@localhost:26257/materialize -c "SELECT shard, sequence_number, length(data) AS bytes FROM consensus.consensus WHERE shard = '$S'"
+P=$(curl -s 127.0.0.1:6891/views | jq -r .partition_manifest.shard)
+psql postgres://root@localhost:26257/materialize -c "SELECT shard, count(*) AS rows, max(sequence_number) AS seqno FROM consensus.consensus WHERE shard = '$P' GROUP BY shard"
+```
+
+`mv_01` has no rows in CRDB's consensus table: the state above lives only in the
+partition manifest shard, whose own consensus rows are the second query. The
+shell fills in `$S` and `$P`; typed inside an interactive `psql`, `'$S'` would
+be the literal string and match nothing in either mode.
 
 ### 9. One INSERT (pane 3)
 

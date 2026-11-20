@@ -141,6 +141,7 @@ rehearse() {
         # `$S` from shard-id doesn't outlive its shell, so it runs again first.
         run shard-logical shard_block shard-logical
         run shard-rows shard_block shard-rows
+        run shard-crdb shard_block shard-crdb
         run mz-insert sql_block psql mz-insert
         sleep 2
         run shard-logical-again shard_block shard-logical-again
@@ -213,6 +214,10 @@ for mode in "${modes[@]}"; do
         [ "$(grep -c '"key":"Group([0-9]*)","val":\[[0-9]' <<<"$rows")" = 2 ] || { echo "FAIL: mv_01's group row missing"; exit 1; }
         if grep -q '"key":"Upper"' <<<"$rows"; then echo "FAIL: mv_01 has its own Upper row"; exit 1; fi
         expect "$t" '"upper_group": [0-9]+' '"lower": [0-9]+'
+        # mv_01 has no consensus rows; the partition manifest shard does.
+        crdb_rows=$(awk '/^\$ # shard-crdb$/ { on = 1 } on && /^\([0-9]+ rows?\)$/ { print; if (++n == 2) exit }' "$t")
+        [ "$(head -1 <<<"$crdb_rows")" = "(0 rows)" ] || { echo "FAIL: mv_01 has consensus rows"; exit 1; }
+        [ "$(tail -1 <<<"$crdb_rows")" = "(1 row)" ] || { echo "FAIL: no consensus rows for the partition manifest"; exit 1; }
         # The one group's upper moved: at least 3 distinct uppers over the watch.
         local_uppers=$(grep -E '"members":21' "$t" | grep -oE '"upper":[0-9]+' | sort -u | wc -l)
         [ "$local_uppers" -ge 3 ] || { echo "FAIL: the group's upper took $local_uppers values"; exit 1; }
