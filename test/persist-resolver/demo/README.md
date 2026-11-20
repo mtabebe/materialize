@@ -94,11 +94,12 @@ watch -n1 "psql postgres://root@localhost:26257/materialize -c 'SELECT shard, co
 
 ## Known issues
 
-- In a dev build, `FETCH` from a `DECLARE ... CURSOR FOR SUBSCRIBE` overflows a
-  3 MiB tokio worker stack in environmentd and aborts it, in both modes (the
-  stack is in pgwire's `fetch` and the adapter's frontend peek path, not persist).
-  Step 2 uses `COPY (SUBSCRIBE ...) TO STDOUT` instead, which streams rows live
-  in a terminal.
+- In a dev build, `FETCH` from a `DECLARE ... CURSOR FOR SUBSCRIBE` overflowed a
+  3 MiB tokio worker stack in environmentd and aborted it, in 3 of 3 classic-mode
+  tries. The one resolver-mode try didn't crash. The overflowing stack is
+  pgwire's `fetch` and the adapter's frontend peek path down to `plan_subscribe`,
+  not persist. Step 2 uses `COPY (SUBSCRIBE ...) TO STDOUT` instead, which
+  streams rows live in a terminal.
 - Only user collections are data shards; the prototype's cuts are listed in its
   plan.
 

@@ -184,7 +184,7 @@ step2() {
     say "SUBSCRIBE for ${secs}s in one session; another session inserts a row two seconds in."
     (sleep 2 && mzpsql -q -c "INSERT INTO accounts VALUES (4, 'carol', 75)") &
     # NOTE: not `DECLARE ... CURSOR FOR SUBSCRIBE` + `FETCH`: in a dev build,
-    # that FETCH overflows environmentd's 3 MiB tokio worker stack and aborts
+    # that FETCH overflowed environmentd's 3 MiB tokio worker stack and aborted
     # it (see README.md). psql cancels the COPY on SIGINT.
     printf '%smaterialize=> %s%s\n' "$cyan" "COPY (SUBSCRIBE balances) TO STDOUT" "$reset"
     timeout -s INT "$secs" bash -c "$(declare -f mzpsql); mzpsql -c 'COPY (SUBSCRIBE balances) TO STDOUT'" \
