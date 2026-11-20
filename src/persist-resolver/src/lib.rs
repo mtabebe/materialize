@@ -50,7 +50,7 @@ use timely::progress::Antichain;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::view::{CommitError, RowDiff, View};
+use crate::view::{CommitError, RowDiff, View, consolidate};
 
 pub mod debug;
 pub mod view;
@@ -69,6 +69,10 @@ pub struct ResolverConfig {
     pub manifest_inline_single_max_bytes: usize,
     /// `persist_inline_writes_total_max_bytes` for the manifest shards.
     pub manifest_inline_total_max_bytes: usize,
+    /// Whether the cycle puts data shards whose uppers move together in upper
+    /// groups ([View::regroup]). Off, a shard leaves its group on its next
+    /// append and every upper ends on its own row.
+    pub upper_groups: bool,
 }
 
 impl ResolverConfig {
@@ -494,7 +498,15 @@ impl Resolver {
     /// watches.
     fn notify(&mut self, diffs: &[RowDiff]) {
         let seqno = self.view.seqno();
-        let mut shards: Vec<_> = diffs.iter().filter_map(|(k, _, _)| k.shard()).collect();
+        let members = self.view.members();
+        // A group's upper moving changes every member's view.
+        let mut shards: Vec<_> = diffs
+            .iter()
+            .flat_map(|(k, _, _)| match k {
+                ManifestKey::Group(g) => members.get(g).cloned().unwrap_or_default(),
+                k => k.shard().into_iter().collect(),
+            })
+            .collect();
         shards.sort();
         shards.dedup();
         for shard in shards {
@@ -531,6 +543,9 @@ impl Resolver {
                     Err(e) => outcomes.push(Err(e)),
                 }
             }
+            let regrouped = self.view.regroup(&diffs, self.cfg.upper_groups);
+            diffs.extend(regrouped);
+            let diffs = consolidate(diffs);
             let control: Vec<_> = diffs
                 .iter()
                 .filter(|(k, _, _)| k.manifest() == Manifest::Control)

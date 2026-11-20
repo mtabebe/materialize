@@ -66,6 +66,8 @@ message ProtoManifestKey {
     ProtoBatchKey batch = 7;
     ProtoIntentKey intent = 8;
     ProtoEmpty control_at = 9;
+    uint64 group = 10;
+    string member = 11;
   }
 }
 
@@ -98,6 +100,10 @@ message ProtoManifestVal {
     // The control manifest time a write that changed both control and this
     // partition landed at.
     uint64 control_at = 9;
+    // An upper group's shared upper.
+    ProtoFrontier group = 10;
+    // The upper group a data shard is a member of.
+    uint64 member = 11;
   }
 }
 

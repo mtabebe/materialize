@@ -80,6 +80,7 @@ async fn run(
         partition: "p0".into(),
         manifest_inline_single_max_bytes: single_max,
         manifest_inline_total_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES,
+        upper_groups: true,
     };
     let listener = bind(addr).await;
     let running = start_and_serve(&resolver_client, cfg, listener)

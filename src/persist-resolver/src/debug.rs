@@ -25,8 +25,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::Request;
 use crate::view::View;
 
-/// The partition's view: its manifest shards and times, its claim, and every
-/// data shard assigned to it.
+/// The partition's view: its manifest shards and times, its claim, its upper
+/// groups, and every data shard assigned to it.
 pub fn partition_json(view: &View, control_shard: &ShardId, partition_shard: &ShardId) -> Value {
     let shards: Vec<Value> = view
         .rows
@@ -36,6 +36,18 @@ pub fn partition_json(view: &View, control_shard: &ShardId, partition_shard: &Sh
             _ => None,
         })
         .collect();
+    let members = view.members();
+    let groups: Vec<Value> = view
+        .groups()
+        .into_iter()
+        .map(|(g, upper)| {
+            let members: Vec<String> = members
+                .get(&g)
+                .map(|m| m.iter().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+            json!({"group": g, "upper": upper.elements(), "members": members})
+        })
+        .collect();
     json!({
         "partition": view.partition,
         "seqno": view.seqno(),
@@ -43,6 +55,7 @@ pub fn partition_json(view: &View, control_shard: &ShardId, partition_shard: &Sh
         "partition_manifest": {"shard": partition_shard.to_string(), "time": view.partition_time},
         "control_at": view.control_at(),
         "claim": view.claim().map(|c| json!({"resolver": c.resolver, "token": c.token, "addr": c.addr})),
+        "upper_groups": groups,
         "data_shards": shards,
     })
 }
@@ -72,6 +85,7 @@ pub fn shard_json(view: &View, shard: &ShardId) -> Option<Value> {
         "shard": shard.to_string(),
         "finalized": meta.finalized,
         "upper": view.upper(shard).map(|u| u.elements().to_vec()),
+        "upper_group": view.group_of(shard),
         "since": view.readable(shard).map(|f| f.elements().to_vec()),
         "intents": intents,
         "batches": batches,

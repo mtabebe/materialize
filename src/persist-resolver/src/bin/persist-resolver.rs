@@ -49,6 +49,10 @@ struct Args {
     /// The manifest shards' `persist_inline_writes_total_max_bytes`.
     #[clap(long, default_value_t = ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES)]
     manifest_inline_total_max_bytes: usize,
+    /// Whether to keep data shards whose uppers move together in upper groups.
+    /// `--upper-groups=false` keeps every upper on its own row.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    upper_groups: bool,
 }
 
 #[tokio::main]
@@ -81,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         partition: args.partition,
         manifest_inline_single_max_bytes: args.manifest_inline_single_max_bytes,
         manifest_inline_total_max_bytes: args.manifest_inline_total_max_bytes,
+        upper_groups: args.upper_groups,
     };
     let listener = tokio::net::TcpListener::bind(args.listen_addr).await?;
     info!(
