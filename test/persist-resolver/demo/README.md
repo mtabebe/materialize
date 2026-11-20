@@ -21,6 +21,10 @@ its compare-and-set, and the data shards Materialize reads and writes are views
 the resolver builds from those rows. Shards that tick together can even share
 one upper row.
 
+The tradeoff is latency for throughput. Requests to the resolver queue while
+its previous write to CockroachDB is in flight, so a commit waits for that
+write plus its own. In exchange, each write carries the changes of many shards.
+
 ## What it shows
 
 1. Materialize works as usual on top of the resolver: tables, materialized
@@ -218,6 +222,18 @@ advances on its own schedule. `seqno` (the resolver's view seqno, one per
 resolver write) moves by about 2 per tick, see the numbers below. `Ctrl-C` to
 stop.
 
+<!-- run: write-rate -->
+```sh
+s0=$(curl -s 127.0.0.1:6891/views | jq .seqno); sleep 30
+curl -s 127.0.0.1:6891/views | jq -r --argjson s0 "$s0" \
+  '"group members: \([.upper_groups[].members | length] | add), resolver writes in 30 s: \(.seqno - $s0)"'
+```
+
+How many writes the resolver made to its manifest shards in 30 seconds, for
+every user shard together: 2-3 a second, one group advance per tick plus
+a little more. A window can catch an occasional burst; run it again if one
+looks high. Step 14 runs it again with twice the MVs.
+
 ### 7. Snapshot the user shards before writing (pane 4)
 
 <!-- run: snapshot-before -->
@@ -366,7 +382,31 @@ GROUP BY l.kind ORDER BY l.kind;
 blob and rows in the partition manifest. (The table writes also went through
 txn-wal's txns shard, counted in `other`, as they do today.)
 
-### 14. Teardown
+### 14. Twice the MVs, the same writes (panes 3 and 4)
+
+<!-- run: mz-fanout-more -->
+```sql
+SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
+       ' AS SELECT owner, sum(balance) * ' || i || ' AS total FROM accounts GROUP BY owner'
+FROM generate_series(21, 40) AS i \gexec
+```
+
+<!-- run: write-rate-more -->
+```sh
+s0=$(curl -s 127.0.0.1:6891/views | jq .seqno); sleep 30
+curl -s 127.0.0.1:6891/views | jq -r --argjson s0 "$s0" \
+  '"group members: \([.upper_groups[].members | length] | add), resolver writes in 30 s: \(.seqno - $s0)"'
+```
+
+- The group grew from 21 to 41 members, and the resolver's write rate stayed
+  about the same: every member's upper rides the one group row. (Give the new
+  MVs half a minute to settle first; while they hydrate, the rate runs high.)
+- That holds for the uppers ticking, which is most of persist's write load
+  today. An MV that actually gets new data still adds its own `Batch` row to
+  the write, so data changes still cost per shard. The writes just aren't
+  separate round trips to CockroachDB anymore.
+
+### 15. Teardown
 
 `Ctrl-C` in panes 1 and 2, then in pane 4:
 

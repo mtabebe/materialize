@@ -107,6 +107,9 @@ rehearse() {
     run reset sh_block reset
     if [ "$mode" = resolver ]; then
         run resolver true
+        # Empty it first: the background shell truncates it only once it runs, so
+        # `claimed` could otherwise match the previous run's log.
+        : >"$out/resolver.out"
         bash -c "$(block resolver)" >"$out/resolver.out" 2>&1 &
         wait_for "resolver claim" 60 $! claimed
         grep -a "claimed partition" "$out/resolver.out"
@@ -136,6 +139,7 @@ rehearse() {
         run views-groups sh_block views-groups
         run views-watch true
         timeout -k 5 -s INT 6 bash -c "$(block views-watch)" || [ $? = 124 ]
+        run write-rate sh_block write-rate
         run snapshot-before sh_block snapshot-before
         run shard-id sh_block shard-id
         # `$S` from shard-id doesn't outlive its shell, so it runs again first.
@@ -153,6 +157,9 @@ rehearse() {
         run batch-diff sh_block batch-diff
         run crdb-again true
         run crdb-kinds-again sql_block crdb-again crdb-kinds-again
+        run mz-fanout-more sql_block psql mz-fanout-more
+        sleep ${SETTLE_SECS:-30}
+        run write-rate-more sh_block write-rate-more
     else
         run crdb-watch true
         timeout -k 5 -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || [ $? = 124 ]
@@ -214,6 +221,13 @@ for mode in "${modes[@]}"; do
         [ "$(grep -c '"key":"Group([0-9]*)","val":\[[0-9]' <<<"$rows")" = 2 ] || { echo "FAIL: mv_01's group row missing"; exit 1; }
         if grep -q '"key":"Upper"' <<<"$rows"; then echo "FAIL: mv_01 has its own Upper row"; exit 1; fi
         expect "$t" '"upper_group": [0-9]+' '"lower": [0-9]+'
+        # Twice the MVs: the group doubles, the resolver's write rate doesn't.
+        rate() { grep -E "^group members: $1, resolver writes in 30 s: [0-9]+$" "$t" | grep -oE '[0-9]+$'; }
+        r21=$(rate 21) r41=$(rate 41)
+        [ -n "$r21" ] && [ -n "$r41" ] || { echo "FAIL: write-rate lines missing (21: '$r21', 41: '$r41')"; exit 1; }
+        # Bursts make one window noisy, so this only catches writes doubling with the MVs.
+        [ "$r41" -lt $((r21 * 2)) ] || { echo "FAIL: resolver writes grew from $r21 to $r41 with twice the MVs"; exit 1; }
+        echo "write rate: 21 members $r21, 41 members $r41 (per 30 s)"
         # mv_01 has no consensus rows; the partition manifest shard does.
         crdb_rows=$(awk '/^\$ # shard-crdb$/ { on = 1 } on && /^\([0-9]+ rows?\)$/ { print; if (++n == 2) exit }' "$t")
         [ "$(head -1 <<<"$crdb_rows")" = "(0 rows)" ] || { echo "FAIL: mv_01 has consensus rows"; exit 1; }
