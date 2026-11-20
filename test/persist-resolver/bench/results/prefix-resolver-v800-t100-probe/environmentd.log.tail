@@ -1,0 +1,200 @@
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816402Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816405Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=177 export=Some(User(697))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816407Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=167 export=Some(User(657))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816383Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=183 export=Some(User(721))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816418Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816420Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=184 export=Some(User(725))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816409Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816428Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816393Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816432Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=185 export=Some(User(729))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816437Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=195 export=Some(User(769))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816441Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816441Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816412Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816452Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=168 export=Some(User(661))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816455Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816443Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=196 export=Some(User(773))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816463Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816465Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=197 export=Some(User(777))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816431Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=178 export=Some(User(701))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816471Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816474Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=179 export=Some(User(705))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816445Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=186 export=Some(User(733))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816480Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816482Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=187 export=Some(User(737))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816458Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=169 export=Some(User(665))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816488Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816491Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=170 export=Some(User(669))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816468Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816497Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=198 export=Some(User(781))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816477Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816507Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=180 export=Some(User(709))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816510Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816485Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816516Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=188 export=Some(User(741))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816519Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816494Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816525Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=171 export=Some(User(673))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816528Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816503Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816534Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=199 export=Some(User(785))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816537Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816512Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=181 export=Some(User(713))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816543Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816545Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=182 export=Some(User(717))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816521Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=189 export=Some(User(745))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816552Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816554Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=190 export=Some(User(749))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816530Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=172 export=Some(User(677))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816560Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816563Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=173 export=Some(User(681))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816539Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=200 export=Some(User(789))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816566Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816548Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816574Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=174 export=Some(User(685))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816577Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=183 export=Some(User(721))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816557Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816580Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816585Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=191 export=Some(User(753))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816587Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=184 export=Some(User(725))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816589Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816591Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816569Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816599Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=201 export=Some(User(793))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816602Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816604Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=202 export=Some(User(797))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816592Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=192 export=Some(User(757))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816610Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816612Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=193 export=Some(User(761))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816578Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816618Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=175 export=Some(User(689))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816621Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816594Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=185 export=Some(User(729))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816627Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816629Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=186 export=Some(User(733))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816607Z  INFO timely{name="compute" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816635Z  INFO timely{name="compute" worker_id=2}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=203 export=Some(User(801))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816615Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816645Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=194 export=Some(User(765))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816647Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816623Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=176 export=Some(User(693))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816650Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=195 export=Some(User(769))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816654Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816655Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816656Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=177 export=Some(User(697))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816658Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=196 export=Some(User(773))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816663Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816665Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=197 export=Some(User(777))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816666Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816668Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816632Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816677Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=187 export=Some(User(737))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816680Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816682Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=188 export=Some(User(741))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816670Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=178 export=Some(User(701))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816689Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816691Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=179 export=Some(User(705))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816672Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=198 export=Some(User(781))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816697Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816700Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=199 export=Some(User(785))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816707Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816709Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=200 export=Some(User(789))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816694Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816716Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=180 export=Some(User(709))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816719Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816685Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816726Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=189 export=Some(User(745))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816729Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816712Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816735Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=201 export=Some(User(793))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816738Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816722Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=181 export=Some(User(713))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816743Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816746Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=182 export=Some(User(717))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816731Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=190 export=Some(User(749))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816749Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816753Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816753Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=183 export=Some(User(721))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816740Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=202 export=Some(User(797))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816757Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816760Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=184 export=Some(User(725))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816762Z  INFO timely{name="compute" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816763Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816766Z  INFO timely{name="compute" worker_id=1}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=203 export=Some(User(801))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816767Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=185 export=Some(User(729))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816783Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816785Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=186 export=Some(User(733))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816755Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=191 export=Some(User(753))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816793Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816796Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=192 export=Some(User(757))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816788Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816804Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=187 export=Some(User(737))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816807Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816798Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816810Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=188 export=Some(User(741))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816812Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=193 export=Some(User(761))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816814Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816816Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816817Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=189 export=Some(User(745))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816819Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=194 export=Some(User(765))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816821Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816822Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816824Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=190 export=Some(User(749))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816825Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=195 export=Some(User(769))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816827Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816829Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816830Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=191 export=Some(User(753))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816832Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=196 export=Some(User(773))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816843Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816845Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=197 export=Some(User(777))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816848Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816834Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816856Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=192 export=Some(User(757))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816859Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816850Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=198 export=Some(User(781))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816867Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816869Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=199 export=Some(User(785))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816861Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=193 export=Some(User(761))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816878Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816880Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=194 export=Some(User(765))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816872Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816888Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=200 export=Some(User(789))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816891Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816882Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816899Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=195 export=Some(User(769))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816901Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816893Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=201 export=Some(User(793))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816909Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816912Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=202 export=Some(User(797))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816903Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=196 export=Some(User(773))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816920Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816914Z  INFO timely{name="compute" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816931Z  INFO timely{name="compute" worker_id=0}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=203 export=Some(User(801))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816925Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=197 export=Some(User(777))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816938Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816940Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=198 export=Some(User(781))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816943Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816945Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=199 export=Some(User(785))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816948Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816950Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=200 export=Some(User(789))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816953Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816955Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=201 export=Some(User(793))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816957Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816959Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=202 export=Some(User(797))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816962Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.816964Z  INFO timely{name="compute" worker_id=3}: mz_compute::compute_state: allowing writes for dataflow dataflow_index=203 export=Some(User(801))
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.884057Z  INFO tokio_postgres::connection: NOTICE: relation "consensus" already exists, skipping
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:13.884127Z  INFO mz_persist_client::v2::client: persist v2: routing v2 shards to resolver at http://127.0.0.1:6890
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.099874Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::internal::metrics: fetch semaphore awaiting first dyncfg values
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.099904Z  INFO timely{name="compute" worker_id=3}: mz_persist_client::internal::metrics: fetch_semaphore got first dyncfg values
+environmentd: 2026-11-20T15:01:14.424849Z  INFO mz_service::transport: ctp: connected to server address=/tmp/environmentd-local-az1-be84951a-d674-4b98-b99d-f62b39736ea1-0/cluster-u5-replica-u5-gen-0/storagectl-0
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.424875Z  INFO ctp{name="storage"}: mz_service::transport: ctp: accepted client connection peer=<unnamed>
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425374Z  INFO timely{name="storage" worker_id=0}: mz_storage::storage_state: reconcile: modifing storage state to match expected objects worker_id=0 expected_objects={} stale_objects=[] stale_oneshot_ingestions=[]
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425380Z  INFO timely{name="storage" worker_id=3}: mz_storage::storage_state: reconcile: modifing storage state to match expected objects worker_id=3 expected_objects={} stale_objects=[] stale_oneshot_ingestions=[]
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425377Z  INFO timely{name="storage" worker_id=1}: mz_storage::storage_state: reconcile: modifing storage state to match expected objects worker_id=1 expected_objects={} stale_objects=[] stale_oneshot_ingestions=[]
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425387Z  INFO timely{name="storage" worker_id=2}: mz_storage::storage_state: reconcile: modifing storage state to match expected objects worker_id=2 expected_objects={} stale_objects=[] stale_oneshot_ingestions=[]
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425693Z  INFO timely{name="storage" worker_id=1}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425695Z  INFO timely{name="storage" worker_id=2}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.425693Z  INFO timely{name="storage" worker_id=3}: mz_persist_client::cfg: Enabling Persist Compaction
+cluster-u5-replica-u5-gen-0: 2026-11-20T15:01:14.426123Z  INFO timely{name="storage" worker_id=0}: mz_persist_client::cfg: Enabling Persist Compaction

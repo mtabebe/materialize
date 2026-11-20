@@ -1,0 +1,10 @@
+    114 panicked at src/persist-client/src/internal/trace.rs:1368:13:
+      2 panicked at src/persist/src/indexed/encoding.rs:684:69:
+2026-11-20T14:45:04.774436Z  thread 'persist:0027' panicked at src/persist-client/src/internal/trace.rs:1368:13:
+assertion `left == right` failed: merge res diffs sum (50) did not match spine batch diffs sum (110) (id range replacement)
+--
+2026-11-20T14:45:20.354742Z  thread 'persist:0018' panicked at src/persist-client/src/internal/trace.rs:1368:13:
+assertion `left == right` failed: merge res diffs sum (30) did not match spine batch diffs sum (20) (id range replacement)
+--
+2026-11-20T14:45:20.539575Z  thread 'persist:001c' panicked at src/persist-client/src/internal/trace.rs:1368:13:
+assertion `left == right` failed: merge res diffs sum (150) did not match spine batch diffs sum (160) (id range replacement)

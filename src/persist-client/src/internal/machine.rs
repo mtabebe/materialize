@@ -50,7 +50,7 @@ use crate::internal::state::{
     IdempotencyToken, LeasedReaderState, NoOpStateTransition, Since, SnapshotErr, StateCollections,
 };
 use crate::internal::state_versions::StateVersions;
-use crate::internal::trace::{ApplyMergeResult, FueledMergeRes};
+use crate::internal::trace::{ApplyMergeResult, CompactionInput, FueledMergeRes};
 use crate::internal::watch::StateWatch;
 use crate::read::LeasedReaderId;
 use crate::rpc::PubSubSender;
@@ -1215,6 +1215,42 @@ where
         res: &FueledMergeRes<T>,
     ) -> (ApplyMergeResult, RoutineMaintenance) {
         let metrics = Arc::clone(&self.applier.metrics);
+
+        // PROTOTYPE: a v2 shard's state is synthesized from its view with spine
+        // ids assigned afresh each time, so an id from the state the compactor
+        // read can name different batches now, and applying by id panics on the
+        // diffs sum check (or worse, splices in a batch whose description doesn't
+        // match its neighbours). Match an id range result by its description
+        // instead. A partial batch result names runs inside one batch by id;
+        // matched by description it would replace the batch's other runs too, so
+        // it's dropped and the caller deletes its output.
+        let legacy;
+        let res = if self
+            .applier
+            .state_versions
+            .v2_for(&self.shard_id())
+            .is_some()
+        {
+            match &res.input {
+                CompactionInput::Legacy => res,
+                CompactionInput::IdRange(_) => {
+                    legacy = FueledMergeRes {
+                        output: res.output.clone(),
+                        input: CompactionInput::Legacy,
+                        new_active_compaction: res.new_active_compaction.clone(),
+                    };
+                    &legacy
+                }
+                CompactionInput::PartialBatch(..) => {
+                    return (
+                        ApplyMergeResult::NotAppliedNoMatch,
+                        RoutineMaintenance::default(),
+                    );
+                }
+            }
+        } else {
+            res
+        };
 
         // SUBTLE! If Machine::merge_res returns false, the blobs referenced in
         // compaction output are deleted so we don't leak them. Naively passing
