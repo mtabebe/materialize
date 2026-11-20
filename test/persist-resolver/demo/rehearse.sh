@@ -9,25 +9,71 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 #
-# PROTOTYPE: runs the whole demo in each mode from a clean start, and fails if
-# a process died or logged a panic, or the transcript lacks what the demo is
-# meant to show. Transcripts go to $OUT (default
-# scratch/persist-resolver-demo/rehearsal), one per mode, without colors.
+# PROTOTYPE: runs the runbook in README.md for each mode from a clean start,
+# executing its `<!-- run: NAME -->` blocks verbatim, and fails if a block
+# fails, a process dies or logs a panic, or the transcript lacks what the demo
+# is meant to show. Transcripts go to $OUT (default
+# scratch/persist-resolver-demo/rehearsal), one per mode.
 #
 #   rehearse.sh [resolver] [classic]
 
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
-demo=test/persist-resolver/demo/demo.sh
+dir=test/persist-resolver/demo
+readme=$dir/README.md
 state=scratch/persist-resolver-demo
 out=${OUT:-$state/rehearsal}
 mkdir -p "$out"
 modes=("$@")
 [ ${#modes[@]} -gt 0 ] || modes=(resolver classic)
-trap '$demo down >/dev/null' EXIT
+target=${CARGO_TARGET_DIR:-$PWD/target}/${PROFILE:-debug}
+for bin in environmentd clusterd persist-resolver; do
+    [ -x "$target/$bin" ] || { echo "$target/$bin isn't built: cargo build --bin $bin"; exit 1; }
+done
+trap '$dir/demo.sh down >/dev/null' EXIT
 
-# Fails unless the transcript has a line matching each pattern.
+# The body of the README block marked `<!-- run: $1 -->`, unindented.
+block() {
+    local body
+    body=$(awk -v name="$1" '
+        { line = $0; sub(/^[ \t]+/, "", line) }
+        line == "<!-- run: " name " -->" { want = 1; next }
+        want && !inside && line ~ /^```/ { inside = 1; indent = index($0, "`") - 1; next }
+        inside && line ~ /^```/ { exit }
+        inside { print substr($0, indent + 1) }' "$readme")
+    [ -n "$body" ] || { echo "FAIL: no block '$1' in $readme" >&2; exit 1; }
+    printf '%s\n' "$body"
+}
+
+# Prints a block the way it appears on screen, then runs it.
+run() {
+    local name=$1
+    shift
+    printf '\n$ # %s\n%s\n' "$name" "$(block "$name")"
+    "$@"
+}
+sh_block() { bash -c "$(block "$1")"; }
+# Runs SQL block $2 through the client the shell block $1 starts.
+sql_block() { bash -c "$(block "$1") -v ON_ERROR_STOP=1 -f -" <<<"$(block "$2")"; }
+
+wait_for() {
+    local what=$1 secs=$2
+    shift 2
+    for _ in $(seq "$secs"); do
+        "$@" && return 0
+        sleep 1
+    done
+    echo "FAIL: $what not ready after ${secs}s"
+    tail -20 "$state"/*.log "$out"/*.out 2>/dev/null || true
+    exit 1
+}
+claimed() { grep -q "claimed partition" "$out/resolver.out"; }
+mz_ready() {
+    [ "$(PGCONNECT_TIMEOUT=5 PGOPTIONS='--welcome_message=off' psql -h localhost -p 6875 -U materialize -At -c \
+        "SELECT count(*) FROM mz_internal.mz_cluster_replica_statuses s JOIN mz_cluster_replicas r ON s.replica_id = r.id JOIN mz_clusters c ON r.cluster_id = c.id WHERE c.name = 'quickstart' AND s.status = 'online'" 2>/dev/null)" = 1 ]
+}
+
 expect() {
     local file=$1
     shift
@@ -36,34 +82,74 @@ expect() {
     done
 }
 
+rehearse() {
+    local mode=$1
+    run reset sh_block reset
+    if [ "$mode" = resolver ]; then
+        run resolver true
+        bash -c "$(block resolver)" >"$out/resolver.out" 2>&1 &
+        wait_for "resolver claim" 60 claimed
+        grep -a "claimed partition" "$out/resolver.out"
+        run environmentd-resolver true
+        bash -c "$(block environmentd-resolver)" >"$out/environmentd.out" 2>&1 &
+    else
+        run environmentd-classic true
+        bash -c "$(block environmentd-classic)" >"$out/environmentd.out" 2>&1 &
+    fi
+    wait_for environmentd 300 mz_ready
+    run psql true
+    run mz-create sql_block psql mz-create
+    run mz-subscribe true
+    (sleep 2 && run insert-carol sh_block insert-carol) &
+    local insert=$!
+    timeout -k 5 -s INT 6 bash -c "$(block psql) -f -" <<<"$(block mz-subscribe)" 2>&1 |
+        grep -v -e '^Cancel request sent' -e 'canceling statement due to user request' || true
+    wait "$insert"
+    run mz-fanout sql_block psql mz-fanout
+    run labels sh_block labels
+    run crdb true
+    run crdb-kinds sql_block crdb crdb-kinds
+    run crdb-user-shards sql_block crdb crdb-user-shards
+    if [ "$mode" = resolver ]; then
+        run views-groups sh_block views-groups
+        run views-watch true
+        timeout -s INT 6 bash -c "$(block views-watch)" || true
+    else
+        run crdb-watch true
+        timeout -s INT 4 bash -c "$(block crdb) -f -" <<<"$(block crdb-watch)" || true
+    fi
+    for p in "$out/resolver.out" "$state/environmentd.log"; do
+        [ "$mode" = resolver ] || [ "$p" != "$out/resolver.out" ] || continue
+        if grep -a -E "panicked at|overflowed its stack|fatal runtime error" "$p"; then
+            echo "FAIL: panic in $p"
+            exit 1
+        fi
+    done
+    local expected=1
+    [ "$mode" = classic ] || expected=2
+    [ "$(jobs -rp | wc -l)" -eq "$expected" ] || { echo "FAIL: a process exited early"; jobs -l; exit 1; }
+    run down sh_block down
+}
+
 for mode in "${modes[@]}"; do
     echo "== $mode"
     start=$(date +%s)
-    $demo up "$mode"
-    $demo all | tee "$out/$mode.txt"
-    for pid in "$state"/*.pid; do
-        kill -0 "$(cat "$pid")" || { echo "FAIL: $(basename "$pid" .pid) died"; exit 1; }
-    done
-    if grep -a -E "panicked at|overflowed its stack|fatal runtime error" "$state"/*.log; then
-        echo "FAIL: panic in $mode"
-        exit 1
-    fi
-    # The SUBSCRIBE saw the concurrent insert.
-    expect "$out/$mode.txt" $'\tcarol\t75\t1$'
+    PGOPTIONS='--welcome_message=off' rehearse "$mode" >"$out/$mode.txt" 2>&1 || { tail -30 "$out/$mode.txt"; exit 1; }
+    t=$out/$mode.txt
+    expect "$t" $'\tcarol\t75\t1$' 'labels: [0-9]+ builtin, 1 catalog, [0-9]+ other' ' mv_20 '
     if [ "$mode" = resolver ]; then
-        expect "$out/$mode.txt" \
-            'user: accounts +s[0-9a-f-]+ +\(no consensus row\)' \
-            'user: balances +s[0-9a-f-]+ +\(no consensus row\)' \
-            'manifest: partition p0 +s[0-9a-f-]+ +rows=[0-9]+ +seqno=[0-9]+' \
-            '"data_shards": 2' \
-            '"reader": "c[0-9a-f-]+"' \
-            "^  ${TICKS:-10} +absent +rows=[0-9]+ seqno=[0-9]+ +view_seqno=[0-9]+ upper=[0-9]+"
+        expect "$t" 'claimed partition p0' \
+            '^ user +\| +22 \| +0 \| +0$' \
+            '^ builtin +\| +([0-9]+) \| +[0-9]+ \| +[0-9]+$' \
+            '^ resolver-manifest +\| +2 \| +2 \|' \
+            '^ mv_20 +\| +0 \| *$' \
+            '"members": \[' \
+            '^\{"seqno":[0-9]+,"groups":\[\{"group":[0-9]+,"upper":[0-9]+,"members":21\}\],"own_upper_rows":1\}$'
     else
-        expect "$out/$mode.txt" \
-            'user: accounts +s[0-9a-f-]+ +rows=[0-9]+ +seqno=[0-9]+' \
-            'user: balances +s[0-9a-f-]+ +rows=[0-9]+ +seqno=[0-9]+' \
-            "^  ${TICKS:-10} +rows=[0-9]+ seqno=[0-9]+"
+        expect "$t" '^ user +\| +22 \| +22 \| +[0-9]+$' \
+            '^ mv_20 +\| +[0-9]+ \| +[0-9]+$' \
+            '^ [0-9:]{8} \| [0-9]+( [0-9]+){21}$'
+        if grep "^labels:" "$t" | grep -q resolver-manifest; then echo "FAIL: classic run has resolver manifests"; exit 1; fi
     fi
-    $demo down
-    echo "== $mode: OK in $(($(date +%s) - start))s"
+    echo "== $mode: OK in $(($(date +%s) - start))s, transcript $t"
 done

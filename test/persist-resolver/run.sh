@@ -63,7 +63,7 @@ MZ_PERSIST_RESOLVER_URL=http://127.0.0.1:6890 RUST_MIN_STACK=${RUST_MIN_STACK:-1
     --persist-consensus-url="$postgres?options=--search_path=consensus" \
     --persist-blob-url="file://$root/mzdata/persist/blob" \
     --timestamp-oracle-url="$postgres?options=--search_path=tsoracle" \
-    --environment-id="local-az1-$(cat /proc/sys/kernel/random/uuid)-0" \
+    --environment-id="local-az1-$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' || cat /proc/sys/kernel/random/uuid)-0" \
     --bootstrap-role=materialize \
     --cluster-replica-sizes="$sizes" \
     --bootstrap-default-cluster-replica-size=bootstrap \

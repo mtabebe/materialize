@@ -1,98 +1,258 @@
 # Persist resolver demo
 
-PROTOTYPE. A five-minute demo of the persist resolver
-(`src/persist-resolver`), with the same steps on classic persist for contrast:
+PROTOTYPE. A hand-run demo of the persist resolver (`src/persist-resolver`),
+then the same SQL on classic persist for contrast. What it shows:
 
-1. Materialize works as usual: a table, a materialized view, `SELECT`, `SUBSCRIBE`.
-2. With the resolver, the user collections' shards have no row in consensus. Only
-   the catalog, builtin, txns and the resolver's two manifest shards do.
-3. The resolver's JSON view shows each data shard's upper, since, read intents
-   and batches, and the partition's seqno.
-4. On classic persist, every user shard has its own consensus row, and its seqno
-   climbs with every write.
+1. Materialize works as usual on top of the resolver: tables, materialized
+   views, `SELECT`, `SUBSCRIBE`.
+2. Only user collections go through the resolver. The opt-in is two settings
+   on environmentd, and it applies to new user collections only: builtin,
+   catalog and txns shards stay ordinary persist shards, each with its own
+   rows in consensus.
+3. User collections have no consensus rows. Their state is rows in the
+   resolver's two manifest shards.
+4. Shards whose uppers move together share one upper row (an upper group).
+   With 20 MVs on one cluster, one group's single upper ticks for all of them.
+   On classic persist, every MV has its own consensus row and seqno.
 
-## Prerequisites
+Every command shown on camera is below, verbatim and in order. `demo.sh` only
+resets, tears down, labels shards, and holds environmentd's long local argument
+list. `rehearse.sh` runs this file's blocks (the ones marked `<!-- run: ... -->`)
+for both modes and checks the output, so a passing rehearsal means the commands
+here work as written.
+
+## Before recording
 
 - CockroachDB on `localhost:26257`, insecure, for consensus and the timestamp
-  oracle. `demo.sh up` drops and recreates the `consensus`, `tsoracle` and
-  `storage` schemas of database `materialize`.
+  oracle:
 
   ```
   docker run -d --name cockroach -p 127.0.0.1:26257:26257 \
       cockroachdb/cockroach:v23.1.11 start-single-node --insecure
   ```
 
-- `psql`, `jq`, `curl`.
-- Dev builds of the three binaries:
+- `psql`, `jq` and `curl` (macOS: `brew install libpq jq` and `brew link --force
+  libpq`, since libpq is keg-only), and `timeout` for `rehearse.sh` (macOS:
+  `brew install coreutils`).
+- Dev builds of the three binaries, from the repository root:
 
   ```
   cargo build --bin environmentd --bin clusterd --bin persist-resolver
   ```
 
-  Set `PROFILE=release` (or `optimized`) to run binaries from another profile's
-  target directory. The dev build is quick enough: statements take 0.1-0.3 s and
-  `up` takes about 30 s, almost all of it environmentd booting.
+- Check the box: `test/persist-resolver/demo/rehearse.sh` (about two minutes).
+  It ends with everything stopped.
+- Four terminal panes, all in the repository root: **1** resolver,
+  **2** environmentd, **3** `psql` to Materialize, **4** a shell.
 
-`demo.sh up` wipes `mzdata/` in the repository root, as `bin/environmentd --reset`
-would. Logs go to `scratch/persist-resolver-demo/`.
+`demo.sh reset` wipes `mzdata/` in the repository root and the `consensus`,
+`tsoracle`, `storage` and `demo` schemas of CRDB database `materialize`, as
+`bin/environmentd --reset` would. `demo.sh down` stops every environmentd,
+clusterd and persist-resolver started from a `target/` directory.
 
-## Running it
+## Resolver run
 
-Bring a mode up before the recording starts, then run one step at a time. Each
-step prints the SQL, `curl` or shell command before its output.
+### 1. Reset (pane 4)
 
+<!-- run: reset -->
+```sh
+test/persist-resolver/demo/demo.sh reset
 ```
-test/persist-resolver/demo/demo.sh up resolver   # ~30 s; wipes everything first
-test/persist-resolver/demo/demo.sh step 1
-test/persist-resolver/demo/demo.sh step 2
-test/persist-resolver/demo/demo.sh step 3
-test/persist-resolver/demo/demo.sh step 4
-test/persist-resolver/demo/demo.sh step 5
-test/persist-resolver/demo/demo.sh up classic    # stops the resolver run, starts fresh
-test/persist-resolver/demo/demo.sh step 1        # ... through step 5 again
+
+Empty consensus, empty blob store.
+
+### 2. Start the resolver (pane 1)
+
+<!-- run: resolver -->
+```sh
+target/debug/persist-resolver \
+    --blob-url "file://$PWD/mzdata/persist/blob" \
+    --consensus-url 'postgres://root@localhost:26257/materialize?options=--search_path=consensus' \
+    --listen-addr 127.0.0.1:6890 \
+    --http-listen-addr 127.0.0.1:6891
+```
+
+Point at `claimed partition p0 with token 1`: one resolver owns partition `p0`,
+whose state lives in two ordinary persist shards (the manifest shards) in the
+same consensus and blob store Materialize uses.
+
+### 3. Start environmentd, opted in (pane 2)
+
+<!-- run: environmentd-resolver -->
+```sh
+MZ_PERSIST_RESOLVER_URL=http://127.0.0.1:6890 \
+test/persist-resolver/demo/demo.sh environmentd \
+    --system-parameter-default=persist_v2_register_user_shards=true
+```
+
+The opt-in is the first and last line: where the resolver is (environmentd and
+the clusterd processes it starts), and a system parameter that registers new
+**user** collections with it. `demo.sh environmentd` adds only the local
+arguments `bin/environmentd` would pass, and logs to
+`scratch/persist-resolver-demo/environmentd.log`. Ready in about 30 s.
+
+### 4. SQL (pane 3)
+
+<!-- run: psql -->
+```sh
+psql -h localhost -p 6875 -U materialize
+```
+
+<!-- run: mz-create -->
+```sql
+CREATE TABLE accounts (id int, owner text, balance int);
+INSERT INTO accounts VALUES (1, 'alice', 100), (2, 'bob', 50), (3, 'alice', 25);
+CREATE MATERIALIZED VIEW balances AS
+    SELECT owner, sum(balance) AS total, count(*) AS n FROM accounts GROUP BY owner;
+SELECT * FROM balances ORDER BY owner;
+```
+
+Ordinary SQL. The table and the MV are the first two user collections.
+
+<!-- run: mz-subscribe -->
+```sql
+COPY (SUBSCRIBE balances) TO STDOUT;
+```
+
+Then in pane 4:
+
+<!-- run: insert-carol -->
+```sh
+psql -h localhost -p 6875 -U materialize -c "INSERT INTO accounts VALUES (4, 'carol', 75)"
+```
+
+Carol's row streams into pane 3: the MV's writes and the subscription's reads
+both go through the resolver. `Ctrl-C` in pane 3 ends the `SUBSCRIBE`.
+
+<!-- run: mz-fanout -->
+```sql
+SELECT 'CREATE MATERIALIZED VIEW mv_' || lpad(i::text, 2, '0') ||
+       ' AS SELECT owner, sum(balance) * ' || i || ' AS total FROM accounts GROUP BY owner'
+FROM generate_series(1, 20) AS i \gexec
+```
+
+Twenty more MVs on the same cluster, so 22 user collections.
+
+### 5. Consensus, by kind of shard (pane 4)
+
+<!-- run: labels -->
+```sh
+test/persist-resolver/demo/demo.sh labels
+```
+
+Copies each shard's kind and name from Materialize (and the resolver's
+manifest shards) into CRDB as `demo.shard_labels`, so plain SQL against
+consensus can name them.
+
+<!-- run: crdb -->
+```sh
+psql postgres://root@localhost:26257/materialize
+```
+
+<!-- run: crdb-kinds -->
+```sql
+SELECT l.kind,
+       count(DISTINCT l.shard) AS shards,
+       count(DISTINCT c.shard) AS shards_in_consensus,
+       count(c.shard) AS consensus_rows
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+GROUP BY l.kind ORDER BY l.kind;
+```
+
+`user`: 22 shards, none in consensus. Everything else (`builtin`, `catalog`
+which is `mz_catalog_raw`, and `other`: txns, the expression cache and other
+shards Materialize doesn't list by name) has its own consensus rows, as today.
+So does `resolver-manifest`: the resolver's state is itself two persist shards.
+
+<!-- run: crdb-user-shards -->
+```sql
+SELECT l.name, count(c.shard) AS consensus_rows, max(c.sequence_number) AS seqno
+FROM demo.shard_labels l LEFT JOIN consensus.consensus c USING (shard)
+WHERE l.kind IN ('user', 'resolver-manifest')
+GROUP BY l.name ORDER BY l.name;
+```
+
+Every user collection by name, with 0 consensus rows, and the two manifest
+shards with theirs. `\q` to leave.
+
+### 6. The resolver's view (pane 4)
+
+<!-- run: views-groups -->
+```sh
+curl -s 127.0.0.1:6891/views | jq '.upper_groups'
+```
+
+One upper group: 21 members (`balances` and the 20 MVs) and one `upper`. It's
+one row in the partition manifest, in place of 21 per-shard `Upper` rows.
+
+<!-- run: views-watch -->
+```sh
+while sleep 1; do
+  curl -s 127.0.0.1:6891/views | jq -c '{seqno, groups: [.upper_groups[] | {group, upper: .upper[0], members: (.members | length)}], own_upper_rows: (.data_shards | map(select(.upper_group == null)) | length)}'
+done
+```
+
+Once a second the group's single `upper` moves for all 21 members together.
+`own_upper_rows` is 1: `accounts`, a table, whose data shard upper txn-wal
+advances on its own schedule. `seqno` (the resolver's view seqno, one per
+resolver write) moves by about 2 per tick, see the numbers below. `Ctrl-C` to
+stop.
+
+### 7. Teardown
+
+`Ctrl-C` in panes 1 and 2, then in pane 4:
+
+<!-- run: down -->
+```sh
 test/persist-resolver/demo/demo.sh down
 ```
 
-`demo.sh all` runs steps 1-5 in a row. `rehearse.sh` runs `up` and `all` for both
-modes and fails if a process died, a log has a panic, or the transcript lacks
-what the demo shows (carol's row in the SUBSCRIBE, the user shards' consensus
-rows or their absence, the resolver's JSON). Rerun it before recording.
+## Classic run, for contrast
 
-Knobs: `TICKS` (step 5's inserts, default 10), `SUBSCRIBE_SECS` (step 2, default 6).
+The same steps without the resolver:
 
-### What to point out
+1. Reset (pane 4): the `reset` block above.
+2. No resolver.
+3. environmentd without the opt-in (pane 2):
 
-| Step | Resolver | Classic |
-|---|---|---|
-| 1. Create `accounts` and the MV `balances`, insert three rows | Ordinary SQL. The two user collections are registered with the resolver. | Same SQL. |
-| 2. `SELECT`, then `SUBSCRIBE` while another session inserts | The subscription sees the snapshot, then carol's row about two seconds in: reads, including listens served from clusterd, follow the data shards through the resolver. | Same output. |
-| 3. Consensus, by shard | 104 shards with rows: 98 builtin, 4 others (catalog, txns), and 2 manifest shards. `accounts` and `balances` have **no consensus row**. | 104 shards: 98 builtin, 4 others, and the 2 user shards, each with its own rows and seqno. |
-| 4. The resolver's view | `GET /views`: the partition `p0`, its seqno, both manifest shards and their manifest times, the claim. `GET /views/<shard>`: the table's upper, since, read intents (the storage controller's critical reader with its opaque, a leased reader, ...) and its batches with update and part counts. | No resolver. The table's state is a versioned blob in consensus: one row per seqno, a few hundred bytes each. |
-| 5. Insert once a second, watching consensus | `accounts` stays absent from consensus. The partition manifest shard's seqno climbs instead, a few per tick, and the resolver's view seqno and the table's upper advance with it. | `accounts`'s seqno climbs by one per insert. |
+   <!-- run: environmentd-classic -->
+   ```sh
+   test/persist-resolver/demo/demo.sh environmentd
+   ```
 
-Two different seqnos appear in resolver mode. The **view seqno** in `/views`
-(`seqno`, `view_seqno=` in step 5) is the sum of the two manifest shards' manifest
-times, so it moves once per resolver write. The **consensus seqno** of the
-partition manifest shard is persist's own for that shard and also counts state
-changes that aren't resolver writes, so it runs ahead. Both move while idle too,
-because the table's upper advances about once a second: over 30 idle seconds one
-run saw the view seqno go 23 to 56 and the consensus seqno 24 to 62.
+4. The same SQL in pane 3: `psql`, `CREATE ...`, `SUBSCRIBE` with the insert
+   from pane 4, and the fan-out. Same results.
+5. The same `labels`, `psql postgres://...` and two queries in pane 4. Now
+   `user` has 22 shards in consensus, and each MV has its own rows and seqno.
+   Then watch them climb, each on its own:
 
-### Two-pane layout
+   <!-- run: crdb-watch -->
+   ```sql
+   SELECT now()::TIME(0) AS t,
+          string_agg(s.seqno::STRING, ' ' ORDER BY s.name) AS seqno_of_each_user_shard
+   FROM (SELECT l.name, max(c.sequence_number) AS seqno
+         FROM demo.shard_labels l JOIN consensus.consensus c USING (shard)
+         WHERE l.kind = 'user' GROUP BY l.name) AS s \watch 1
+   ```
 
-Left pane: the presenter runs the steps. Right pane, resolver mode: the
-partition's view refreshing, so it moves during step 5.
+   One line per second with 22 seqnos, `accounts` first, then `balances` and
+   `mv_01` to `mv_20`: every MV writes its own consensus row each tick. (In the
+   resolver run this query prints an empty list.) `Ctrl-C` to stop.
 
-```
-tmux new-session -s demo \; split-window -h \; send-keys \
-    "watch -n1 \"curl -s 127.0.0.1:6891/views | jq -c '{seqno, partition_manifest, shards: [.data_shards[] | {shard, upper: .upper[0], batches: (.batches | length)}]}'\"" C-m \; select-pane -L
-```
+6. Teardown: `Ctrl-C` in pane 2, then the `down` block.
 
-Classic mode, right pane: the user shards' consensus rows.
+## Numbers to have in hand
 
-```
-watch -n1 "psql postgres://root@localhost:26257/materialize -c 'SELECT shard, count(*), max(sequence_number) FROM consensus.consensus GROUP BY shard ORDER BY 3 DESC LIMIT 6'"
-```
+- A tick's appends from one cluster's 21 MV shards reach the resolver over two
+  of its writes: 1-2 shards, then the rest. The early ones leave the group for
+  their own `Upper` row and rejoin when the group catches up, so the view
+  seqno moves by about 2 per tick, and `own_upper_rows` sometimes briefly
+  shows 2 or 3.
+- The resolver writes while idle: the uppers advance once a second whether or
+  not there are inserts. Over 30 idle seconds one earlier run saw the view seqno
+  go 23 to 56 (before upper groups).
+- `--upper-groups=false` on `persist-resolver` turns grouping off (every shard
+  on its own `Upper` row), for comparison.
 
 ## Known issues
 
@@ -100,214 +260,12 @@ watch -n1 "psql postgres://root@localhost:26257/materialize -c 'SELECT shard, co
   3 MiB tokio worker stack in environmentd and aborted it, in 3 of 3 classic-mode
   tries. The one resolver-mode try didn't crash. The overflowing stack is
   pgwire's `fetch` and the adapter's frontend peek path down to `plan_subscribe`,
-  not persist. Step 2 uses `COPY (SUBSCRIBE ...) TO STDOUT` instead, which
+  not persist. The demo uses `COPY (SUBSCRIBE ...) TO STDOUT` instead, which
   streams rows live in a terminal.
-- Only user collections are data shards; the prototype's cuts are listed in its
-  plan.
+- `demo.sh down` matches processes by path, so it also stops an environmentd,
+  clusterd or persist-resolver from another checkout's `target/`.
 
 ## Captured output
 
-From `rehearse.sh` on a dev build. Shard ids, timestamps and seqnos differ per
-run, and the seqno increments in step 5 vary with how writes fall into cycles.
-
-<details><summary>resolver mode</summary>
-
-```
-
-== 1. Create a table and a materialized view, and write to them (resolver)
-materialize=> CREATE TABLE accounts (id int, owner text, balance int)
-materialize=> CREATE MATERIALIZED VIEW balances AS SELECT owner, sum(balance) AS total, count(*) AS n FROM accounts GROUP BY owner
-materialize=> INSERT INTO accounts VALUES (1, 'alice', 100), (2, 'bob', 50), (3, 'alice', 25)
-
-== 2. Read it back: SELECT, and a SUBSCRIBE that sees a new write (resolver)
-materialize=> SELECT * FROM balances ORDER BY owner
- owner | total | n 
--------+-------+---
- alice |   125 | 2
- bob   |    50 | 1
-(2 rows)
-
-# SUBSCRIBE for 6s in one session; another session inserts a row two seconds in.
-materialize=> COPY (SUBSCRIBE balances) TO STDOUT
-1795186886859	1	bob	50	1
-1795186886859	1	alice	125	2
-1795186889198	1	carol	75	1
-
-== 3. What's in consensus (resolver)
-consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consensus.consensus
- shards | rows 
---------+------
-    104 | 2713
-(1 row)
-
-# Every shard with a consensus row, by kind:
-  builtin   98
-  manifest  2
-  other     4
-# ('other': shards Materialize doesn't list by name, such as the catalog and txns shards.)
-# The user collections, and the resolver's manifest shards:
-  user: accounts             sdab04b58-1b91-4af5-9f04-efd8008dac02    (no consensus row)
-  user: balances             sc249e290-86c1-48bc-9e3b-f7509b57f6bd    (no consensus row)
-  manifest: control          s00000000-0000-0000-0000-00000000c0de    rows=14  seqno=13
-  manifest: partition p0     s39a28e62-bcbd-4f9b-a213-670dcbd84f39    rows=34  seqno=33
-# User collections have no consensus row: their state is rows in the manifest shards.
-
-== 4. Ask the resolver for the partition's view (resolver)
-$ curl -sf 127.0.0.1:6891/views | jq '{partition, seqno, control_manifest, partition_manifest, claim, data_shards: (.data_shards | length)}'
-{
-  "partition": "p0",
-  "seqno": 32,
-  "control_manifest": {
-    "shard": "s00000000-0000-0000-0000-00000000c0de",
-    "time": 5
-  },
-  "partition_manifest": {
-    "shard": "s39a28e62-bcbd-4f9b-a213-670dcbd84f39",
-    "time": 27
-  },
-  "claim": {
-    "resolver": "resolver-4eb78e8a-9051-4d93-9e44-5af59ca7bfd2",
-    "token": 1,
-    "addr": "http://127.0.0.1:6890"
-  },
-  "data_shards": 2
-}
-# The 'accounts' table is data shard sdab04b58-1b91-4af5-9f04-efd8008dac02:
-$ curl -sf 127.0.0.1:6891/views/sdab04b58-1b91-4af5-9f04-efd8008dac02
-{
-  "shard": "sdab04b58-1b91-4af5-9f04-efd8008dac02",
-  "finalized": false,
-  "upper": [
-    1795186889199
-  ],
-  "since": [
-    1795186886162
-  ],
-  "intents": [
-    {
-      "reader": "c00000000-1111-2222-3333-444444444444",
-      "frontier": [
-        1795186886162
-      ],
-      "opaque": 2
-    },
-    {
-      "reader": "ra47712bf-13e7-4bf9-805d-f4b45032f281",
-      "frontier": [
-        1795186886162
-      ],
-      "opaque": null
-    }
-  ],
-  "batches": [
-    {
-      "lower": [
-        1795186886450
-      ],
-      "upper": [
-        1795186886860
-      ],
-      "since": [
-        0
-      ],
-      "updates": 3,
-      "parts": 1
-    },
-    {
-      "lower": [
-        1795186886860
-      ],
-      "upper": [
-        1795186889199
-      ],
-      "since": [
-        0
-      ],
-      "updates": 1,
-      "parts": 1
-    }
-  ]
-}
-
-== 5. Watch consensus while writing, 10 inserts one second apart (resolver)
-  tick consensus: accounts          consensus: partition manifest resolver: accounts          
-  1    absent                       rows=37 seqno=36             view_seqno=34 upper=1795186893915
-  2    absent                       rows=40 seqno=39             view_seqno=37 upper=1795186895084
-  3    absent                       rows=44 seqno=43             view_seqno=40 upper=1795186896254
-  4    absent                       rows=48 seqno=47             view_seqno=44 upper=1795186897424
-  5    absent                       rows=51 seqno=50             view_seqno=47 upper=1795186898593
-  6    absent                       rows=55 seqno=54             view_seqno=50 upper=1795186899766
-  7    absent                       rows=58 seqno=57             view_seqno=53 upper=1795186900939
-  8    absent                       rows=62 seqno=61             view_seqno=56 upper=1795186902107
-  9    absent                       rows=65 seqno=64             view_seqno=59 upper=1795186903277
-  10   absent                       rows=70 seqno=69             view_seqno=63 upper=1795186904446
-```
-
-</details>
-
-<details><summary>classic mode</summary>
-
-```
-
-== 1. Create a table and a materialized view, and write to them (classic)
-materialize=> CREATE TABLE accounts (id int, owner text, balance int)
-materialize=> CREATE MATERIALIZED VIEW balances AS SELECT owner, sum(balance) AS total, count(*) AS n FROM accounts GROUP BY owner
-materialize=> INSERT INTO accounts VALUES (1, 'alice', 100), (2, 'bob', 50), (3, 'alice', 25)
-
-== 2. Read it back: SELECT, and a SUBSCRIBE that sees a new write (classic)
-materialize=> SELECT * FROM balances ORDER BY owner
- owner | total | n 
--------+-------+---
- alice |   125 | 2
- bob   |    50 | 1
-(2 rows)
-
-# SUBSCRIBE for 6s in one session; another session inserts a row two seconds in.
-materialize=> COPY (SUBSCRIBE balances) TO STDOUT
-1795186935052	1	bob	50	1
-1795186935052	1	alice	125	2
-1795186937187	1	carol	75	1
-
-== 3. What's in consensus (classic)
-consensus=> SELECT count(DISTINCT shard) AS shards, count(*) AS rows FROM consensus.consensus
- shards | rows 
---------+------
-    104 | 2721
-(1 row)
-
-# Every shard with a consensus row, by kind:
-  builtin   98
-  other     4
-  user      2
-# ('other': shards Materialize doesn't list by name, such as the catalog and txns shards.)
-# The user collections, and the resolver's manifest shards:
-  user: accounts             s98668b4e-5322-451a-9fbe-5ed8d16b0ace    rows=14  seqno=13
-  user: balances             s59262881-3260-4b1d-8502-76a5beddeaf5    rows=26  seqno=25
-# Each user collection is a persist shard: its own consensus row, its own seqno.
-
-== 4. Where a user collection's state lives (classic)
-# Classic persist has no resolver. A shard's state is a versioned blob in consensus:
-consensus=> SELECT shard, sequence_number, length(data) AS state_bytes FROM consensus.consensus WHERE shard = 's98668b4e-5322-451a-9fbe-5ed8d16b0ace' ORDER BY sequence_number DESC LIMIT 3
-                 shard                 | sequence_number | state_bytes 
----------------------------------------+-----------------+-------------
- s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              13 |         943
- s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              12 |         869
- s98668b4e-5322-451a-9fbe-5ed8d16b0ace |              11 |         235
-(3 rows)
-
-
-== 5. Watch consensus while writing, 10 inserts one second apart (classic)
-  tick consensus: accounts         
-  1    rows=15 seqno=14            
-  2    rows=16 seqno=15            
-  3    rows=17 seqno=16            
-  4    rows=18 seqno=17            
-  5    rows=19 seqno=18            
-  6    rows=20 seqno=19            
-  7    rows=21 seqno=20            
-  8    rows=22 seqno=21            
-  9    rows=24 seqno=23            
-  10   rows=25 seqno=24            
-```
-
-</details>
+From `rehearse.sh` on a dev build, which runs the blocks above in order. Shard
+ids, timestamps and seqnos differ per run.
