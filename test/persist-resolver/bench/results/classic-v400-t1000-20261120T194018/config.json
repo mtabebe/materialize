@@ -20,5 +20,7 @@
   "crdb_cpus_set": "0-3",
   "git_head": "578699fadc47cdd828ff5dee1d4dd17e42fcb371",
   "git_dirty": false,
-  "started": "2026-11-20T19:40:18+0000"
+  "started": "2026-11-20T19:40:18+0000",
+  "sweep": "1",
+  "sweep_note": "sweep 1: binaries built at 14:35-15:50 from c58cbce334 plus the compaction fix later committed as bb28a841bb (identical modulo whitespace), before upper groups existed. git_head/git_dirty record the checkout when the run started, which moved during the sweep (bb28a841bb, 578699fadc); the binaries did not change."
 }

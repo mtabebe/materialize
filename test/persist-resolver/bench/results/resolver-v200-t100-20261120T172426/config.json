@@ -22,5 +22,5 @@
   "git_dirty": true,
   "started": "2026-11-20T17:24:26+0000",
   "sweep": "1",
-  "sweep_note": "binaries built from c58cbce334 plus the compaction fix later committed as bb28a841bb (identical modulo whitespace); before upper groups existed"
+  "sweep_note": "sweep 1: binaries built at 14:35-15:50 from c58cbce334 plus the compaction fix later committed as bb28a841bb (identical modulo whitespace), before upper groups existed. git_head/git_dirty record the checkout when the run started, which moved during the sweep (bb28a841bb, 578699fadc); the binaries did not change."
 }

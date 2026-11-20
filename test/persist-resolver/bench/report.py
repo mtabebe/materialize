@@ -23,7 +23,7 @@ import math
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
-ARM_COLOR = {"classic": "#d1495b", "resolver": "#00798c"}
+ARM_COLOR = {"classic": "#d1495b", "resolver": "#00798c", "resolver-grouped": "#edae49"}
 TICK_DASH = {1000: "6 4", 100: ""}
 
 
@@ -36,6 +36,8 @@ def load() -> list[dict]:
         s, c = json.loads(sf.read_text()), json.loads(cf.read_text())
         if c.get("exclude"):
             continue
+        c.setdefault("sweep", "2")
+        c.setdefault("rows_per_tick", 10)
         runs.append({"dir": d.name, "cfg": c, **s})
     return runs
 
@@ -64,6 +66,7 @@ COLUMNS = [
     ("view writes/s", lambda r: fmt(r.get("view_writes_per_s"), 0)),
     ("fresh <=1s", lambda r: fmt(r.get("fresh_le_1s"), 3)),
     ("lag p99 bucket s", lambda r: r.get("lag_p99_bucket_s", "-")),
+    ("rows/tick", lambda r: fmt(r["cfg"]["rows_per_tick"], 1)),
     ("CaS/s", lambda r: fmt(r.get("cas_per_s"), 0)),
     ("CaS MB/s", lambda r: fmt((r.get("cas_bytes_per_s") or 0) / 2**20, 2)),
     ("CaS p50 ms", lambda r: ms(r.get("cas_p50_s"))),
@@ -79,6 +82,8 @@ COLUMNS = [
     ("resolver cores", lambda r: fmt(r.get("resolver_cores"), 2) if r["cfg"]["arm"] == "resolver" else "-"),
     ("resolver RSS MB", lambda r: fmt(r.get("resolver_rss_mb_peak"), 0) if r["cfg"]["arm"] == "resolver" else "-"),
     ("cycles/s", lambda r: fmt(r.get("resolver_cycles_per_s"), 0)),
+    ("manifest KB/write", lambda r: fmt(r["resolver_bytes_per_write"] / 1024, 1) if r.get("resolver_bytes_per_write") else "-"),
+    ("groups (members)", lambda r: f"{g['groups']} ({g['grouped_members']}/{g['data_shards']})" if (g := r.get("resolver_groups_end")) else "-"),
     ("commits/cycle", lambda r: fmt(r.get("resolver_commits_per_cycle"), 1)),
     ("commit p50 ms", lambda r: ms(r.get("resolver_commit_p50_s"))),
     ("commit p99 ms", lambda r: ms(r.get("resolver_commit_p99_s"))),
@@ -158,7 +163,8 @@ def svg_chart(title: str, ylabel: str, series: dict[tuple[str, int], list[tuple[
 
 CHARTS = [
     ("freshness", "Freshness: share of lag samples <= 1 s", "share", lambda r: r.get("fresh_le_1s"), False, 1.05),
-    ("cas", "Consensus CaS/s (all processes)", "CaS/s", lambda r: r.get("cas_per_s"), True, None),
+    ("cas", "Consensus writes (CaS/s, all processes)", "CaS/s", lambda r: r.get("cas_per_s"), True, None),
+    ("manifest_bytes", "Resolver manifest bytes per write", "KB", lambda r: (r.get("resolver_bytes_per_write") or 0) / 1024 or None, True, None),
     ("crdb_cpu", "CockroachDB CPU", "cores", lambda r: r.get("crdb_cores"), False, None),
     ("crdb_stmts", "CockroachDB statements/s", "statements/s", lambda r: r.get("crdb_sql_query_per_s"), True, None),
     ("cas_p99", "CaS p99 (bucket upper bound)", "ms", lambda r: (r.get("cas_p99_s") or 0) * 1000 or None, True, None),
@@ -168,9 +174,14 @@ CHARTS = [
 
 def main() -> None:
     runs = [r for r in load() if r.get("view_writes_per_s") is not None or r.get("error")]
-    runs.sort(key=lambda r: (r["cfg"]["tick_ms"], r["cfg"]["views"], r["cfg"]["arm"], r["dir"]))
+    runs.sort(key=lambda r: (r["cfg"]["sweep"], r["cfg"]["rows_per_tick"], r["cfg"]["tick_ms"], r["cfg"]["views"], r["cfg"]["arm"], r["dir"]))
     (BENCH / "charts").mkdir(exist_ok=True)
-    good = [r for r in runs if r.get("view_writes_per_s") and (r.get("mode") or {}).get("ok")]
+    # Charts: sweep 2 (one revision, all three arms), the cloud report's shape.
+    good = [
+        r for r in runs
+        if r.get("view_writes_per_s") and (r.get("mode") or {}).get("ok")
+        and r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10
+    ]
     for name, title, ylabel, f, logy, ymax in CHARTS:
         series: dict = {}
         for r in good:
@@ -192,9 +203,19 @@ def main() -> None:
         "",
         "# Per-run results",
         "",
-        table(runs),
-        "",
     ]
+    groups = [
+        ("Sweep 2: classic, resolver, resolver-grouped at one revision, 10 rows per tick",
+         lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10),
+        ("Sweep 2, sparse variant: 0.1 rows per tick (9 of 10 ticks upper-only)",
+         lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] != 10),
+        ("Sweep 1: classic and resolver before upper groups existed",
+         lambda r: r["cfg"]["sweep"] == "1"),
+    ]
+    for title, pred in groups:
+        rows = [r for r in runs if pred(r)]
+        if rows:
+            md += [f"## {title}", "", table(rows), ""]
     (BENCH / "results.md").write_text("\n".join(md))
     print(f"{len(runs)} runs, {len(good)} plotted")
 
