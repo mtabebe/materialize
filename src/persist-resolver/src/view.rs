@@ -503,12 +503,19 @@ impl View {
     ///
     /// The policy: a group whose members' uppers diverged follows its largest set
     /// of members at one upper, those that stayed or those that moved to the same
-    /// new upper, and the rest move out to their own `Upper` rows. Then each shard
-    /// whose own `Upper` row changed joins the group at its upper, or forms one
-    /// with the other such shards at that upper.
+    /// new upper, and the rest move out to their own `Upper` rows. Then every shard
+    /// on its own `Upper` row at a group's upper joins it, shards whose own `Upper`
+    /// row changed form a group with the others at the same upper, and groups at
+    /// one upper merge into the lowest id.
+    ///
+    /// NOTE: a shard that left a group this cycle doesn't form a new one. Under
+    /// Materialize, a tick's appends to one cluster's shards arrive over two cycles
+    /// (1-2 shards, then the rest), so letting the early ones form a group made a
+    /// new group every tick.
     pub fn regroup(&mut self, diffs: &[RowDiff], grouping: bool) -> Vec<RowDiff> {
         let mut out = Vec::new();
         let mut touched = BTreeSet::new();
+        let mut departed = BTreeSet::new();
         let mut left: BTreeMap<GroupId, Vec<ShardId>> = BTreeMap::new();
         for (k, v, d) in diffs {
             match (k, v) {
@@ -517,6 +524,7 @@ impl View {
                 }
                 (ManifestKey::Member(s), ValKind::Member(g)) if *d < 0 => {
                     touched.insert(*s);
+                    departed.insert(*s);
                     left.entry(*g).or_default().push(*s);
                 }
                 _ => {}
@@ -544,7 +552,7 @@ impl View {
                         self.set(&mut out, ManifestKey::Member(s), None);
                         let u = ValKind::Upper(proto_frontier(&upper));
                         self.set(&mut out, ManifestKey::Upper(s), Some(u));
-                        touched.insert(s);
+                        departed.insert(s);
                     }
                     let u = ValKind::Group(ProtoFrontier { elements: new });
                     self.set(&mut out, ManifestKey::Group(g), Some(u));
@@ -565,30 +573,50 @@ impl View {
             return out;
         }
 
-        let groups = self.groups();
-        let mut next = groups.keys().max().map_or(0, |g| g + 1);
+        // Groups at one upper merge into the lowest id.
+        let members = self.members();
         let mut by_upper: BTreeMap<Vec<u64>, GroupId> = BTreeMap::new();
-        for (g, u) in groups {
-            by_upper.entry(u.elements().to_vec()).or_insert(g);
-        }
-        let mut free: BTreeMap<Vec<u64>, Vec<ShardId>> = BTreeMap::new();
-        for s in touched {
-            if let Some(u) = self.own_upper(&s) {
-                free.entry(u).or_default().push(s);
+        for (g, u) in self.groups() {
+            match by_upper.get(u.elements()) {
+                None => {
+                    by_upper.insert(u.elements().to_vec(), g);
+                }
+                Some(into) => {
+                    let into = *into;
+                    for s in members.get(&g).into_iter().flatten() {
+                        let m = ValKind::Member(into);
+                        self.set(&mut out, ManifestKey::Member(*s), Some(m));
+                    }
+                    self.set(&mut out, ManifestKey::Group(g), None);
+                }
             }
         }
-        for (upper, shards) in free {
-            let g = match by_upper.get(&upper) {
-                Some(g) => *g,
-                None if shards.len() > 1 => {
-                    let g = next;
-                    next += 1;
-                    let u = ValKind::Group(ProtoFrontier { elements: upper });
-                    self.set(&mut out, ManifestKey::Group(g), Some(u));
-                    g
-                }
-                None => continue,
-            };
+        let mut next = by_upper.values().max().map_or(0, |g| g + 1);
+        let own: Vec<(ShardId, Vec<u64>)> = self
+            .rows
+            // `Upper` keys sort right after `Claim`.
+            .range((Bound::Excluded(ManifestKey::Claim), Bound::Unbounded))
+            .map_while(|(k, v)| match (k, v) {
+                (ManifestKey::Upper(s), ValKind::Upper(u)) => Some((*s, u.elements.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut forming: BTreeMap<Vec<u64>, Vec<ShardId>> = BTreeMap::new();
+        for (s, upper) in own {
+            if let Some(g) = by_upper.get(&upper) {
+                self.join(&mut out, s, *g);
+            } else if touched.contains(&s) && !departed.contains(&s) {
+                forming.entry(upper).or_default().push(s);
+            }
+        }
+        for (upper, shards) in forming {
+            if shards.len() < 2 {
+                continue;
+            }
+            let g = next;
+            next += 1;
+            let u = ValKind::Group(ProtoFrontier { elements: upper });
+            self.set(&mut out, ManifestKey::Group(g), Some(u));
             for s in shards {
                 self.join(&mut out, s, g);
             }
@@ -1029,6 +1057,38 @@ mod tests {
         cycle(&mut view, &appends(&[b, c], 9, 11), true);
         cycle(&mut view, &appends(&[a], 10, 11), true);
         assert_eq!(view.members(), BTreeMap::from([(0, sorted(&shards))]));
+    }
+
+    #[mz_ore::test]
+    fn early_appenders_rejoin_instead_of_forming_a_group() {
+        let shards: Vec<_> = (0..5).map(|_| ShardId::new()).collect();
+        let mut view = view_with(&shards);
+        cycle(&mut view, &appends(&shards, 0, 5), true);
+        for (from, to) in [(5, 6), (6, 7), (7, 8)] {
+            // Two members append first, then the other three, as Materialize's
+            // ticks land: the two wait on their own rows and rejoin, so there is
+            // still one group.
+            cycle(&mut view, &appends(&shards[..2], from, to), true);
+            assert_eq!(view.groups().len(), 1);
+            assert_eq!(view.members()[&0].len(), 3);
+            cycle(&mut view, &appends(&shards[2..], from, to), true);
+            assert_eq!(view.members(), BTreeMap::from([(0, sorted(&shards))]));
+        }
+    }
+
+    #[mz_ore::test]
+    fn groups_at_one_upper_merge() {
+        let shards: Vec<_> = (0..4).map(|_| ShardId::new()).collect();
+        let mut view = view_with(&shards);
+        cycle(&mut view, &appends(&shards[..2], 0, 5), true);
+        cycle(&mut view, &appends(&shards[2..], 0, 3), true);
+        assert_eq!(view.groups().len(), 2);
+        cycle(&mut view, &appends(&shards[2..], 3, 5), true);
+        assert_eq!(view.members(), BTreeMap::from([(0, sorted(&shards))]));
+        assert_eq!(
+            view.groups(),
+            BTreeMap::from([(0, Antichain::from_elem(5))])
+        );
     }
 
     #[mz_ore::test]
