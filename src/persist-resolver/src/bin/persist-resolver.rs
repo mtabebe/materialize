@@ -40,6 +40,9 @@ struct Args {
     /// Where to serve the resolver's gRPC API.
     #[clap(long, default_value = "127.0.0.1:6890")]
     listen_addr: SocketAddr,
+    /// Where to serve the read-only JSON debug endpoint (`/views`), if anywhere.
+    #[clap(long)]
+    http_listen_addr: Option<SocketAddr>,
     #[clap(long, default_value = DEFAULT_CONTROL_SHARD)]
     control_shard: ShardId,
     #[clap(long, default_value = "p0")]
@@ -54,6 +57,10 @@ struct Args {
     /// persist metrics and the resolver's cycle stats.
     #[clap(long)]
     metrics_listen_addr: Option<SocketAddr>,
+    /// Whether to keep data shards whose uppers move together in upper groups.
+    /// `--upper-groups=false` keeps every upper on its own row.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    upper_groups: bool,
 }
 
 #[tokio::main]
@@ -87,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         partition: args.partition,
         manifest_inline_single_max_bytes: args.manifest_inline_single_max_bytes,
         manifest_inline_total_max_bytes: args.manifest_inline_total_max_bytes,
+        upper_groups: args.upper_groups,
     };
     let listener = tokio::net::TcpListener::bind(args.listen_addr).await?;
     info!(
@@ -105,6 +113,15 @@ async fn main() -> anyhow::Result<()> {
             serve_metrics(listener, registry, Arc::clone(&running.stats)),
         );
     }
+    let _http = match args.http_listen_addr {
+        Some(addr) => {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            info!("debug view at http://{}/views", listener.local_addr()?);
+            let serve = mz_persist_resolver::debug::serve_http(running.tx.clone(), listener);
+            Some(mz_ore::task::spawn(|| "persist-resolver-http", serve).abort_on_drop())
+        }
+        None => None,
+    };
     running.cycle.await;
     anyhow::bail!("resolver stopped: its claim was taken")
 }

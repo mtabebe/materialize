@@ -102,6 +102,8 @@ impl BatchId {
 }
 
 pub type PartitionId = String;
+/// An upper group's id, unique within its partition manifest.
+pub type GroupId = u64;
 /// A reader's id: a `LeasedReaderId` or `CriticalReaderId` as a string, or
 /// [SENTINEL_READER].
 pub type ReaderId = String;
@@ -120,7 +122,12 @@ pub enum ManifestKey {
     Partition(PartitionId),
     // Partition manifest.
     Claim,
+    /// A data shard's upper, unless it's a member of an upper group.
     Upper(ShardId),
+    /// An upper group's upper, shared by its members.
+    Group(GroupId),
+    /// Puts a data shard in an upper group, in place of its `Upper` row.
+    Member(ShardId),
     Batch(ShardId, BatchId),
     Intent(ShardId, ReaderId),
     /// The control manifest time this partition is consistent with.
@@ -144,6 +151,8 @@ impl ManifestKey {
             ManifestKey::Claim
             | ManifestKey::ControlAt
             | ManifestKey::Upper(_)
+            | ManifestKey::Group(_)
+            | ManifestKey::Member(_)
             | ManifestKey::Batch(..)
             | ManifestKey::Intent(..) => Manifest::Partition,
         }
@@ -155,9 +164,13 @@ impl ManifestKey {
             | ManifestKey::Schema(s, _)
             | ManifestKey::Assign(s)
             | ManifestKey::Upper(s)
+            | ManifestKey::Member(s)
             | ManifestKey::Batch(s, _)
             | ManifestKey::Intent(s, _) => Some(*s),
-            ManifestKey::Partition(_) | ManifestKey::Claim | ManifestKey::ControlAt => None,
+            ManifestKey::Partition(_)
+            | ManifestKey::Claim
+            | ManifestKey::Group(_)
+            | ManifestKey::ControlAt => None,
         }
     }
 
@@ -173,6 +186,8 @@ impl ManifestKey {
             ManifestKey::Partition(p) => Kind::Partition(p.clone()),
             ManifestKey::Claim => Kind::Claim(ProtoEmpty {}),
             ManifestKey::Upper(s) => Kind::Upper(s.to_string()),
+            ManifestKey::Group(g) => Kind::Group(*g),
+            ManifestKey::Member(s) => Kind::Member(s.to_string()),
             ManifestKey::Batch(s, id) => Kind::Batch(ProtoBatchKey {
                 shard: s.to_string(),
                 id: Some(ProtoBatchId {
@@ -206,6 +221,8 @@ impl ManifestKey {
             Kind::Partition(p) => ManifestKey::Partition(p),
             Kind::Claim(_) => ManifestKey::Claim,
             Kind::Upper(s) => ManifestKey::Upper(shard(&s)?),
+            Kind::Group(g) => ManifestKey::Group(g),
+            Kind::Member(s) => ManifestKey::Member(shard(&s)?),
             Kind::Batch(k) => {
                 let id = k.id.unwrap_or_default();
                 ManifestKey::Batch(

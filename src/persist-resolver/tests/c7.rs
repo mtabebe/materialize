@@ -61,6 +61,7 @@ async fn start(client: &PersistClient, addr: std::net::SocketAddr, control: Shar
         partition: "p0".into(),
         manifest_inline_single_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_SINGLE_MAX_BYTES,
         manifest_inline_total_max_bytes: ResolverConfig::DEFAULT_MANIFEST_INLINE_TOTAL_MAX_BYTES,
+        upper_groups: true,
     };
     start_and_serve(client, cfg, bind(addr).await)
         .await
