@@ -382,7 +382,7 @@ GROUP BY l.kind ORDER BY l.kind;
 blob and rows in the partition manifest. (The table writes also went through
 txn-wal's txns shard, counted in `other`, as they do today.)
 
-### 14. Twice the MVs, the same writes (panes 3 and 4)
+### 14. Twice the MVs, not twice the writes (panes 3 and 4)
 
 <!-- run: mz-fanout-more -->
 ```sql
@@ -398,13 +398,15 @@ curl -s 127.0.0.1:6891/views | jq -r --argjson s0 "$s0" \
   '"group members: \([.upper_groups[].members | length] | add), resolver writes in 30 s: \(.seqno - $s0)"'
 ```
 
-- The group grew from 21 to 41 members, and the resolver's write rate stayed
-  about the same: every member's upper rides the one group row. (Give the new
-  MVs half a minute to settle first; while they hydrate, the rate runs high.)
-- That holds for the uppers ticking, which is most of persist's write load
-  today. An MV that actually gets new data still adds its own `Batch` row to
-  the write, so data changes still cost per shard. The writes just aren't
-  separate round trips to CockroachDB anymore.
+- The MVs doubled, and the resolver's writes grew by about 1.3-1.6x, still to
+  one key in CockroachDB. Classic persist would have doubled both: twice the
+  keys, and twice the writes. (Give the new MVs half a minute to settle first;
+  while they hydrate, the rate runs high.)
+- Every member's upper rides the one group row, which covers the uppers
+  ticking, most of persist's write load today. The rest still grows with the
+  shards: an MV that actually gets new data adds its own `Batch` row, and
+  other per-shard state changes too. Those changes just aren't separate round
+  trips to CockroachDB anymore.
 
 ### 15. Teardown
 
