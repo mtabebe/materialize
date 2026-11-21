@@ -1,0 +1,134 @@
+{
+  "window_seconds": 600.0,
+  "views": 1600,
+  "tick_ms": 1000,
+  "nominal_view_writes_per_s": 1600.0,
+  "ticks_per_s": 1.01,
+  "mv0_rows_per_s": 10.17,
+  "rows_per_tick": 10,
+  "view_writes_per_s": 1621.3,
+  "lag_histogram": {
+    "2": 41477,
+    "4": 169276,
+    "8": 270329,
+    "16": 450026,
+    "32": 28892
+  },
+  "lag_samples": 960000,
+  "lag_samples_expected": 960000,
+  "fresh_le_1s": 0.0,
+  "lag_p99_bucket_s": "32",
+  "cas_per_s": 85.4,
+  "cas_per_s_by_process": {
+    "clusterd-s1-0": 0.0,
+    "clusterd-s2-0": 52.2,
+    "clusterd-s3-0": 0.0,
+    "clusterd-u1-0": 0.0,
+    "clusterd-u2-0": 0.0,
+    "clusterd-u3-0": 0.0,
+    "clusterd-u4-0": 0.0,
+    "clusterd-u5-0": 0.0,
+    "clusterd-u6-0": 0.0,
+    "environmentd": 29.4,
+    "resolver": 3.7
+  },
+  "cas_bytes_per_s": 84008,
+  "cas_failed_per_s": 0.0,
+  "cas_mismatch_per_s": 2.33,
+  "cas_p50_s": 0.004,
+  "cas_p99_s": 0.016,
+  "compare_and_append_per_s": 552.1,
+  "view_procs": [
+    "clusterd-u3-0",
+    "clusterd-u4-0",
+    "clusterd-u5-0",
+    "clusterd-u6-0"
+  ],
+  "requested_appends_per_s": 1600.0,
+  "committed_appends_per_s": 476.2,
+  "committed_share": 0.298,
+  "cas_per_committed_append": 0.179,
+  "compare_and_append_mean_s": 1.38698,
+  "crdb_sql_query_per_s": 92.5,
+  "crdb_sql_insert_per_s": 85.4,
+  "crdb_sql_update_per_s": 2.0,
+  "crdb_sql_select_per_s": 4.1,
+  "crdb_sql_delete_per_s": 0.7,
+  "crdb_sql_txn_commit_per_s": 0.0,
+  "crdb_sql_failure_per_s": 0.0,
+  "crdb_txn_restarts_per_s": 0.0,
+  "crdb_sql_service_p50_s": 0.002758531617629,
+  "crdb_sql_service_p99_s": 0.014208308325339,
+  "environmentd_cores": 0.28,
+  "environmentd_rss_mb_end": 1009,
+  "environmentd_rss_mb_peak": 1039,
+  "clusterd_cores": 5.32,
+  "clusterd_rss_mb_end": 11212,
+  "clusterd_rss_mb_peak": 11287,
+  "resolver_cores": 2.3,
+  "resolver_rss_mb_end": 4701,
+  "resolver_rss_mb_peak": 4688,
+  "crdb_cores": 0.1,
+  "crdb_rss_mb_end": 1142,
+  "crdb_rss_mb_peak": 1146,
+  "resolver_cycles_per_s": 2.8,
+  "resolver_commits_per_s": 639.8,
+  "resolver_commits_per_cycle": 228.8,
+  "resolver_manifest_writes_per_s": 2.8,
+  "resolver_lost_writes_per_s": 0.0,
+  "resolver_bytes_per_write": 553116,
+  "resolver_watch_requests_per_s": 1388.9,
+  "resolver_fetch_requests_per_s": 2092.7,
+  "resolver_groups_start": {
+    "data_shards": 1602,
+    "groups": 1,
+    "grouped_members": 1600,
+    "largest_groups": [
+      1600
+    ]
+  },
+  "resolver_groups_end": {
+    "data_shards": 1602,
+    "groups": 2,
+    "grouped_members": 1460,
+    "largest_groups": [
+      1317,
+      143
+    ]
+  },
+  "resolver_commit_p50_s": 0.524288,
+  "resolver_commit_p99_s": 16.777216,
+  "resolver_manifest_write_p50_s": 0.004096,
+  "resolver_manifest_write_p99_s": 0.524288,
+  "sampled_fresh_lt_2s_mean": 0.0004,
+  "sampled_p50_lag_s_mean": 148.483,
+  "sampled_p99_lag_s_max": 337.738,
+  "sampled_max_lag_s_max": 349.738,
+  "setup_seconds": 868.2058770656586,
+  "mode": {
+    "user_shards": 1602,
+    "user_shards_with_consensus_rows": 0,
+    "ok": true
+  },
+  "consensus_table": {
+    "rows": 15536,
+    "shards": 104,
+    "ranges": 1,
+    "live_bytes": 11871264,
+    "total_bytes": 157596819,
+    "mvcc_garbage_bytes": 145725555
+  },
+  "ok": true,
+  "exited_early": [],
+  "logs": {
+    "resolver": {
+      "lines": 4,
+      "problems": []
+    },
+    "environmentd": {
+      "lines": 27340,
+      "problems": []
+    },
+    "clusterd_log_files": 0
+  }
+}

@@ -164,7 +164,12 @@ def svg_chart(title: str, ylabel: str, series: dict[tuple[str, int], list[tuple[
 
 
 CHARTS = [
-    ("freshness", "Freshness: share of lag samples <= 1 s", "share", lambda r: r.get("fresh_le_1s"), False, 1.05),
+    # At a 1 s tick the histogram's lag samples are in phase with the tick and
+    # all land in one bucket either side of its 2 s edge, so only 100 ms runs.
+    ("freshness", "Freshness, 100 ms tick: share of lag samples in bucket 1 (< 2 s)", "share", lambda r: r.get("fresh_le_1s") if r["cfg"]["tick_ms"] == 100 else None, False, 1.05),
+    ("lag_p50", "View lag p50, sampled live every 5 s", "s", lambda r: r.get("sampled_p50_lag_s_mean"), True, None),
+    ("committed_share", "Committed appends / requested", "share", lambda r: r.get("committed_share"), False, 1.05),
+    ("cas_per_append", "CaS per committed append (all processes)", "CaS", lambda r: r.get("cas_per_committed_append"), True, None),
     ("cas", "Consensus writes (CaS/s, all processes)", "CaS/s", lambda r: r.get("cas_per_s"), True, None),
     ("manifest_bytes", "Resolver manifest bytes per write", "KB", lambda r: (r.get("resolver_bytes_per_write") or 0) / 1024 or None, True, None),
     ("crdb_cpu", "CockroachDB CPU", "cores", lambda r: r.get("crdb_cores"), False, None),

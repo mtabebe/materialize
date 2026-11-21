@@ -5,6 +5,7 @@
   "nominal_view_writes_per_s": 2000.0,
   "ticks_per_s": 9.99,
   "mv0_rows_per_s": 100.08,
+  "rows_per_tick": 10,
   "view_writes_per_s": 1997.7,
   "lag_histogram": {
     "1": 120000
@@ -33,6 +34,16 @@
   "cas_p50_s": 0.008,
   "cas_p99_s": 0.032,
   "compare_and_append_per_s": 1670.4,
+  "view_procs": [
+    "clusterd-u3-0",
+    "clusterd-u4-0",
+    "clusterd-u5-0",
+    "clusterd-u6-0"
+  ],
+  "requested_appends_per_s": 2000.0,
+  "committed_appends_per_s": 1578.1,
+  "committed_share": 0.789,
+  "cas_per_committed_append": 0.078,
   "compare_and_append_mean_s": 0.08407,
   "crdb_sql_query_per_s": 131.2,
   "crdb_sql_insert_per_s": 122.4,
@@ -64,6 +75,8 @@
   "resolver_bytes_per_write": 124093,
   "resolver_watch_requests_per_s": 4099.4,
   "resolver_fetch_requests_per_s": 397.4,
+  "resolver_groups_start": null,
+  "resolver_groups_end": null,
   "resolver_commit_p50_s": 0.131072,
   "resolver_commit_p99_s": 0.262144,
   "resolver_manifest_write_p50_s": 0.016384,

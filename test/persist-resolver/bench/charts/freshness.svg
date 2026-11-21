@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="380" font-family="sans-serif" font-size="11">
 <rect width="640" height="380" fill="white"/>
-<text x="70" y="20" font-size="14" font-weight="bold">Freshness: share of lag samples <= 1 s</text>
+<text x="70" y="20" font-size="14" font-weight="bold">Freshness, 100 ms tick: share of lag samples in bucket 1 (< 2 s)</text>
 <line x1="70" y1="330" x2="470" y2="330" stroke="black"/>
 <line x1="70" y1="40" x2="70" y2="330" stroke="black"/>
 <text x="270.0" y="370" text-anchor="middle">view writes/s (log)</text>
@@ -25,31 +25,31 @@
 <text x="65" y="113.0" text-anchor="end">0.8</text>
 <line x1="70" y1="53.8" x2="470" y2="53.8" stroke="#eee"/>
 <text x="65" y="57.8" text-anchor="end">1</text>
-<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,54.6 L372.5,165.5 L463.6,323.5" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
+<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,54.6 L372.5,175.9 L463.6,323.5" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
 <circle cx="70.0" cy="53.8" r="3" fill="#d1495b"/>
 <circle cx="99.3" cy="53.8" r="3" fill="#d1495b"/>
 <circle cx="190.4" cy="53.8" r="3" fill="#d1495b"/>
 <circle cx="281.4" cy="54.6" r="3" fill="#d1495b"/>
-<circle cx="372.5" cy="165.5" r="3" fill="#d1495b"/>
+<circle cx="372.5" cy="175.9" r="3" fill="#d1495b"/>
 <circle cx="463.6" cy="323.5" r="3" fill="#d1495b"/>
 <line x1="480" y1="55" x2="510" y2="55" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
 <text x="515" y="59">classic, 10 Hz</text>
-<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,54.0 L372.5,269.0 L463.6,329.7" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,54.0 L372.5,275.2 L463.6,329.7" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
 <circle cx="70.0" cy="53.8" r="3" fill="#00798c"/>
 <circle cx="99.3" cy="53.8" r="3" fill="#00798c"/>
 <circle cx="190.4" cy="53.8" r="3" fill="#00798c"/>
 <circle cx="281.4" cy="54.0" r="3" fill="#00798c"/>
-<circle cx="372.5" cy="269.0" r="3" fill="#00798c"/>
+<circle cx="372.5" cy="275.2" r="3" fill="#00798c"/>
 <circle cx="463.6" cy="329.7" r="3" fill="#00798c"/>
-<line x1="480" y1="73" x2="510" y2="73" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
-<text x="515" y="77">resolver, 10 Hz</text>
-<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,53.8 L372.5,265.1 L463.6,329.7" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<line x1="480" y1="91" x2="510" y2="91" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="95">resolver, 10 Hz</text>
+<path d="M70.0,53.8 L99.3,53.8 L190.4,53.8 L281.4,53.8 L372.5,260.5 L463.6,329.7" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
 <circle cx="70.0" cy="53.8" r="3" fill="#edae49"/>
 <circle cx="99.3" cy="53.8" r="3" fill="#edae49"/>
 <circle cx="190.4" cy="53.8" r="3" fill="#edae49"/>
 <circle cx="281.4" cy="53.8" r="3" fill="#edae49"/>
-<circle cx="372.5" cy="265.1" r="3" fill="#edae49"/>
+<circle cx="372.5" cy="260.5" r="3" fill="#edae49"/>
 <circle cx="463.6" cy="329.7" r="3" fill="#edae49"/>
-<line x1="480" y1="91" x2="510" y2="91" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
-<text x="515" y="95">resolver-grouped, 10 Hz</text>
+<line x1="480" y1="127" x2="510" y2="127" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="131">resolver-grouped, 10 Hz</text>
 </svg>

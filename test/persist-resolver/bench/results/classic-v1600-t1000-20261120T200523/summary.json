@@ -5,6 +5,7 @@
   "nominal_view_writes_per_s": 1600.0,
   "ticks_per_s": 1.0,
   "mv0_rows_per_s": 9.98,
+  "rows_per_tick": 10,
   "view_writes_per_s": 1600.0,
   "lag_histogram": {
     "1": 115976,
@@ -35,6 +36,16 @@
   "cas_p50_s": 0.256,
   "cas_p99_s": 1.0,
   "compare_and_append_per_s": 1664.1,
+  "view_procs": [
+    "clusterd-u3-0",
+    "clusterd-u4-0",
+    "clusterd-u5-0",
+    "clusterd-u6-0"
+  ],
+  "requested_appends_per_s": 1600.0,
+  "committed_appends_per_s": 1585.9,
+  "committed_share": 0.991,
+  "cas_per_committed_append": 1.532,
   "compare_and_append_mean_s": 0.30759,
   "crdb_sql_query_per_s": 2975.3,
   "crdb_sql_insert_per_s": 2429.9,

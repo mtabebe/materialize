@@ -5,14 +5,18 @@
 <line x1="70" y1="40" x2="70" y2="330" stroke="black"/>
 <text x="270.0" y="370" text-anchor="middle">view writes/s (log)</text>
 <text x="15" y="185.0" transform="rotate(-90 15 185.0)" text-anchor="middle">statements/s</text>
-<line x1="99.3" y1="330" x2="99.3" y2="40" stroke="#eee"/>
-<text x="99.3" y="345" text-anchor="middle">500</text>
-<line x1="190.4" y1="330" x2="190.4" y2="40" stroke="#eee"/>
-<text x="190.4" y="345" text-anchor="middle">1000</text>
-<line x1="281.4" y1="330" x2="281.4" y2="40" stroke="#eee"/>
-<text x="281.4" y="345" text-anchor="middle">2000</text>
-<line x1="401.8" y1="330" x2="401.8" y2="40" stroke="#eee"/>
-<text x="401.8" y="345" text-anchor="middle">5000</text>
+<line x1="70.0" y1="330" x2="70.0" y2="40" stroke="#eee"/>
+<text x="70.0" y="345" text-anchor="middle">100</text>
+<line x1="132.6" y1="330" x2="132.6" y2="40" stroke="#eee"/>
+<text x="132.6" y="345" text-anchor="middle">200</text>
+<line x1="215.3" y1="330" x2="215.3" y2="40" stroke="#eee"/>
+<text x="215.3" y="345" text-anchor="middle">500</text>
+<line x1="277.9" y1="330" x2="277.9" y2="40" stroke="#eee"/>
+<text x="277.9" y="345" text-anchor="middle">1000</text>
+<line x1="340.4" y1="330" x2="340.4" y2="40" stroke="#eee"/>
+<text x="340.4" y="345" text-anchor="middle">2000</text>
+<line x1="423.2" y1="330" x2="423.2" y2="40" stroke="#eee"/>
+<text x="423.2" y="345" text-anchor="middle">5000</text>
 <line x1="70" y1="330.0" x2="470" y2="330.0" stroke="#eee"/>
 <text x="65" y="334.0" text-anchor="end">10</text>
 <line x1="70" y1="233.3" x2="470" y2="233.3" stroke="#eee"/>
@@ -21,31 +25,49 @@
 <text x="65" y="140.7" text-anchor="end">1000</text>
 <line x1="70" y1="40.0" x2="470" y2="40.0" stroke="#eee"/>
 <text x="65" y="44.0" text-anchor="end">10000</text>
-<path d="M70.0,153.1 L99.3,144.7 L190.4,117.9 L281.4,94.9 L372.5,98.2 L463.6,103.6" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="153.1" r="3" fill="#d1495b"/>
-<circle cx="99.3" cy="144.7" r="3" fill="#d1495b"/>
-<circle cx="190.4" cy="117.9" r="3" fill="#d1495b"/>
-<circle cx="281.4" cy="94.9" r="3" fill="#d1495b"/>
-<circle cx="372.5" cy="98.2" r="3" fill="#d1495b"/>
-<circle cx="463.6" cy="103.6" r="3" fill="#d1495b"/>
+<path d="M195.1,153.1 L215.3,144.7 L277.9,117.9 L340.4,94.9 L403.0,99.4 L465.6,103.6" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
+<circle cx="195.1" cy="153.1" r="3" fill="#d1495b"/>
+<circle cx="215.3" cy="144.7" r="3" fill="#d1495b"/>
+<circle cx="277.9" cy="117.9" r="3" fill="#d1495b"/>
+<circle cx="340.4" cy="94.9" r="3" fill="#d1495b"/>
+<circle cx="403.0" cy="99.4" r="3" fill="#d1495b"/>
+<circle cx="465.6" cy="103.6" r="3" fill="#d1495b"/>
 <line x1="480" y1="55" x2="510" y2="55" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
 <text x="515" y="59">classic, 10 Hz</text>
-<path d="M70.0,199.3 L99.3,196.9 L190.4,204.5 L281.4,225.3 L372.5,230.7 L463.6,234.4" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="199.3" r="3" fill="#00798c"/>
-<circle cx="99.3" cy="196.9" r="3" fill="#00798c"/>
-<circle cx="190.4" cy="204.5" r="3" fill="#00798c"/>
-<circle cx="281.4" cy="225.3" r="3" fill="#00798c"/>
-<circle cx="372.5" cy="230.7" r="3" fill="#00798c"/>
-<circle cx="463.6" cy="234.4" r="3" fill="#00798c"/>
-<line x1="480" y1="73" x2="510" y2="73" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
-<text x="515" y="77">resolver, 10 Hz</text>
-<path d="M70.0,195.7 L99.3,200.0 L190.4,207.7 L281.4,225.3 L372.5,230.9 L463.6,234.4" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="195.7" r="3" fill="#edae49"/>
-<circle cx="99.3" cy="200.0" r="3" fill="#edae49"/>
-<circle cx="190.4" cy="207.7" r="3" fill="#edae49"/>
-<circle cx="281.4" cy="225.3" r="3" fill="#edae49"/>
-<circle cx="372.5" cy="230.9" r="3" fill="#edae49"/>
-<circle cx="463.6" cy="234.4" r="3" fill="#edae49"/>
-<line x1="480" y1="91" x2="510" y2="91" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
-<text x="515" y="95">resolver-grouped, 10 Hz</text>
+<path d="M70.0,196.3 L195.1,151.7 L320.3,92.2" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray="6 4"/>
+<circle cx="70.0" cy="196.3" r="3" fill="#d1495b"/>
+<circle cx="195.1" cy="151.7" r="3" fill="#d1495b"/>
+<circle cx="320.3" cy="92.2" r="3" fill="#d1495b"/>
+<line x1="480" y1="73" x2="510" y2="73" stroke="#d1495b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="515" y="77">classic, 1 Hz</text>
+<path d="M195.1,199.3 L215.3,196.9 L277.9,204.5 L340.4,225.3 L403.0,230.6 L465.6,234.4" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<circle cx="195.1" cy="199.3" r="3" fill="#00798c"/>
+<circle cx="215.3" cy="196.9" r="3" fill="#00798c"/>
+<circle cx="277.9" cy="204.5" r="3" fill="#00798c"/>
+<circle cx="340.4" cy="225.3" r="3" fill="#00798c"/>
+<circle cx="403.0" cy="230.6" r="3" fill="#00798c"/>
+<circle cx="465.6" cy="234.4" r="3" fill="#00798c"/>
+<line x1="480" y1="91" x2="510" y2="91" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="95">resolver, 10 Hz</text>
+<path d="M70.0,229.8 L195.1,225.2 L320.3,237.5" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray="6 4"/>
+<circle cx="70.0" cy="229.8" r="3" fill="#00798c"/>
+<circle cx="195.1" cy="225.2" r="3" fill="#00798c"/>
+<circle cx="320.3" cy="237.5" r="3" fill="#00798c"/>
+<line x1="480" y1="109" x2="510" y2="109" stroke="#00798c" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="515" y="113">resolver, 1 Hz</text>
+<path d="M195.1,195.7 L215.3,200.0 L277.9,207.7 L340.4,225.3 L403.0,231.3 L465.6,234.4" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<circle cx="195.1" cy="195.7" r="3" fill="#edae49"/>
+<circle cx="215.3" cy="200.0" r="3" fill="#edae49"/>
+<circle cx="277.9" cy="207.7" r="3" fill="#edae49"/>
+<circle cx="340.4" cy="225.3" r="3" fill="#edae49"/>
+<circle cx="403.0" cy="231.3" r="3" fill="#edae49"/>
+<circle cx="465.6" cy="234.4" r="3" fill="#edae49"/>
+<line x1="480" y1="127" x2="510" y2="127" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="131">resolver-grouped, 10 Hz</text>
+<path d="M70.0,230.8 L195.1,225.5 L320.3,236.3" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray="6 4"/>
+<circle cx="70.0" cy="230.8" r="3" fill="#edae49"/>
+<circle cx="195.1" cy="225.5" r="3" fill="#edae49"/>
+<circle cx="320.3" cy="236.3" r="3" fill="#edae49"/>
+<line x1="480" y1="145" x2="510" y2="145" stroke="#edae49" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="515" y="149">resolver-grouped, 1 Hz</text>
 </svg>
