@@ -178,11 +178,12 @@ def main() -> None:
     runs = [r for r in load() if r.get("view_writes_per_s") is not None or r.get("error")]
     runs.sort(key=lambda r: (r["cfg"]["sweep"], r["cfg"]["rows_per_tick"], r["cfg"]["tick_ms"], r["cfg"]["views"], r["cfg"]["arm"], r["dir"]))
     (BENCH / "charts").mkdir(exist_ok=True)
-    # Charts: sweep 2 (one revision, all three arms), the cloud report's shape.
+    # Charts: sweeps 2 and 3 (one set of binaries, all three arms), the cloud
+    # report's shape.
     good = [
         r for r in runs
         if r.get("view_writes_per_s") and (r.get("mode") or {}).get("ok")
-        and r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10
+        and r["cfg"]["sweep"] in ("2", "3") and r["cfg"]["rows_per_tick"] == 10
     ]
     for name, title, ylabel, f, logy, ymax in CHARTS:
         series: dict = {}
@@ -209,6 +210,8 @@ def main() -> None:
     groups = [
         ("Sweep 2: classic, resolver, resolver-grouped at one revision, 10 rows per tick",
          lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10),
+        ("Sweep 3: 40 and 200 views at 100 ms, all three arms, same binaries as sweep 2",
+         lambda r: r["cfg"]["sweep"] == "3"),
         ("Sweep 2, sparse variant: 0.1 rows per tick (9 of 10 ticks upper-only)",
          lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] != 10),
         ("Sweep 1: classic and resolver before upper groups existed",

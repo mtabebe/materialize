@@ -5,14 +5,14 @@
 <line x1="70" y1="40" x2="70" y2="330" stroke="black"/>
 <text x="270.0" y="370" text-anchor="middle">view writes/s (log)</text>
 <text x="15" y="185.0" transform="rotate(-90 15 185.0)" text-anchor="middle">CaS/s</text>
-<line x1="70.0" y1="330" x2="70.0" y2="40" stroke="#eee"/>
-<text x="70.0" y="345" text-anchor="middle">500</text>
-<line x1="168.3" y1="330" x2="168.3" y2="40" stroke="#eee"/>
-<text x="168.3" y="345" text-anchor="middle">1000</text>
-<line x1="266.5" y1="330" x2="266.5" y2="40" stroke="#eee"/>
-<text x="266.5" y="345" text-anchor="middle">2000</text>
-<line x1="396.4" y1="330" x2="396.4" y2="40" stroke="#eee"/>
-<text x="396.4" y="345" text-anchor="middle">5000</text>
+<line x1="99.3" y1="330" x2="99.3" y2="40" stroke="#eee"/>
+<text x="99.3" y="345" text-anchor="middle">500</text>
+<line x1="190.4" y1="330" x2="190.4" y2="40" stroke="#eee"/>
+<text x="190.4" y="345" text-anchor="middle">1000</text>
+<line x1="281.4" y1="330" x2="281.4" y2="40" stroke="#eee"/>
+<text x="281.4" y="345" text-anchor="middle">2000</text>
+<line x1="401.8" y1="330" x2="401.8" y2="40" stroke="#eee"/>
+<text x="401.8" y="345" text-anchor="middle">5000</text>
 <line x1="70" y1="330.0" x2="470" y2="330.0" stroke="#eee"/>
 <text x="65" y="334.0" text-anchor="end">10</text>
 <line x1="70" y1="233.3" x2="470" y2="233.3" stroke="#eee"/>
@@ -21,28 +21,31 @@
 <text x="65" y="140.7" text-anchor="end">1000</text>
 <line x1="70" y1="40.0" x2="470" y2="40.0" stroke="#eee"/>
 <text x="65" y="44.0" text-anchor="end">10000</text>
-<path d="M70.0,145.9 L168.3,119.1 L266.5,97.7 L364.8,100.3 L463.1,107.2" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="145.9" r="3" fill="#d1495b"/>
-<circle cx="168.3" cy="119.1" r="3" fill="#d1495b"/>
-<circle cx="266.5" cy="97.7" r="3" fill="#d1495b"/>
-<circle cx="364.8" cy="100.3" r="3" fill="#d1495b"/>
-<circle cx="463.1" cy="107.2" r="3" fill="#d1495b"/>
+<path d="M70.0,154.3 L99.3,145.9 L190.4,119.1 L281.4,96.2 L372.5,100.3 L463.6,107.2" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="154.3" r="3" fill="#d1495b"/>
+<circle cx="99.3" cy="145.9" r="3" fill="#d1495b"/>
+<circle cx="190.4" cy="119.1" r="3" fill="#d1495b"/>
+<circle cx="281.4" cy="96.2" r="3" fill="#d1495b"/>
+<circle cx="372.5" cy="100.3" r="3" fill="#d1495b"/>
+<circle cx="463.6" cy="107.2" r="3" fill="#d1495b"/>
 <line x1="480" y1="55" x2="510" y2="55" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
 <text x="515" y="59">classic, 10 Hz</text>
-<path d="M70.0,199.0 L168.3,206.7 L266.5,227.1 L364.8,235.1 L463.1,238.8" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="199.0" r="3" fill="#00798c"/>
-<circle cx="168.3" cy="206.7" r="3" fill="#00798c"/>
-<circle cx="266.5" cy="227.1" r="3" fill="#00798c"/>
-<circle cx="364.8" cy="235.1" r="3" fill="#00798c"/>
-<circle cx="463.1" cy="238.8" r="3" fill="#00798c"/>
+<path d="M70.0,201.4 L99.3,199.0 L190.4,206.7 L281.4,228.1 L372.5,235.1 L463.6,238.8" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="201.4" r="3" fill="#00798c"/>
+<circle cx="99.3" cy="199.0" r="3" fill="#00798c"/>
+<circle cx="190.4" cy="206.7" r="3" fill="#00798c"/>
+<circle cx="281.4" cy="228.1" r="3" fill="#00798c"/>
+<circle cx="372.5" cy="235.1" r="3" fill="#00798c"/>
+<circle cx="463.6" cy="238.8" r="3" fill="#00798c"/>
 <line x1="480" y1="73" x2="510" y2="73" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
 <text x="515" y="77">resolver, 10 Hz</text>
-<path d="M70.0,202.1 L168.3,209.9 L266.5,228.3 L364.8,235.1 L463.1,239.0" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
-<circle cx="70.0" cy="202.1" r="3" fill="#edae49"/>
-<circle cx="168.3" cy="209.9" r="3" fill="#edae49"/>
-<circle cx="266.5" cy="228.3" r="3" fill="#edae49"/>
-<circle cx="364.8" cy="235.1" r="3" fill="#edae49"/>
-<circle cx="463.1" cy="239.0" r="3" fill="#edae49"/>
+<path d="M70.0,197.8 L99.3,202.1 L190.4,209.9 L281.4,228.1 L372.5,235.1 L463.6,239.0" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="197.8" r="3" fill="#edae49"/>
+<circle cx="99.3" cy="202.1" r="3" fill="#edae49"/>
+<circle cx="190.4" cy="209.9" r="3" fill="#edae49"/>
+<circle cx="281.4" cy="228.1" r="3" fill="#edae49"/>
+<circle cx="372.5" cy="235.1" r="3" fill="#edae49"/>
+<circle cx="463.6" cy="239.0" r="3" fill="#edae49"/>
 <line x1="480" y1="91" x2="510" y2="91" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
 <text x="515" y="95">resolver-grouped, 10 Hz</text>
 </svg>
