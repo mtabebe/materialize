@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use mz_ore::cast::CastLossy;
 use mz_ore::metrics::MetricsRegistry;
 use mz_ore::now::SYSTEM_TIME;
 use mz_ore::url::SensitiveUrl;
@@ -194,6 +195,6 @@ fn render_hist(out: &mut String, name: &str, hist: &LatencyHist) {
         writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}").expect("infallible");
     }
     writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {cumulative}").expect("infallible");
-    writeln!(out, "{name}_sum {}", hist.sum_micros as f64 / 1e6).expect("infallible");
+    writeln!(out, "{name}_sum {}", f64::cast_lossy(hist.sum_micros) / 1e6).expect("infallible");
     writeln!(out, "{name}_count {cumulative}").expect("infallible");
 }
