@@ -211,6 +211,12 @@ class Bench:
                 "docker", "run", "-d", "--name", CRDB_CONTAINER,
                 f"--cpuset-cpus={self.crdb_cpus}",
                 f"--memory={self.args.crdb_memory}",
+                # Diagnostics only: CRDB's store in RAM, to test whether the disk bounds it.
+                *(
+                    ["--mount", f"type=tmpfs,destination=/cockroach/cockroach-data,tmpfs-size={self.args.crdb_tmpfs}"]
+                    if self.args.crdb_tmpfs
+                    else []
+                ),
                 "-p", f"127.0.0.1:{CRDB_SQL_PORT}:26257",
                 "-p", f"127.0.0.1:{CRDB_HTTP_PORT}:8080",
                 CRDB_IMAGE, "start-single-node", "--insecure",
@@ -1006,6 +1012,11 @@ def main() -> None:
     p.add_argument("--crdb-cpus", type=int, default=4)
     p.add_argument("--crdb-memory", default="16g")
     p.add_argument("--crdb-cache", default="4GiB")
+    p.add_argument(
+        "--crdb-tmpfs",
+        metavar="SIZE",
+        help="put CRDB's store on a tmpfs of this size (diagnostics only)",
+    )
     p.add_argument("--hydration-timeout", type=int, default=600)
     p.add_argument("--sample-secs", type=float, default=5)
     p.add_argument("--align-slack", type=int, default=15)

@@ -17,20 +17,24 @@ view turns each tick into 10 rows, so view writes/s = views x tick rate. Every n
 1. **Consensus load: the resolver arms win by a wide margin.** Per committed append, classic makes
    1.4-1.7 CaS (2.3 at the lightest point). The resolver arms make 0.42-0.58 at 400-500 view writes/s
    and 0.07-0.09 at 2,000 view writes/s and above on the 100 ms tick, and their CaS/s stays at 83-233
-   whatever the load, most of it from the builtin, catalog and txn-wal shards that stay classic in every
-   arm. CRDB CPU: 0.10-0.35 cores against classic's 0.21-2.4 (of 4).
+   whatever the load. Of that, 82-85/s is a constant baseline from environmentd and the system and
+   ingest clusterds, the view clusterds make none, and the resolver's own manifest CaS falls as load
+   rises (129-148/s at 40-50 views, ~5/s at 800) because its cycles get fewer and larger. CRDB CPU:
+   0.10-0.35 cores against classic's 0.21-2.4 (of 4).
 2. **Freshness: the resolver arms do not win, and lose past the knee.** All three keep up to 1,000 view
    writes/s and are near 100% fresh at 2,000. At 4,000 view writes/s classic is 56% fresh, the resolver
-   arms 20-25%. At 8,000 all three are under 3%. At a 1 s tick with 1,600 views classic commits every
-   append while both resolver arms commit under a third and fall minutes behind.
-3. **Upper groups: no measurable difference in this workload.** At every point grouped and ungrouped are
-   within each other's run-to-run range on CaS/s, manifest bytes per write, committed appends and
-   freshness. Every view appends data every tick here, and an append moves a shard out of its group, so
+   arms 20-25%. At 8,000 all three are under 3%. At a 1 s tick with 1,600 views classic commits
+   1,596-1,600 of 1,600 appends/s while both resolver arms commit under a third and fall minutes behind.
+3. **Upper groups: little to no difference in this workload.** At most points grouped and ungrouped are
+   within each other's range on CaS/s, manifest bytes per write, committed appends and freshness, or ran
+   once. The exception is 400 views x 10 Hz, two runs each, where grouped was fresher in both
+   (0.235-0.269 vs 0.175-0.221) and wrote ~6% less per manifest write (556-580 vs 593-615 KB), a small
+   effect at a point where both arms are far behind. Every view appends data every tick here, and an append moves a shard out of its group, so
    the `Batch` rows with their inline data, not the `Upper` rows, make up the manifest writes. In a
    sparse variant (0.1 rows per tick, so 9 of 10 ticks only advance the upper) groups cut manifest rows
    per commit from 2.2 to 1.6 but not throughput (below).
-4. **The limiters differ, and none is persist's CaS count.** Classic is bound by the box's disk write
-   IOPS under CRDB. The resolver is bound by its single cycle task: at 10 Hz by large manifest writes
+4. **The limiters differ, and none is persist's CaS count.** Classic is bound first by the box's disk
+   write IOPS under CRDB (moving CRDB's store to RAM raised it 47%). The resolver is bound by its single cycle task: at 10 Hz by large manifest writes
    (0.6-2 MB, written to blob) and the copying around them, at 1 Hz x 1,600 views by CPU spent building
    and encoding shard views for fetches, watches and acks.
 
@@ -39,8 +43,9 @@ view turns each tick into 10 rows, so view writes/s = views x tick rate. Every n
 Binaries from `590fd1f63b` (hashes in `results/BINARIES-sweep2.txt`), 10 rows per tick, one 600 s window
 per run. Median, with the range when a point ran more than once. "Fresh" is the share of
 `mz_wallclock_global_lag_histogram` samples in bucket 1, which is lag under 2 s
-(`lag.as_secs().next_power_of_two()`). The cloud report calls it "<= 1 s". Live lag p50 is from
-`mz_internal.mz_frontiers` sampled every 5 s.
+(`lag.as_secs().next_power_of_two()`). The cloud report calls it "<= 1 s". Unreadable samples count
+as not fresh. Live lag p50 is the mean, over 5 s samples of `mz_internal.mz_frontiers`, of the median
+view lag in each sample. That is not a window quantile, and a 5 s sampler can phase with a 1 s tick.
 
 <!-- headline:start -->
 | tick | views | view writes/s | arm | runs | committed / requested appends | fresh (<2 s) | live lag p50 s | CaS/s | CaS per committed append | CRDB cores | manifest KB/write |
@@ -121,32 +126,40 @@ row there averages 734-852 bytes (inline batch data), so bytes per write barely 
 
 All from unreported diagnostic runs, [diagnostics/README.md](diagnostics/README.md).
 
-- **Classic: disk write IOPS under CRDB.** At 400 views x 10 Hz classic commits ~1,300 of 4,000 appends/s.
+- **Classic: disk write IOPS under CRDB, first.** At 400 views x 10 Hz classic commits ~1,300 of 4,000 appends/s.
+  With CRDB's store on tmpfs instead (`diag-classic-v400-crdb-tmpfs`, one 300 s run) it commits 1,910,
+  fresh share 47% -> 68%, CRDB statement p50 73 -> 7 ms, persist CaS p50 256 -> 16 ms. That run still
+  falls short of 4,000, with CRDB at 2.9 of its 4 cores, so there is a next limiter, not chased here.
   8 view clusters instead of 4 (twice the timely workers): 1,334. CRDB on 8 cores instead of 4: 1,242,
   CRDB still at ~2.2 cores. Persist's consensus pool at 200 instead of 50: 1,383, with CRDB statement p50
   up from 73 to 117 ms and fresh share down. During the 800-view run the volume did ~3,100 writes/s,
   ~80 MB/s at 88-90% utilization (an EBS volume, whose gp3 baseline is 3,000 IOPS), and CRDB's own mean
-  raft log-commit latency was ~56 ms. Classic's plateau tracks consensus bytes (5-6.5 MB/s of CaS
+  raft log-commit latency was ~56 ms (spot checks, recorded in the diagnostics README). Classic's plateau tracks consensus bytes (5-6.5 MB/s of CaS
   payload at 2.0-3.3 KB per CaS) more than CaS count: the sparse variant ran 4,246 CaS/s at 2.7 MB/s and
   kept up.
 - **Resolver at 10 Hz: the cycle, behind large manifest writes.** At 800 views a cycle carries ~550
   commits and ~2 MB of rows, so every write spills past the 64 KiB inline limit to blob. Manifest write
   p50 is 131-262 ms (power-of-two bucket bounds) of a ~310-370 ms cycle (2.7-3.2 cycles/s). The resolver process itself wrote ~30 MB/s to disk (blob parts,
   rollups, manifest compaction), the volume was at ~3,200 writes/s, and the profile is ~30% kernel and
-  ~31% libc copies, with cloning of `ProtoHollowBatchPart` vectors (views carrying inline batch data)
-  among the Rust frames.
+  ~31% libc (unsymbolized), with cloning of `ProtoHollowBatchPart` vectors (views carrying inline batch
+  data) among the Rust frames.
 - **Resolver at 1 Hz x 1,600 views: the cycle's CPU.** Manifest write p50 is 4 ms and the disk is at 25%,
   yet the resolver manages 1.2-2.8 cycles/s. One tokio worker runs at ~91% while the resolver serves
   ~2,000 fetches/s and ~1,200 watches/s, each answered with a full shard view from the single cycle task.
-  The profile: ~41% libc copy and alloc, ~21% kernel, ~10% `BTreeMap` building of `String ->
-  ProtoIntent` maps, ~7% `prost` encoding.
+  The profile: ~41% in libc (unsymbolized on this box, so not split into copy and alloc), ~21% kernel,
+  ~10% `BTreeMap` building of `String -> ProtoIntent` maps, ~7% `prost` encoding. The thread view and the
+  Rust frames point at view building in the cycle task. The libc share is attributed by inference.
 - **Did it happen (Q7).** Every run checked its mode: resolver arms leave every user shard with no
-  consensus row of its own, classic leaves every one with rows (`mode.ok`). Ticks ran within 2% of the
+  consensus row of its own, classic leaves every one with rows (`mode.ok`), and in the resolver arms the
+  view clusterds made no CaS at all (`cas_per_s_by_process`), so their appends went through the
+  resolver. Ticks ran within 2% of the
   configured rate and a view wrote 9.8-10.2 rows per tick (`ticks_per_s`, `mv0_rows_per_s`), and lag
   samples equal views x window seconds in every run.
-- **Errors (Q4).** No process exited early and no panic in any reported run. The one panic class seen,
-  in the first 800-view probe, was a prototype bug in applying compaction results to synthesized state,
-  fixed in `bb28a841bb` before any reported run (probe kept as `results/prefix-resolver-v800-t100-probe`).
+- **Errors (Q4).** No process exited early and no panic in any reported run. The first 800-view probe
+  hit two panic signatures, a diffs-sum assertion and a "batch was invalid" timestamp below a batch's
+  lower, both from one prototype bug in applying compaction results to synthesized state. Fixed in
+  `bb28a841bb` before any reported run (probe kept as `results/prefix-resolver-v800-t100-probe`). The
+  evidence for the fix is that no reported run (55, up to 1,600 views) panicked, not a targeted test.
 - **Reproducibility (Q5).** 1-3 runs per point, not the 5 the checklist asks for. Classic vs resolver
   CaS/s and CRDB CPU differ by 3-25x, far outside any spread seen. Grouped vs ungrouped differences are
   inside the spread at every repeated point, so no difference is claimed. The knee is noisy: classic at
@@ -163,8 +176,8 @@ All from unreported diagnostic runs, [diagnostics/README.md](diagnostics/README.
 | knee (view writes/s) | ~8,000 | ~2,000 (classic and resolver) |
 | dead tuples | Postgres dead rows to ~2.5M | CRDB MVCC garbage in the consensus table at the end of a classic run: 0.2-9.4 GB |
 
-So the absolute knee is about 4x lower here, set by a slower disk. The consensus-load ratios (CaS per
-append, CRDB CPU) don't depend on the disk. The resolver's freshness here is likely optimistic about blob
+So the absolute knee is about 4x lower here, set by a slower disk. The CaS-per-append ratios are counts
+of operations, so a faster disk should move the knee more than the ratios, but that was not measured. The resolver's freshness here is likely optimistic about blob
 (local file writes instead of S3 PUTs) and pessimistic about disk (blob competes with CRDB for the same
 IOPS).
 
@@ -181,10 +194,17 @@ IOPS).
 
 ## Reproduce
 
+At `590fd1f63b` (the measured binaries. Later commits change only the harness, the report and one
+equivalent cast in the resolver's metrics renderer):
+
 ```
 cargo build --release --bin environmentd --bin clusterd --bin persist-resolver
-test/persist-resolver/bench/sweep.sh 100 40 50 100 200 400 800 -- --duration 600 --hydration-timeout 300
-test/persist-resolver/bench/sweep.sh 1000 100 400 1600 -- --duration 600 --hydration-timeout 300
+A="--duration 600 --hydration-timeout 300"
+test/persist-resolver/bench/sweep.sh 100 40 50 100 200 400 800 -- $A
+test/persist-resolver/bench/sweep.sh 1000 100 400 1600 -- $A
+test/persist-resolver/bench/sweep.sh 100 400 -- $A --rows-per-tick 0.1
+test/persist-resolver/bench/sweep.sh 100 200 400 -- $A      # repeats
+test/persist-resolver/bench/sweep.sh 1000 1600 -- $A        # repeats
 test/persist-resolver/bench/report.py
 ```
 

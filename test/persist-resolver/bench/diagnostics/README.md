@@ -9,6 +9,7 @@ sweep 2, 300 s windows. Each `diag-*` dir is a bench.py results dir.
 | `diag-classic-v400-c8` | the same with 8 view clusters (32 workers): is compute the limiter? |
 | `diag-classic-v400-crdb8` | the same with CRDB on 8 cores: is CRDB CPU the limiter? |
 | `diag-classic-v400-pool200`, `diag-classic-v800-pool200` | `persist_consensus_connection_pool_max_size=200` (default 50): is the pool? |
+| `diag-classic-v400-crdb-tmpfs` | the same with CRDB's store on tmpfs (`--crdb-tmpfs 40g`): is the disk? (run after codex's review asked for an intervention) |
 | `diag-resolver-v1600-t1000`, `diag-resolver-v800-t100` | resolver arm with a 60 s bpftrace profile (`profile-*.txt`, `diag3.sh`) |
 
 Spot observations taken by hand during those runs (not stored in the results dirs):
