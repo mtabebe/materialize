@@ -67,7 +67,14 @@ COLUMNS = [
     ("fresh <=1s", lambda r: fmt(r.get("fresh_le_1s"), 3)),
     ("lag p99 bucket s", lambda r: r.get("lag_p99_bucket_s", "-")),
     ("rows/tick", lambda r: fmt(r["cfg"]["rows_per_tick"], 1)),
-    ("appends/s committed / requested", lambda r: f"{fmt(r['committed_appends_per_s'], 0)} / {fmt(r['requested_appends_per_s'], 0)}" if r.get("committed_appends_per_s") is not None else "-"),
+    (
+        "appends/s committed / requested",
+        lambda r: (
+            f"{fmt(r['committed_appends_per_s'], 0)} / {fmt(r['requested_appends_per_s'], 0)}"
+            if r.get("committed_appends_per_s") is not None
+            else "-"
+        ),
+    ),
     ("CaS/s", lambda r: fmt(r.get("cas_per_s"), 0)),
     ("CaS per committed append", lambda r: fmt(r.get("cas_per_committed_append"), 3)),
     ("CaS MB/s", lambda r: fmt((r.get("cas_bytes_per_s") or 0) / 2**20, 2)),
@@ -78,19 +85,66 @@ COLUMNS = [
     ("CRDB cores", lambda r: fmt(r.get("crdb_cores"), 2)),
     ("CRDB p99 ms", lambda r: ms(r.get("crdb_sql_service_p99_s"))),
     ("consensus rows", lambda r: fmt((r.get("consensus_table") or {}).get("rows"))),
-    ("MVCC garbage MB", lambda r: fmt(((r.get("consensus_table") or {}).get("mvcc_garbage_bytes") or 0) / 2**20, 1) if r.get("consensus_table") else "-"),
+    (
+        "MVCC garbage MB",
+        lambda r: (
+            fmt(
+                ((r.get("consensus_table") or {}).get("mvcc_garbage_bytes") or 0)
+                / 2**20,
+                1,
+            )
+            if r.get("consensus_table")
+            else "-"
+        ),
+    ),
     ("envd cores", lambda r: fmt(r.get("environmentd_cores"), 2)),
     ("clusterd cores", lambda r: fmt(r.get("clusterd_cores"), 2)),
-    ("resolver cores", lambda r: fmt(r.get("resolver_cores"), 2) if r["cfg"]["arm"] == "resolver" else "-"),
-    ("resolver RSS MB", lambda r: fmt(r.get("resolver_rss_mb_peak"), 0) if r["cfg"]["arm"] == "resolver" else "-"),
+    (
+        "resolver cores",
+        lambda r: (
+            fmt(r.get("resolver_cores"), 2) if r["cfg"]["arm"] != "classic" else "-"
+        ),
+    ),
+    (
+        "resolver RSS MB",
+        lambda r: (
+            fmt(r.get("resolver_rss_mb_peak"), 0)
+            if r["cfg"]["arm"] != "classic"
+            else "-"
+        ),
+    ),
     ("cycles/s", lambda r: fmt(r.get("resolver_cycles_per_s"), 0)),
-    ("manifest KB/write", lambda r: fmt(r["resolver_bytes_per_write"] / 1024, 1) if r.get("resolver_bytes_per_write") else "-"),
-    ("groups (members)", lambda r: f"{g['groups']} ({g['grouped_members']}/{g['data_shards']})" if (g := r.get("resolver_groups_end")) else "-"),
+    (
+        "manifest KB/write",
+        lambda r: (
+            fmt(r["resolver_bytes_per_write"] / 1024, 1)
+            if r.get("resolver_bytes_per_write")
+            else "-"
+        ),
+    ),
+    (
+        "groups (members)",
+        lambda r: (
+            f"{g['groups']} ({g['grouped_members']}/{g['data_shards']})"
+            if (g := r.get("resolver_groups_end"))
+            else "-"
+        ),
+    ),
     ("commits/cycle", lambda r: fmt(r.get("resolver_commits_per_cycle"), 1)),
     ("commit p50 ms", lambda r: ms(r.get("resolver_commit_p50_s"))),
     ("commit p99 ms", lambda r: ms(r.get("resolver_commit_p99_s"))),
     ("mode ok", lambda r: (r.get("mode") or {}).get("ok", "-")),
-    ("error", lambda r: r.get("error", "") or ("exited: " + ",".join(r["exited_early"]) if r.get("exited_early") else "")),
+    (
+        "error",
+        lambda r: (
+            r.get("error", "")
+            or (
+                "exited: " + ",".join(r["exited_early"])
+                if r.get("exited_early")
+                else ""
+            )
+        ),
+    ),
 ]
 
 
@@ -136,8 +190,12 @@ def svg_chart(title: str, ylabel: str, series: dict[tuple[str, int], list[tuple[
         for m in (1, 2, 5):
             x = m * 10**e
             if x0 <= math.log10(x) <= x1:
-                out.append(f'<line x1="{px(x):.1f}" y1="{H - B}" x2="{px(x):.1f}" y2="{T}" stroke="#eee"/>')
-                out.append(f'<text x="{px(x):.1f}" y="{H - B + 15}" text-anchor="middle">{x:g}</text>')
+                out.append(
+                    f'<line x1="{px(x):.1f}" y1="{H - B}" x2="{px(x):.1f}" y2="{T}" stroke="#eee"/>'
+                )
+                out.append(
+                    f'<text x="{px(x):.1f}" y="{H - B + 15}" text-anchor="middle">{x:g}</text>'
+                )
     if logy:
         ticks = [10**e for e in range(int(y0), int(y1) + 1)]
     else:
@@ -145,20 +203,35 @@ def svg_chart(title: str, ylabel: str, series: dict[tuple[str, int], list[tuple[
         step *= 1 if y1 / step <= 6 else (2 if y1 / step <= 12 else 5)
         ticks = [i * step for i in range(int(y1 / step) + 1)]
     for t in ticks:
-        out.append(f'<line x1="{L}" y1="{py(t):.1f}" x2="{W - R}" y2="{py(t):.1f}" stroke="#eee"/>')
-        out.append(f'<text x="{L - 5}" y="{py(t) + 4:.1f}" text-anchor="end">{t:g}</text>')
+        out.append(
+            f'<line x1="{L}" y1="{py(t):.1f}" x2="{W - R}" y2="{py(t):.1f}" stroke="#eee"/>'
+        )
+        out.append(
+            f'<text x="{L - 5}" y="{py(t) + 4:.1f}" text-anchor="end">{t:g}</text>'
+        )
     for i, ((arm, tick), s) in enumerate(sorted(series.items())):
         s = sorted(p for p in s if p[1] is not None and (not logy or p[1] > 0))
         if not s:
             continue
         color, dash = ARM_COLOR[arm], TICK_DASH.get(tick, "2 2")
-        path = " ".join(f"{'M' if j == 0 else 'L'}{px(x):.1f},{py(y):.1f}" for j, (x, y) in enumerate(s))
-        out.append(f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>')
+        path = " ".join(
+            f"{'M' if j == 0 else 'L'}{px(x):.1f},{py(y):.1f}"
+            for j, (x, y) in enumerate(s)
+        )
+        out.append(
+            f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>'
+        )
         for x, y in s:
-            out.append(f'<circle cx="{px(x):.1f}" cy="{py(y):.1f}" r="3" fill="{color}"/>')
+            out.append(
+                f'<circle cx="{px(x):.1f}" cy="{py(y):.1f}" r="3" fill="{color}"/>'
+            )
         ly = T + 15 + i * 18
-        out.append(f'<line x1="{W - R + 10}" y1="{ly}" x2="{W - R + 40}" y2="{ly}" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>')
-        out.append(f'<text x="{W - R + 45}" y="{ly + 4}">{arm}, {1000 / tick:g} Hz</text>')
+        out.append(
+            f'<line x1="{W - R + 10}" y1="{ly}" x2="{W - R + 40}" y2="{ly}" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>'
+        )
+        out.append(
+            f'<text x="{W - R + 45}" y="{ly + 4}">{arm}, {1000 / tick:g} Hz</text>'
+        )
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -166,16 +239,86 @@ def svg_chart(title: str, ylabel: str, series: dict[tuple[str, int], list[tuple[
 CHARTS = [
     # At a 1 s tick the histogram's lag samples are in phase with the tick and
     # all land in one bucket either side of its 2 s edge, so only 100 ms runs.
-    ("freshness", "Freshness, 100 ms tick: share of lag samples in bucket 1 (< 2 s)", "share", lambda r: r.get("fresh_le_1s") if r["cfg"]["tick_ms"] == 100 else None, False, 1.05),
-    ("lag_p50", "View lag p50, sampled live every 5 s", "s", lambda r: r.get("sampled_p50_lag_s_mean"), True, None),
-    ("committed_share", "Committed appends / requested", "share", lambda r: r.get("committed_share"), False, 1.05),
-    ("cas_per_append", "CaS per committed append (all processes)", "CaS", lambda r: r.get("cas_per_committed_append"), True, None),
-    ("cas", "Consensus writes (CaS/s, all processes)", "CaS/s", lambda r: r.get("cas_per_s"), True, None),
-    ("manifest_bytes", "Resolver manifest bytes per write", "KB", lambda r: (r.get("resolver_bytes_per_write") or 0) / 1024 or None, True, None),
-    ("crdb_cpu", "CockroachDB CPU", "cores", lambda r: r.get("crdb_cores"), False, None),
-    ("crdb_stmts", "CockroachDB statements/s", "statements/s", lambda r: r.get("crdb_sql_query_per_s"), True, None),
-    ("cas_p99", "CaS p99 (bucket upper bound)", "ms", lambda r: (r.get("cas_p99_s") or 0) * 1000 or None, True, None),
-    ("append_mean", "compare_and_append mean latency (client side)", "ms", lambda r: (r.get("compare_and_append_mean_s") or 0) * 1000 or None, True, None),
+    (
+        "freshness",
+        "Freshness, 100 ms tick: share of lag samples in bucket 1 (< 2 s)",
+        "share",
+        lambda r: r.get("fresh_le_1s") if r["cfg"]["tick_ms"] == 100 else None,
+        False,
+        1.05,
+    ),
+    (
+        "lag_p50",
+        "View lag p50, sampled live every 5 s",
+        "s",
+        lambda r: r.get("sampled_p50_lag_s_mean"),
+        True,
+        None,
+    ),
+    (
+        "committed_share",
+        "Committed appends / requested",
+        "share",
+        lambda r: r.get("committed_share"),
+        False,
+        1.05,
+    ),
+    (
+        "cas_per_append",
+        "CaS per committed append (all processes)",
+        "CaS",
+        lambda r: r.get("cas_per_committed_append"),
+        True,
+        None,
+    ),
+    (
+        "cas",
+        "Consensus writes (CaS/s, all processes)",
+        "CaS/s",
+        lambda r: r.get("cas_per_s"),
+        True,
+        None,
+    ),
+    (
+        "manifest_bytes",
+        "Resolver manifest bytes per write",
+        "KB",
+        lambda r: (r.get("resolver_bytes_per_write") or 0) / 1024 or None,
+        True,
+        None,
+    ),
+    (
+        "crdb_cpu",
+        "CockroachDB CPU",
+        "cores",
+        lambda r: r.get("crdb_cores"),
+        False,
+        None,
+    ),
+    (
+        "crdb_stmts",
+        "CockroachDB statements/s",
+        "statements/s",
+        lambda r: r.get("crdb_sql_query_per_s"),
+        True,
+        None,
+    ),
+    (
+        "cas_p99",
+        "CaS p99 (bucket upper bound)",
+        "ms",
+        lambda r: (r.get("cas_p99_s") or 0) * 1000 or None,
+        True,
+        None,
+    ),
+    (
+        "append_mean",
+        "compare_and_append mean latency (client side)",
+        "ms",
+        lambda r: (r.get("compare_and_append_mean_s") or 0) * 1000 or None,
+        True,
+        None,
+    ),
 ]
 
 
@@ -201,18 +344,26 @@ def headline(runs: list[dict]) -> str:
     pts: dict = {}
     for r in runs:
         c = r["cfg"]
-        if c["sweep"] in ("2", "3") and c["rows_per_tick"] == 10 and (r.get("mode") or {}).get("ok"):
-            pts.setdefault((c["tick_ms"], c["views"], ARMS.index(c["arm"])), []).append(r)
+        if (
+            c["sweep"] in ("2", "3")
+            and c["rows_per_tick"] == 10
+            and (r.get("mode") or {}).get("ok")
+        ):
+            pts.setdefault((c["tick_ms"], c["views"], ARMS.index(c["arm"])), []).append(
+                r
+            )
     head = (
         "| tick | views | view writes/s | arm | runs | committed / requested appends | fresh (<2 s) | live lag p50 s "
-        "| CaS/s | CaS per committed append | CRDB cores | manifest KB/write |\n" + "|---" * 12 + "|"
+        "| CaS/s | CaS per committed append | CRDB cores | manifest KB/write |\n"
+        + "|---" * 12
+        + "|"
     )
     rows = [head]
     for (tick, views, ai), rs in sorted(pts.items()):
-        g = lambda k: [r.get(k) for r in rs]  # noqa: E731
-        f0 = lambda v: f"{v:,.0f}"  # noqa: E731
-        f2 = lambda v: f"{v:.2f}"  # noqa: E731
-        f3 = lambda v: f"{v:.3f}"  # noqa: E731
+        g = lambda k: [r.get(k) for r in rs]
+        f0 = lambda v: f"{v:,.0f}"
+        f2 = lambda v: f"{v:.2f}"
+        f3 = lambda v: f"{v:.3f}"
         fresh = spread(g("fresh_le_1s"), f3) if tick == 100 else "n/a (1 s tick)"
         kb = [(r.get("resolver_bytes_per_write") or 0) / 1024 or None for r in rs]
         rows.append(
@@ -229,15 +380,29 @@ ARMS = ["classic", "resolver", "resolver-grouped"]
 
 
 def main() -> None:
-    runs = [r for r in load() if r.get("view_writes_per_s") is not None or r.get("error")]
-    runs.sort(key=lambda r: (r["cfg"]["sweep"], r["cfg"]["rows_per_tick"], r["cfg"]["tick_ms"], r["cfg"]["views"], r["cfg"]["arm"], r["dir"]))
+    runs = [
+        r for r in load() if r.get("view_writes_per_s") is not None or r.get("error")
+    ]
+    runs.sort(
+        key=lambda r: (
+            r["cfg"]["sweep"],
+            r["cfg"]["rows_per_tick"],
+            r["cfg"]["tick_ms"],
+            r["cfg"]["views"],
+            r["cfg"]["arm"],
+            r["dir"],
+        )
+    )
     (BENCH / "charts").mkdir(exist_ok=True)
     # Charts: sweeps 2 and 3 (one set of binaries, all three arms), the cloud
     # report's shape.
     good = [
-        r for r in runs
-        if r.get("view_writes_per_s") and (r.get("mode") or {}).get("ok")
-        and r["cfg"]["sweep"] in ("2", "3") and r["cfg"]["rows_per_tick"] == 10
+        r
+        for r in runs
+        if r.get("view_writes_per_s")
+        and (r.get("mode") or {}).get("ok")
+        and r["cfg"]["sweep"] in ("2", "3")
+        and r["cfg"]["rows_per_tick"] == 10
     ]
     for name, title, ylabel, f, logy, ymax in CHARTS:
         series: dict = {}
@@ -262,14 +427,22 @@ def main() -> None:
         "",
     ]
     groups = [
-        ("Sweep 2: classic, resolver, resolver-grouped at one revision, 10 rows per tick",
-         lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10),
-        ("Sweep 3: 40 and 200 views at 100 ms, all three arms, same binaries as sweep 2",
-         lambda r: r["cfg"]["sweep"] == "3"),
-        ("Sweep 2, sparse variant: 0.1 rows per tick (9 of 10 ticks upper-only)",
-         lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] != 10),
-        ("Sweep 1: classic and resolver before upper groups existed",
-         lambda r: r["cfg"]["sweep"] == "1"),
+        (
+            "Sweep 2: classic, resolver, resolver-grouped at one revision, 10 rows per tick",
+            lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] == 10,
+        ),
+        (
+            "Sweep 3: 40 and 200 views at 100 ms, all three arms, same binaries as sweep 2",
+            lambda r: r["cfg"]["sweep"] == "3",
+        ),
+        (
+            "Sweep 2, sparse variant: 0.1 rows per tick (9 of 10 ticks upper-only)",
+            lambda r: r["cfg"]["sweep"] == "2" and r["cfg"]["rows_per_tick"] != 10,
+        ),
+        (
+            "Sweep 1: classic and resolver before upper groups existed",
+            lambda r: r["cfg"]["sweep"] == "1",
+        ),
     ]
     for title, pred in groups:
         rows = [r for r in runs if pred(r)]

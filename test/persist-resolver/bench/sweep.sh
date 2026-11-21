@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit
 tick=$1
 shift
 views=()

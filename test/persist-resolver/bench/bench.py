@@ -219,13 +219,20 @@ class Bench:
         )  # fmt: skip
         for _ in range(120):
             try:
-                psql(f"postgres://root@localhost:{CRDB_SQL_PORT}/defaultdb", "SELECT 1", 5)
+                psql(
+                    f"postgres://root@localhost:{CRDB_SQL_PORT}/defaultdb",
+                    "SELECT 1",
+                    5,
+                )
                 break
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 time.sleep(1)
         else:
             raise RuntimeError("cockroach did not come up")
-        psql(f"postgres://root@localhost:{CRDB_SQL_PORT}/defaultdb", "CREATE DATABASE materialize")
+        psql(
+            f"postgres://root@localhost:{CRDB_SQL_PORT}/defaultdb",
+            "CREATE DATABASE materialize",
+        )
         for schema in ["consensus", "tsoracle", "storage"]:
             psql(crdb_url(), f"CREATE SCHEMA {schema}")
         self.crdb_cg = docker_cgroup(CRDB_CONTAINER)
@@ -382,7 +389,10 @@ class Bench:
         sql = self.out / "workload.sql"
         sql.write_text(";\n".join(stmts) + ";\n")
         start = time.time()
-        run(["psql", MZ_SQL, "-qX", "-v", "ON_ERROR_STOP=1", "-f", str(sql)], timeout=7200)
+        run(
+            ["psql", MZ_SQL, "-qX", "-v", "ON_ERROR_STOP=1", "-f", str(sql)],
+            timeout=7200,
+        )
         self.setup_seconds = time.time() - start
         log(f"created workload in {self.setup_seconds:.0f}s")
         self.mv_ids = [
@@ -448,7 +458,7 @@ class Bench:
         for name, url in self.scrape_targets().items():
             try:
                 metrics[name] = filter_metrics(http_get(url), KEEP_MZ)
-            except Exception as e:  # noqa: BLE001 - a dead process is a finding, not a crash
+            except Exception as e:
                 log(f"WARNING: scraping {name}: {e}")
                 metrics[name] = ""
         snap["metrics"] = metrics
@@ -462,11 +472,15 @@ class Bench:
             f"FROM mz_internal.mz_wallclock_global_lag_histogram WHERE {self.mv_filter()} "
             f"GROUP BY 1, 2 ORDER BY 1, 2",
         )
-        snap["clusters"] = dict(psql(MZ_SQL, "SELECT name, id FROM mz_clusters WHERE id LIKE 'u%'"))
+        snap["clusters"] = dict(
+            psql(MZ_SQL, "SELECT name, id FROM mz_clusters WHERE id LIKE 'u%'")
+        )
         if self.resolver_arm:
             snap["groups"] = self.group_stats()
         [[snap["ticks_rows"]]] = psql(MZ_SQL, "SELECT count(*) FROM ticks")
-        [[snap["mv0_rows"]]] = psql(MZ_SQL, "SELECT count(*) FROM mv_0") if self.args.views else [["0"]]
+        [[snap["mv0_rows"]]] = (
+            psql(MZ_SQL, "SELECT count(*) FROM mv_0") if self.args.views else [["0"]]
+        )
         # Everything `summarize` reads, so a results dir can be summarized again.
         with gzip.open(self.out / f"snapshot-{tag}.json.gz", "wt") as f:
             json.dump(snap, f)
@@ -475,11 +489,15 @@ class Bench:
     def group_stats(self) -> dict | None:
         """Upper groups as the resolver's debug endpoint lists them."""
         try:
-            view = json.loads(http_get(f"http://127.0.0.1:{RESOLVER_HTTP_PORT}/views", timeout=60))
-        except Exception as e:  # noqa: BLE001 - a missing stat is not a failed run
+            view = json.loads(
+                http_get(f"http://127.0.0.1:{RESOLVER_HTTP_PORT}/views", timeout=60)
+            )
+        except Exception as e:
             log(f"WARNING: group stats: {e}")
             return None
-        sizes = sorted((len(g["members"]) for g in view.get("upper_groups", [])), reverse=True)
+        sizes = sorted(
+            (len(g["members"]) for g in view.get("upper_groups", [])), reverse=True
+        )
         return {
             "data_shards": len(view.get("data_shards", [])),
             "groups": len(sizes),
@@ -513,7 +531,9 @@ class Bench:
                 t = time.time()
                 row = {"t": t}
                 for role, v in now.items():
-                    row[f"{role}_cores"] = (v["cpu_s"] - prev[role]["cpu_s"]) / (t - prev_t)
+                    row[f"{role}_cores"] = (v["cpu_s"] - prev[role]["cpu_s"]) / (
+                        t - prev_t
+                    )
                     row[f"{role}_rss_mb"] = v["rss"] / 2**20
                 lags = sorted(self.frontier_lags(timeout=30))
                 row["views"] = len(lags)
@@ -522,10 +542,12 @@ class Bench:
                 row["views_fresh_lt_2s"] = sum(1 for x in lags if x < 2)
                 row["max_lag_s"] = lags[-1] if lags else None
                 row["p50_lag_s"] = lags[len(lags) // 2] if lags else None
-                row["p99_lag_s"] = lags[min(len(lags) - 1, int(0.99 * len(lags)))] if lags else None
+                row["p99_lag_s"] = (
+                    lags[min(len(lags) - 1, int(0.99 * len(lags)))] if lags else None
+                )
                 self.samples.append(row)
                 prev, prev_t = now, t
-            except Exception as e:  # noqa: BLE001 - keep sampling through a slow query
+            except Exception as e:
                 log(f"WARNING: sample: {e}")
 
     def measure(self) -> tuple[dict, dict]:
@@ -583,7 +605,9 @@ class Bench:
 
     def consensus_table(self) -> dict:
         [[rows, shards]] = psql(
-            crdb_url(), "SELECT count(*), count(DISTINCT shard) FROM consensus.consensus", 600
+            crdb_url(),
+            "SELECT count(*), count(DISTINCT shard) FROM consensus.consensus",
+            600,
         )
         [[live, total, ranges]] = psql(
             crdb_url(),
@@ -609,12 +633,21 @@ class Bench:
             hits = [
                 line
                 for line in text.splitlines()
-                if re.search(r"panicked|thread '.*' panicked|FATAL|halting process|lost its claim", line)
+                if re.search(
+                    r"panicked|thread '.*' panicked|FATAL|halting process|lost its claim",
+                    line,
+                )
             ]
             out[f.stem] = {"lines": len(text.splitlines()), "problems": hits[:20]}
             # Keep each log's tail and its problem lines with the results.
-            (self.out / f"{f.stem}.log.tail").write_text("\n".join(text.splitlines()[-200:]) + "\n")
-        clusterd_logs = list((self.mzdata / "scratch").glob("**/*.log")) if (self.mzdata / "scratch").exists() else []
+            (self.out / f"{f.stem}.log.tail").write_text(
+                "\n".join(text.splitlines()[-200:]) + "\n"
+            )
+        clusterd_logs = (
+            list((self.mzdata / "scratch").glob("**/*.log"))
+            if (self.mzdata / "scratch").exists()
+            else []
+        )
         out["clusterd_log_files"] = len(clusterd_logs)
         return out
 
@@ -646,7 +679,7 @@ class Bench:
             summary["mode"] = self.verify_mode()
             summary["consensus_table"] = self.consensus_table()
             summary["ok"] = summary["mode"]["ok"]
-        except Exception as e:  # noqa: BLE001 - a failed run is still a result
+        except Exception as e:
             log(f"FAILED: {e!r}")
             summary["error"] = repr(e)
         finally:
@@ -681,13 +714,17 @@ def histogram(metrics: dict[str, str], name: str, **match: str) -> dict[float, f
     out: dict[float, float] = {}
     for text in metrics.values():
         for n, labels, v in parse_metrics(text):
-            if n == f"{name}_bucket" and all(labels.get(k) == val for k, val in match.items()):
+            if n == f"{name}_bucket" and all(
+                labels.get(k) == val for k, val in match.items()
+            ):
                 le = math.inf if labels["le"] == "+Inf" else float(labels["le"])
                 out[le] = out.get(le, 0.0) + v
     return out
 
 
-def quantile(start: dict[float, float], end: dict[float, float], q: float) -> float | None:
+def quantile(
+    start: dict[float, float], end: dict[float, float], q: float
+) -> float | None:
     """The upper bound of the bucket holding quantile `q` of the window's
     observations."""
     les = sorted(end)
@@ -710,12 +747,16 @@ def view_cluster_procs(snap: dict, a: argparse.Namespace) -> set[str]:
         ids = [ids[f"c{i}"] for i in range(a.clusters)]
     else:
         ids = [f"u{3 + i}" for i in range(a.clusters)]
-    return {p for p in snap["metrics"] if any(p.startswith(f"clusterd-{i}-") for i in ids)}
+    return {
+        p for p in snap["metrics"] if any(p.startswith(f"clusterd-{i}-") for i in ids)
+    }
 
 
-def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace) -> dict:
+def summarize(
+    start: dict, end: dict, samples: list[dict], a: argparse.Namespace
+) -> dict:
     secs = end["t"] - start["t"]
-    rate = lambda s, e: (e - s) / secs  # noqa: E731
+    rate = lambda s, e: (e - s) / secs
 
     sm, em = start["metrics"], end["metrics"]
     cas = "consensus_cas"
@@ -744,7 +785,12 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
         if d:
             buckets[k[1]] = buckets.get(k[1], 0) + d
     total = sum(buckets.values())
-    s["lag_histogram"] = dict(sorted(buckets.items(), key=lambda kv: (kv[0] == "null", int(kv[0]) if kv[0] != "null" else 0)))
+    s["lag_histogram"] = dict(
+        sorted(
+            buckets.items(),
+            key=lambda kv: (kv[0] == "null", int(kv[0]) if kv[0] != "null" else 0),
+        )
+    )
     s["lag_samples"] = total
     s["lag_samples_expected"] = a.views * round(secs / 60) * 60
     fresh = sum(c for b, c in buckets.items() if b != "null" and int(b) <= 1)
@@ -760,19 +806,34 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
     # Consensus: CaS from every Materialize process (the resolver's own
     # manifest writes included), and the client-side append path.
     cas_by = {
-        p: rate(by_process(sm, "mz_persist_external_succeeded_count", op=cas).get(p, 0), v)
-        for p, v in by_process(em, "mz_persist_external_succeeded_count", op=cas).items()
+        p: rate(
+            by_process(sm, "mz_persist_external_succeeded_count", op=cas).get(p, 0), v
+        )
+        for p, v in by_process(
+            em, "mz_persist_external_succeeded_count", op=cas
+        ).items()
     }
     s["cas_per_s"] = round(sum(cas_by.values()), 1)
     s["cas_per_s_by_process"] = {p: round(v, 1) for p, v in sorted(cas_by.items())}
     s["cas_bytes_per_s"] = round(
-        rate(counter(sm, "mz_persist_external_bytes_count", op=cas), counter(em, "mz_persist_external_bytes_count", op=cas))
+        rate(
+            counter(sm, "mz_persist_external_bytes_count", op=cas),
+            counter(em, "mz_persist_external_bytes_count", op=cas),
+        )
     )
     s["cas_failed_per_s"] = round(
-        rate(counter(sm, "mz_persist_external_failed_count", op=cas), counter(em, "mz_persist_external_failed_count", op=cas)), 2
+        rate(
+            counter(sm, "mz_persist_external_failed_count", op=cas),
+            counter(em, "mz_persist_external_failed_count", op=cas),
+        ),
+        2,
     )
     s["cas_mismatch_per_s"] = round(
-        rate(counter(sm, "mz_persist_cmd_cas_mismatch_count"), counter(em, "mz_persist_cmd_cas_mismatch_count")), 2
+        rate(
+            counter(sm, "mz_persist_cmd_cas_mismatch_count"),
+            counter(em, "mz_persist_cmd_cas_mismatch_count"),
+        ),
+        2,
     )
     hs = histogram(sm, "mz_persist_external_op_latency", op=cas)
     he = histogram(em, "mz_persist_external_op_latency", op=cas)
@@ -782,8 +843,12 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
     caa = dict(cmd="compare_and_append")
     smc = {p: v for p, v in sm.items() if p != "resolver"}
     emc = {p: v for p, v in em.items() if p != "resolver"}
-    n = counter(emc, "mz_persist_cmd_succeeded_count", **caa) - counter(smc, "mz_persist_cmd_succeeded_count", **caa)
-    t = counter(emc, "mz_persist_cmd_seconds", **caa) - counter(smc, "mz_persist_cmd_seconds", **caa)
+    n = counter(emc, "mz_persist_cmd_succeeded_count", **caa) - counter(
+        smc, "mz_persist_cmd_succeeded_count", **caa
+    )
+    t = counter(emc, "mz_persist_cmd_seconds", **caa) - counter(
+        smc, "mz_persist_cmd_seconds", **caa
+    )
     s["compare_and_append_per_s"] = round(n / secs, 1)
 
     # Real work: appends committed to the views' data shards, against the one
@@ -795,21 +860,37 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
     view_procs = view_cluster_procs(end, a)
     vs = {p: v for p, v in sm.items() if p in view_procs}
     ve = {p: v for p, v in em.items() if p in view_procs}
-    appends = (counter(ve, "mz_persist_cmd_succeeded_count", **caa) - counter(vs, "mz_persist_cmd_succeeded_count", **caa)) / secs
+    appends = (
+        counter(ve, "mz_persist_cmd_succeeded_count", **caa)
+        - counter(vs, "mz_persist_cmd_succeeded_count", **caa)
+    ) / secs
     s["view_procs"] = sorted(view_procs)
     s["requested_appends_per_s"] = round(a.views * 1000 / a.tick_ms, 1)
     s["committed_appends_per_s"] = round(appends, 1)
-    s["committed_share"] = round(appends / s["requested_appends_per_s"], 3) if a.views else None
-    s["cas_per_committed_append"] = round(s["cas_per_s"] / appends, 3) if appends else None
+    s["committed_share"] = (
+        round(appends / s["requested_appends_per_s"], 3) if a.views else None
+    )
+    s["cas_per_committed_append"] = (
+        round(s["cas_per_s"] / appends, 3) if appends else None
+    )
     s["compare_and_append_mean_s"] = round(t / n, 5) if n else None
 
     # CockroachDB.
     sc, ec = {"c": start["crdb"]}, {"c": end["crdb"]}
     for k in ["sql_query_count", "sql_insert_count", "sql_update_count", "sql_select_count",
               "sql_delete_count", "sql_txn_commit_count", "sql_failure_count"]:  # fmt: skip
-        s[f"crdb_{k.removesuffix('_count')}_per_s"] = round(rate(counter(sc, k), counter(ec, k)), 1)
+        s[f"crdb_{k.removesuffix('_count')}_per_s"] = round(
+            rate(counter(sc, k), counter(ec, k)), 1
+        )
     s["crdb_txn_restarts_per_s"] = round(
-        sum(rate(counter(sc, n), counter(ec, n)) for n in {m for m, _, _ in parse_metrics(end["crdb"]) if m.startswith("txn_restarts_")}),
+        sum(
+            rate(counter(sc, n), counter(ec, n))
+            for n in {
+                m
+                for m, _, _ in parse_metrics(end["crdb"])
+                if m.startswith("txn_restarts_")
+            }
+        ),
         2,
     )
     ls, le_ = histogram(sc, "sql_service_latency"), histogram(ec, "sql_service_latency")
@@ -820,21 +901,32 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
 
     # CPU and memory by role over the window; peak RSS from the samples.
     for role in ["environmentd", "clusterd", "resolver", "crdb"]:
-        s[f"{role}_cores"] = round(rate(start["cpu"][role]["cpu_s"], end["cpu"][role]["cpu_s"]), 2)
+        s[f"{role}_cores"] = round(
+            rate(start["cpu"][role]["cpu_s"], end["cpu"][role]["cpu_s"]), 2
+        )
         s[f"{role}_rss_mb_end"] = round(end["cpu"][role]["rss"] / 2**20)
         peaks = [x.get(f"{role}_rss_mb", 0) for x in samples]
         s[f"{role}_rss_mb_peak"] = round(max(peaks)) if peaks else None
 
     # Resolver.
     if a.arm != "classic":
-        r = lambda n: rate(counter(sm, f"mz_persist_resolver_{n}_total"), counter(em, f"mz_persist_resolver_{n}_total"))  # noqa: E731
+        r = lambda n: rate(
+            counter(sm, f"mz_persist_resolver_{n}_total"),
+            counter(em, f"mz_persist_resolver_{n}_total"),
+        )
         cycles = r("cycles")
         s["resolver_cycles_per_s"] = round(cycles, 1)
         s["resolver_commits_per_s"] = round(r("commits"), 1)
-        s["resolver_commits_per_cycle"] = round(r("commits") / cycles, 1) if cycles else None
+        s["resolver_commits_per_cycle"] = (
+            round(r("commits") / cycles, 1) if cycles else None
+        )
         s["resolver_manifest_writes_per_s"] = round(r("manifest_writes"), 1)
         s["resolver_lost_writes_per_s"] = round(r("lost_writes"), 2)
-        s["resolver_bytes_per_write"] = round(r("encoded_bytes_written") / r("manifest_writes")) if r("manifest_writes") else None
+        s["resolver_bytes_per_write"] = (
+            round(r("encoded_bytes_written") / r("manifest_writes"))
+            if r("manifest_writes")
+            else None
+        )
         s["resolver_watch_requests_per_s"] = round(r("watch_requests"), 1)
         s["resolver_fetch_requests_per_s"] = round(r("fetch_requests"), 1)
         s["resolver_groups_start"] = start.get("groups")
@@ -851,8 +943,12 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
         s["sampled_fresh_lt_2s_mean"] = round(sum(fr) / len(fr), 4) if fr else None
         p50 = [x["p50_lag_s"] for x in samples if x.get("p50_lag_s") is not None]
         s["sampled_p50_lag_s_mean"] = round(sum(p50) / len(p50), 3) if p50 else None
-        s["sampled_p99_lag_s_max"] = round(max((x["p99_lag_s"] or 0) for x in samples), 3)
-        s["sampled_max_lag_s_max"] = round(max((x["max_lag_s"] or 0) for x in samples), 3)
+        s["sampled_p99_lag_s_max"] = round(
+            max((x["p99_lag_s"] or 0) for x in samples), 3
+        )
+        s["sampled_max_lag_s_max"] = round(
+            max((x["max_lag_s"] or 0) for x in samples), 3
+        )
     return s
 
 
@@ -864,10 +960,22 @@ def resummarize(out: Path) -> None:
     for tag in ["start", "end"]:
         with gzip.open(out / f"snapshot-{tag}.json.gz", "rt") as f:
             snaps.append(json.load(f))
-    samples = [json.loads(line) for line in (out / "samples.jsonl").read_text().splitlines() if line]
+    samples = [
+        json.loads(line)
+        for line in (out / "samples.jsonl").read_text().splitlines()
+        if line
+    ]
     old = json.loads((out / "summary.json").read_text())
     new = summarize(snaps[0], snaps[1], samples, cfg)
-    keep = ["setup_seconds", "mode", "consensus_table", "ok", "error", "exited_early", "logs"]
+    keep = [
+        "setup_seconds",
+        "mode",
+        "consensus_table",
+        "ok",
+        "error",
+        "exited_early",
+        "logs",
+    ]
     new.update({k: old[k] for k in keep if k in old})
     (out / "summary.json").write_text(json.dumps(new, indent=2) + "\n")
 
@@ -877,7 +985,9 @@ def main() -> None:
         for d in sys.argv[2:]:
             resummarize(Path(d))
         return
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--arm", choices=ARMS, required=True)
     p.add_argument("--views", type=int, required=True)
     p.add_argument("--tick-ms", type=int, required=True)
@@ -887,7 +997,9 @@ def main() -> None:
         default=10,
         help="rows each view writes per tick, on average; 10 is the cloud report's shape",
     )
-    p.add_argument("--duration", type=int, default=600, help="seconds, rounded to whole minutes")
+    p.add_argument(
+        "--duration", type=int, default=600, help="seconds, rounded to whole minutes"
+    )
     p.add_argument("--warmup", type=int, default=60)
     p.add_argument("--clusters", type=int, default=4)
     p.add_argument("--workers", type=int, default=4, help="timely workers per replica")
