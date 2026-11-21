@@ -179,6 +179,55 @@ CHARTS = [
 ]
 
 
+def med(xs: list) -> float | None:
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def spread(xs: list, f) -> str:
+    """Median, and the range when there is more than one run."""
+    xs = [x for x in xs if x is not None]
+    if not xs:
+        return "-"
+    m = f(med(xs))
+    return m if len(xs) == 1 else f"{m} ({f(min(xs))}-{f(max(xs))})"
+
+
+def headline(runs: list[dict]) -> str:
+    """One row per (tick, views, arm) over sweeps 2 and 3: median and range."""
+    pts: dict = {}
+    for r in runs:
+        c = r["cfg"]
+        if c["sweep"] in ("2", "3") and c["rows_per_tick"] == 10 and (r.get("mode") or {}).get("ok"):
+            pts.setdefault((c["tick_ms"], c["views"], ARMS.index(c["arm"])), []).append(r)
+    head = (
+        "| tick | views | view writes/s | arm | runs | committed / requested appends | fresh (<2 s) | live lag p50 s "
+        "| CaS/s | CaS per committed append | CRDB cores | manifest KB/write |\n" + "|---" * 12 + "|"
+    )
+    rows = [head]
+    for (tick, views, ai), rs in sorted(pts.items()):
+        g = lambda k: [r.get(k) for r in rs]  # noqa: E731
+        f0 = lambda v: f"{v:,.0f}"  # noqa: E731
+        f2 = lambda v: f"{v:.2f}"  # noqa: E731
+        f3 = lambda v: f"{v:.3f}"  # noqa: E731
+        fresh = spread(g("fresh_le_1s"), f3) if tick == 100 else "n/a (1 s tick)"
+        kb = [(r.get("resolver_bytes_per_write") or 0) / 1024 or None for r in rs]
+        rows.append(
+            f"| {tick} ms | {views} | {views * 1000 // tick:,} | {ARMS[ai]} | {len(rs)} "
+            f"| {spread(g('committed_appends_per_s'), f0)} / {views * 1000 // tick:,} | {fresh} "
+            f"| {spread(g('sampled_p50_lag_s_mean'), f2)} | {spread(g('cas_per_s'), f0)} "
+            f"| {spread(g('cas_per_committed_append'), f3)} | {spread(g('crdb_cores'), f2)} "
+            f"| {spread(kb, f0) if ai else '-'} |"
+        )
+    return "\n".join(rows)
+
+
+ARMS = ["classic", "resolver", "resolver-grouped"]
+
+
 def main() -> None:
     runs = [r for r in load() if r.get("view_writes_per_s") is not None or r.get("error")]
     runs.sort(key=lambda r: (r["cfg"]["sweep"], r["cfg"]["rows_per_tick"], r["cfg"]["tick_ms"], r["cfg"]["views"], r["cfg"]["arm"], r["dir"]))
@@ -227,6 +276,15 @@ def main() -> None:
         if rows:
             md += [f"## {title}", "", table(rows), ""]
     (BENCH / "results.md").write_text("\n".join(md))
+    # Splice the headline table into RESULTS.md between its markers.
+    results = BENCH / "RESULTS.md"
+    if results.exists():
+        text = results.read_text()
+        start, end = "<!-- headline:start -->", "<!-- headline:end -->"
+        if start in text and end in text:
+            pre, rest = text.split(start, 1)
+            _, post = rest.split(end, 1)
+            results.write_text(f"{pre}{start}\n{headline(runs)}\n{end}{post}")
     print(f"{len(runs)} runs, {len(good)} plotted")
 
 
