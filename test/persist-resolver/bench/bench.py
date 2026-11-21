@@ -287,6 +287,8 @@ class Bench:
             "max_tables": "1000",
             "max_credit_consumption_rate": "100000",
         }
+        # Applied to every arm alike; for diagnostics, not the reported sweeps.
+        params.update(kv.split("=", 1) for kv in self.args.system_param)
         env = {"RUST_MIN_STACK": "16777216"}
         if resolver:
             env["MZ_PERSIST_RESOLVER_URL"] = f"http://127.0.0.1:{RESOLVER_PORT}"
@@ -895,6 +897,13 @@ def main() -> None:
     p.add_argument("--hydration-timeout", type=int, default=600)
     p.add_argument("--sample-secs", type=float, default=5)
     p.add_argument("--align-slack", type=int, default=15)
+    p.add_argument(
+        "--system-param",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="extra environmentd --system-parameter-default, for diagnostics",
+    )
     p.add_argument("--name")
     p.add_argument("--results-root", default=str(BENCH / "results"))
     p.add_argument("--target-dir", default=str(ROOT / "target" / "release"))
