@@ -1,0 +1,4 @@
+built from 590fd1f63b (clean tree), cargo build --release, finished 2026-11-20 21:01:17
+666e99c012f0d4d409ae1366df4b6ffefce034baeac8f0ecd57edbd8cf19d813  target/release/environmentd
+211e42aa8df7f144200fd0414e797f4c8d1d030d744a5b781b74b2939083ec6e  target/release/clusterd
+8c05e2dbf08325d4bceeb830e661b95faeabcd69cbdb4cf01508e42b9daeea4b  target/release/persist-resolver

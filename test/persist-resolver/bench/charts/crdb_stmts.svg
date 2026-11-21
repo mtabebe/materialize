@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="380" font-family="sans-serif" font-size="11">
+<rect width="640" height="380" fill="white"/>
+<text x="70" y="20" font-size="14" font-weight="bold">CockroachDB statements/s</text>
+<line x1="70" y1="330" x2="470" y2="330" stroke="black"/>
+<line x1="70" y1="40" x2="70" y2="330" stroke="black"/>
+<text x="270.0" y="370" text-anchor="middle">view writes/s (log)</text>
+<text x="15" y="185.0" transform="rotate(-90 15 185.0)" text-anchor="middle">statements/s</text>
+<line x1="70.0" y1="330" x2="70.0" y2="40" stroke="#eee"/>
+<text x="70.0" y="345" text-anchor="middle">500</text>
+<line x1="168.3" y1="330" x2="168.3" y2="40" stroke="#eee"/>
+<text x="168.3" y="345" text-anchor="middle">1000</text>
+<line x1="266.5" y1="330" x2="266.5" y2="40" stroke="#eee"/>
+<text x="266.5" y="345" text-anchor="middle">2000</text>
+<line x1="396.4" y1="330" x2="396.4" y2="40" stroke="#eee"/>
+<text x="396.4" y="345" text-anchor="middle">5000</text>
+<line x1="70" y1="330.0" x2="470" y2="330.0" stroke="#eee"/>
+<text x="65" y="334.0" text-anchor="end">10</text>
+<line x1="70" y1="233.3" x2="470" y2="233.3" stroke="#eee"/>
+<text x="65" y="237.3" text-anchor="end">100</text>
+<line x1="70" y1="136.7" x2="470" y2="136.7" stroke="#eee"/>
+<text x="65" y="140.7" text-anchor="end">1000</text>
+<line x1="70" y1="40.0" x2="470" y2="40.0" stroke="#eee"/>
+<text x="65" y="44.0" text-anchor="end">10000</text>
+<path d="M70.0,144.7 L168.3,117.9 L266.5,96.2 L364.8,98.2 L463.1,103.6" fill="none" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="144.7" r="3" fill="#d1495b"/>
+<circle cx="168.3" cy="117.9" r="3" fill="#d1495b"/>
+<circle cx="266.5" cy="96.2" r="3" fill="#d1495b"/>
+<circle cx="364.8" cy="98.2" r="3" fill="#d1495b"/>
+<circle cx="463.1" cy="103.6" r="3" fill="#d1495b"/>
+<line x1="480" y1="55" x2="510" y2="55" stroke="#d1495b" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="59">classic, 10 Hz</text>
+<path d="M70.0,196.9 L168.3,204.5 L266.5,224.3 L364.8,230.7 L463.1,234.4" fill="none" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="196.9" r="3" fill="#00798c"/>
+<circle cx="168.3" cy="204.5" r="3" fill="#00798c"/>
+<circle cx="266.5" cy="224.3" r="3" fill="#00798c"/>
+<circle cx="364.8" cy="230.7" r="3" fill="#00798c"/>
+<circle cx="463.1" cy="234.4" r="3" fill="#00798c"/>
+<line x1="480" y1="73" x2="510" y2="73" stroke="#00798c" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="77">resolver, 10 Hz</text>
+<path d="M70.0,200.0 L168.3,207.7 L266.5,225.5 L364.8,230.9 L463.1,234.4" fill="none" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<circle cx="70.0" cy="200.0" r="3" fill="#edae49"/>
+<circle cx="168.3" cy="207.7" r="3" fill="#edae49"/>
+<circle cx="266.5" cy="225.5" r="3" fill="#edae49"/>
+<circle cx="364.8" cy="230.9" r="3" fill="#edae49"/>
+<circle cx="463.1" cy="234.4" r="3" fill="#edae49"/>
+<line x1="480" y1="91" x2="510" y2="91" stroke="#edae49" stroke-width="2" stroke-dasharray=""/>
+<text x="515" y="95">resolver-grouped, 10 Hz</text>
+</svg>

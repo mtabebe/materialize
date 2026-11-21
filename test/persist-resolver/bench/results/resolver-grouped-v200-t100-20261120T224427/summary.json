@@ -1,0 +1,131 @@
+{
+  "window_seconds": 600.0,
+  "views": 200,
+  "tick_ms": 100,
+  "nominal_view_writes_per_s": 2000.0,
+  "ticks_per_s": 10.0,
+  "mv0_rows_per_s": 100.03,
+  "rows_per_tick": 10,
+  "view_writes_per_s": 2000.0,
+  "lag_histogram": {
+    "1": 119993,
+    "2": 7
+  },
+  "lag_samples": 120000,
+  "lag_samples_expected": 120000,
+  "fresh_le_1s": 0.9999,
+  "lag_p99_bucket_s": "1",
+  "cas_per_s": 112.8,
+  "cas_per_s_by_process": {
+    "clusterd-s1-0": 0.0,
+    "clusterd-s2-0": 53.3,
+    "clusterd-s3-0": 0.0,
+    "clusterd-u1-0": 0.0,
+    "clusterd-u2-0": 0.0,
+    "clusterd-u3-0": 0.0,
+    "clusterd-u4-0": 0.0,
+    "clusterd-u5-0": 0.0,
+    "clusterd-u6-0": 0.0,
+    "environmentd": 31.3,
+    "resolver": 28.0
+  },
+  "cas_bytes_per_s": 313485,
+  "cas_failed_per_s": 0.0,
+  "cas_mismatch_per_s": 0.01,
+  "cas_p50_s": 0.008,
+  "cas_p99_s": 0.032,
+  "compare_and_append_per_s": 1493.8,
+  "view_procs": [
+    "clusterd-u3-0",
+    "clusterd-u4-0",
+    "clusterd-u5-0",
+    "clusterd-u6-0"
+  ],
+  "requested_appends_per_s": 2000.0,
+  "committed_appends_per_s": 1403.3,
+  "committed_share": 0.702,
+  "cas_per_committed_append": 0.08,
+  "compare_and_append_mean_s": 0.10313,
+  "crdb_sql_query_per_s": 120.6,
+  "crdb_sql_insert_per_s": 112.8,
+  "crdb_sql_update_per_s": 2.0,
+  "crdb_sql_select_per_s": 4.6,
+  "crdb_sql_delete_per_s": 0.9,
+  "crdb_sql_txn_commit_per_s": 0.0,
+  "crdb_sql_failure_per_s": 0.0,
+  "crdb_txn_restarts_per_s": 0.02,
+  "crdb_sql_service_p50_s": 0.004406236427774,
+  "crdb_sql_service_p99_s": 0.022695105366947,
+  "environmentd_cores": 0.67,
+  "environmentd_rss_mb_end": 597,
+  "environmentd_rss_mb_peak": 606,
+  "clusterd_cores": 8.7,
+  "clusterd_rss_mb_end": 4270,
+  "clusterd_rss_mb_peak": 4326,
+  "resolver_cores": 1.76,
+  "resolver_rss_mb_end": 1862,
+  "resolver_rss_mb_peak": 2007,
+  "crdb_cores": 0.14,
+  "crdb_rss_mb_end": 1062,
+  "crdb_rss_mb_peak": 1100,
+  "resolver_cycles_per_s": 20.5,
+  "resolver_commits_per_s": 1918.6,
+  "resolver_commits_per_cycle": 93.8,
+  "resolver_manifest_writes_per_s": 20.5,
+  "resolver_lost_writes_per_s": 0.0,
+  "resolver_bytes_per_write": 178602,
+  "resolver_watch_requests_per_s": 4331.0,
+  "resolver_fetch_requests_per_s": 405.1,
+  "resolver_groups_start": {
+    "data_shards": 202,
+    "groups": 2,
+    "grouped_members": 175,
+    "largest_groups": [
+      146,
+      29
+    ]
+  },
+  "resolver_groups_end": {
+    "data_shards": 202,
+    "groups": 1,
+    "grouped_members": 171,
+    "largest_groups": [
+      171
+    ]
+  },
+  "resolver_commit_p50_s": 0.131072,
+  "resolver_commit_p99_s": 0.262144,
+  "resolver_manifest_write_p50_s": 0.032768,
+  "resolver_manifest_write_p99_s": 0.131072,
+  "sampled_fresh_lt_2s_mean": 0.8385,
+  "sampled_p50_lag_s_mean": 1.516,
+  "sampled_p99_lag_s_max": 4.113,
+  "sampled_max_lag_s_max": 4.113,
+  "setup_seconds": 61.39529800415039,
+  "mode": {
+    "user_shards": 202,
+    "user_shards_with_consensus_rows": 0,
+    "ok": true
+  },
+  "consensus_table": {
+    "rows": 16892,
+    "shards": 104,
+    "ranges": 1,
+    "live_bytes": 13374510,
+    "total_bytes": 311520684,
+    "mvcc_garbage_bytes": 298146174
+  },
+  "ok": true,
+  "exited_early": [],
+  "logs": {
+    "resolver": {
+      "lines": 4,
+      "problems": []
+    },
+    "environmentd": {
+      "lines": 4574,
+      "problems": []
+    },
+    "clusterd_log_files": 0
+  }
+}

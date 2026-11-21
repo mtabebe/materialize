@@ -460,6 +460,7 @@ class Bench:
             f"FROM mz_internal.mz_wallclock_global_lag_histogram WHERE {self.mv_filter()} "
             f"GROUP BY 1, 2 ORDER BY 1, 2",
         )
+        snap["clusters"] = dict(psql(MZ_SQL, "SELECT name, id FROM mz_clusters WHERE id LIKE 'u%'"))
         if self.resolver_arm:
             snap["groups"] = self.group_stats()
         [[snap["ticks_rows"]]] = psql(MZ_SQL, "SELECT count(*) FROM ticks")
@@ -698,6 +699,18 @@ def quantile(start: dict[float, float], end: dict[float, float], q: float) -> fl
     return None
 
 
+def view_cluster_procs(snap: dict, a: argparse.Namespace) -> set[str]:
+    """The metrics names of the view clusters' clusterds (`c0`..). Snapshots
+    from before the cluster map was recorded fall back to creation order:
+    `quickstart` is u1, `ingest` u2, then `c0`.. (`create_workload`)."""
+    ids = snap.get("clusters")
+    if ids:
+        ids = [ids[f"c{i}"] for i in range(a.clusters)]
+    else:
+        ids = [f"u{3 + i}" for i in range(a.clusters)]
+    return {p for p in snap["metrics"] if any(p.startswith(f"clusterd-{i}-") for i in ids)}
+
+
 def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace) -> dict:
     secs = end["t"] - start["t"]
     rate = lambda s, e: (e - s) / secs  # noqa: E731
@@ -770,6 +783,22 @@ def summarize(start: dict, end: dict, samples: list[dict], a: argparse.Namespace
     n = counter(emc, "mz_persist_cmd_succeeded_count", **caa) - counter(smc, "mz_persist_cmd_succeeded_count", **caa)
     t = counter(emc, "mz_persist_cmd_seconds", **caa) - counter(smc, "mz_persist_cmd_seconds", **caa)
     s["compare_and_append_per_s"] = round(n / secs, 1)
+
+    # Real work: appends committed to the views' data shards, against the one
+    # per view per tick the workload asks for. Only the view clusters' clusterds
+    # write those shards. A successful `compare_and_append` command also counts
+    # one that returned an upper mismatch, so this is an upper bound; the MV
+    # sinks here have one writer per shard. CaS per committed append divides
+    # every process's CaS (the resolver's manifest writes included) by it.
+    view_procs = view_cluster_procs(end, a)
+    vs = {p: v for p, v in sm.items() if p in view_procs}
+    ve = {p: v for p, v in em.items() if p in view_procs}
+    appends = (counter(ve, "mz_persist_cmd_succeeded_count", **caa) - counter(vs, "mz_persist_cmd_succeeded_count", **caa)) / secs
+    s["view_procs"] = sorted(view_procs)
+    s["requested_appends_per_s"] = round(a.views * 1000 / a.tick_ms, 1)
+    s["committed_appends_per_s"] = round(appends, 1)
+    s["committed_share"] = round(appends / s["requested_appends_per_s"], 3) if a.views else None
+    s["cas_per_committed_append"] = round(s["cas_per_s"] / appends, 3) if appends else None
     s["compare_and_append_mean_s"] = round(t / n, 5) if n else None
 
     # CockroachDB.
