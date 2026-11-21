@@ -1,0 +1,28 @@
+{
+  "arm": "classic",
+  "views": 800,
+  "tick_ms": 100,
+  "rows_per_tick": 10,
+  "duration": 300,
+  "warmup": 60,
+  "clusters": 4,
+  "workers": 4,
+  "crdb_cpus": 4,
+  "crdb_memory": "16g",
+  "crdb_cache": "4GiB",
+  "hydration_timeout": 300,
+  "sample_secs": 5,
+  "align_slack": 15,
+  "system_param": [
+    "persist_consensus_connection_pool_max_size=200"
+  ],
+  "name": "diag-classic-v800-pool200",
+  "results_root": "../../../scratch/diag",
+  "target_dir": "/home/ubuntu/worktrees/resolver-perf-ab/target/release",
+  "keep_data": false,
+  "mz_cpus": "4-47",
+  "crdb_cpus_set": "0-3",
+  "git_head": "125781f033c1df0caf752c13c928e4ef467da1e3",
+  "git_dirty": false,
+  "started": "2026-11-21T08:59:34+0000"
+}
