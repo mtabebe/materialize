@@ -2574,14 +2574,32 @@ def workflow_test_sink_restart_after_shard_finalization(c: Composition) -> None:
                   "stream": "upstream",
                   "attributes": {{"latency": 30000}}
                 }}
-
-                > DROP SINK snk
                 """))
 
-        # The shard finalization task runs every 5 seconds, as does the
-        # suspend-and-restart loop. Give both ample time to happen while the
-        # replica still believes the sink exists.
-        time.sleep(20)
+        def finalizations_started() -> int:
+            metrics = c.exec(
+                "materialized", "curl", "localhost:6878/metrics", capture=True
+            ).stdout
+            return sum(
+                int(float(metric.split()[1]))
+                for metric in metrics.splitlines()
+                if metric.startswith("mz_shard_finalization_op_started")
+            )
+
+        finalizations_before = finalizations_started()
+        c.sql("DROP SINK snk")
+
+        # Finalization advances the shard's upper to the empty antichain right
+        # after it starts.
+        deadline = time.time() + 15
+        while finalizations_started() == finalizations_before:
+            assert time.time() < deadline, "sink shard was not finalized"
+            time.sleep(0.5)
+
+        # The sink restarts every 5 seconds (storage_suspend_and_restart_delay).
+        # Wait for two periods, which still ends before the replica hears
+        # about the drop.
+        time.sleep(10)
 
         logs = c.invoke("logs", "clusterd1", capture=True).stdout
         assert "panicked" not in logs, "clusterd1 panicked:\n" + "\n".join(
