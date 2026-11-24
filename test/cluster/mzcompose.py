@@ -2489,6 +2489,128 @@ def workflow_test_drop_during_reconciliation(c: Composition) -> None:
                 """))
 
 
+def workflow_test_sink_restart_after_shard_finalization(c: Composition) -> None:
+    """
+    Test that a sink can go through a suspend-and-restart on a replica after
+    its shard was finalized, before the replica learned that it was dropped.
+
+    The failpoint keeps the sink in a suspend-and-restart loop. A latency toxic
+    on the storage controller connection holds back the `AllowCompaction`
+    command that tells the replica about the `DROP SINK`, so the replica still
+    restarts the sink while envd finalizes the sink's shard. The sink reads
+    from a table, because only txn-wal sources require a non-empty as-of.
+
+    Regression test for PER-19.
+    """
+
+    with c.override(
+        Clusterd(
+            name="clusterd1",
+            workers=1,
+            environment_extra=[
+                "FAILPOINTS=kafka_sink_creation_error=return",
+                # Disable GRPC host checking. We are connecting through a
+                # proxy, so the host in the request URI doesn't match
+                # clusterd's fqdn.
+                "CLUSTERD_GRPC_HOST=",
+            ],
+        ),
+        Testdrive(
+            no_reset=True,
+            default_timeout="60s",
+        ),
+    ):
+        c.up(
+            "materialized",
+            "kafka",
+            "clusterd1",
+            "toxiproxy",
+            Service("testdrive", idle=True),
+        )
+
+        toxi_url = "http://toxiproxy:8474/proxies"
+        c.testdrive(dedent(f"""
+                $ http-request method=POST url={toxi_url} content-type=application/json
+                {{
+                  "name": "storagectl",
+                  "listen": "0.0.0.0:2100",
+                  "upstream": "clusterd1:2100"
+                }}
+
+                > CREATE CLUSTER cluster1 REPLICAS (replica1 (
+                    STORAGECTL ADDRESSES ['toxiproxy:2100'],
+                    STORAGE ADDRESSES ['clusterd1:2103'],
+                    COMPUTECTL ADDRESSES ['clusterd1:2101'],
+                    COMPUTE ADDRESSES ['clusterd1:2102'],
+                    WORKERS 1
+                  ))
+
+                > CREATE CONNECTION kafka_conn
+                  TO KAFKA (BROKER '${{testdrive.kafka-addr}}', SECURITY PROTOCOL PLAINTEXT)
+
+                > CREATE TABLE t (a int)
+                > INSERT INTO t VALUES (1)
+
+                > CREATE SINK snk
+                  IN CLUSTER cluster1
+                  FROM t
+                  INTO KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-snk-${{testdrive.seed}}')
+                  FORMAT JSON
+                  ENVELOPE DEBEZIUM
+
+                # The sink is in its suspend-and-restart loop.
+                > SELECT DISTINCT error
+                  FROM mz_internal.mz_sink_status_history
+                  JOIN mz_sinks ON sink_id = mz_sinks.id
+                  WHERE mz_sinks.name = 'snk' AND status = 'stalled'
+                "kafka: synthetic error"
+
+                # Hold back commands from envd to the replica. Keepalives keep
+                # flowing, so the connection stays up.
+                $ http-request method=POST url={toxi_url}/storagectl/toxics content-type=application/json
+                {{
+                  "name": "delay_commands",
+                  "type": "latency",
+                  "stream": "upstream",
+                  "attributes": {{"latency": 30000}}
+                }}
+
+                > DROP SINK snk
+                """))
+
+        # The shard finalization task runs every 5 seconds, as does the
+        # suspend-and-restart loop. Give both ample time to happen while the
+        # replica still believes the sink exists.
+        time.sleep(20)
+
+        logs = c.invoke("logs", "clusterd1", capture=True).stdout
+        assert "panicked" not in logs, "clusterd1 panicked:\n" + "\n".join(
+            line for line in logs.splitlines() if "panicked" in line
+        )
+
+        c.testdrive(dedent(f"""
+                $ http-request method=DELETE url={toxi_url}/storagectl/toxics/delay_commands
+
+                # The replica is still able to run new sinks.
+                > CREATE SINK snk2
+                  IN CLUSTER cluster1
+                  FROM t
+                  INTO KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-snk2-${{testdrive.seed}}')
+                  FORMAT JSON
+                  ENVELOPE DEBEZIUM
+
+                > SELECT DISTINCT error
+                  FROM mz_internal.mz_sink_status_history
+                  JOIN mz_sinks ON sink_id = mz_sinks.id
+                  WHERE mz_sinks.name = 'snk2' AND status = 'stalled'
+                "kafka: synthetic error"
+
+                # The failpoint never lets a sink run, and mzcompose flags
+                # stalled sinks left behind by a workflow.
+                > DROP SINK snk2
+                """))
+
+
 def workflow_test_mz_subscriptions(c: Composition) -> None:
     """
     Test that in-progress subscriptions are reflected in
