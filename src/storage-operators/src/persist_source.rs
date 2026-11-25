@@ -308,7 +308,7 @@ where
                 as_of
                     .expect("as_of is provided for table sources")
                     .into_option()
-                    .expect("shard is not closed"),
+                    .expect("as_of for a txn-wal shard must not be empty"),
                 Arc::new(metadata.relation_desc),
                 Arc::new(UnitSchema),
             );

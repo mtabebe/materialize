@@ -2605,6 +2605,11 @@ def workflow_test_sink_restart_after_shard_finalization(c: Composition) -> None:
         assert "panicked" not in logs, "clusterd1 panicked:\n" + "\n".join(
             line for line in logs.splitlines() if "panicked" in line
         )
+        # Without this the test passes when the sink never restarted against
+        # the finalized shard.
+        assert (
+            "skipping building sink dataflow" in logs
+        ), "clusterd1 did not skip a sink restart with an empty as-of"
 
         c.testdrive(dedent(f"""
                 $ http-request method=DELETE url={toxi_url}/storagectl/toxics/delay_commands

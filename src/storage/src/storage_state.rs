@@ -884,8 +884,30 @@ impl<'w> Worker<'w> {
 
                     let mut sink_write_frontier = sink_write_frontier.borrow_mut();
                     sink_write_frontier.clear();
-                    sink_write_frontier.insert(mz_repr::Timestamp::minimum());
+                    // An empty as-of leaves the frontier empty. The controller derives
+                    // the sink's read hold on its input from the reported write frontier,
+                    // so a sink that is never rendered must not report the minimum.
+                    if !sink_description.as_of.is_empty() {
+                        sink_write_frontier.insert(mz_repr::Timestamp::minimum());
+                    }
                 }
+
+                // The async worker derives a restarted sink's as-of from the upper of the
+                // sink's own shard. That upper is empty once the sink has written all of
+                // its input, or once the controller has finalized the shard of a dropped
+                // sink while the `AllowCompaction` that removes the sink is still in
+                // flight. No time is readable at an empty as-of, and `persist_source`
+                // panics on one for a txn-wal shard.
+                if sink_description.as_of.is_empty() {
+                    info!(
+                        "worker {}/{} skipping building sink dataflow for {sink_id} \
+                        because its as_of is empty",
+                        self.timely_worker.index(),
+                        self.timely_worker.peers(),
+                    );
+                    return;
+                }
+
                 self.storage_state
                     .aggregated_statistics
                     .initialize_sink(sink_id, || {
